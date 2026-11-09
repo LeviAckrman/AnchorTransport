@@ -1,0 +1,596 @@
+// AnchorTransport TMS - PostgreSQL Schema (Prisma ORM)
+// Multi-Tenant Fleet & Freight Management Architecture
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// 1. ENUMS
+// ==========================================
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MANAGER
+  ACCOUNTANT
+  OPERATIONS
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  IN_TRANSIT
+  UNDER_MAINTENANCE
+  INACTIVE
+}
+
+enum VehicleType {
+  TEN_WHEELER_16T
+  TWELVE_WHEELER_21T
+  FOURTEEN_WHEELER_28T
+  SIXTEEN_WHEELER_35T
+  TRAILER_40T_PLUS
+  TATA_407_2_5T
+  EICHER_17FT_6T
+  CONTAINER_32FT
+}
+
+enum DriverStatus {
+  AVAILABLE
+  ON_TRIP
+  ON_LEAVE
+  INACTIVE
+}
+
+enum TripStatus {
+  PLANNED
+  DISPATCHED
+  IN_TRANSIT
+  DELIVERED
+  SETTLED
+  CANCELLED
+}
+
+enum ExpenseCategory {
+  DIESEL
+  TOLL_FASTAG
+  LOADING_UNLOADING
+  DRIVER_BATA
+  RTO_POLICE
+  DEF_ADBLUE
+  TYRE_PUNCTURE
+  EN_ROUTE_REPAIR
+  WEIGHBRIDGE
+  OTHER
+}
+
+enum PaymentMode {
+  CASH
+  FASTAG
+  PETRO_CARD
+  UPI
+  DRIVER_POCKET
+  BANK_TRANSFER
+}
+
+enum AdvanceType {
+  CASH_DISPATCH
+  PUMP_DIESEL_SLIP
+  UPI_ONLINE
+  BANK_TRANSFER
+}
+
+enum SettlementStatus {
+  PENDING_APPROVAL
+  APPROVED_SETTLED
+}
+
+enum InvoicePaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+}
+
+enum PaymentRecordMode {
+  NEFT_RTGS
+  CHEQUE
+  UPI
+  CASH
+}
+
+enum DocumentType {
+  RC
+  FITNESS
+  NATIONAL_PERMIT
+  STATE_PERMIT
+  INSURANCE
+  PUC
+  ROAD_TAX
+}
+
+enum MaintenanceType {
+  SCHEDULED_SERVICE
+  TYRE_REPLACEMENT
+  ENGINE_WORK
+  BRAKE_SUSPENSION
+  ACCIDENT_BREAKDOWN
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  DISPATCH
+  SETTLE
+  INVOICE
+  PAYMENT
+}
+
+enum AuditEntity {
+  TRIP
+  VEHICLE
+  DRIVER
+  SETTLEMENT
+  INVOICE
+  PAYMENT
+  EXPENSE
+  DOCUMENT
+  MAINTENANCE
+}
+
+// ==========================================
+// 2. CORE TENANT & USER MANAGEMENT
+// ==========================================
+
+model Company {
+  id            String   @id @default(uuid()) @db.Uuid
+  name          String   @db.VarChar(200)
+  tradeName     String?  @db.VarChar(200)
+  gstin         String   @db.VarChar(15) // e.g. 19AAACC1206D1ZM
+  pan           String   @db.VarChar(10)
+  phone         String   @db.VarChar(20)
+  email         String   @db.VarChar(255)
+  address       String   @db.Text
+  city          String   @db.VarChar(100)
+  state         String   @db.VarChar(100)
+  stateCode     String   @db.VarChar(2) // e.g. "19" for West Bengal
+  pincode       String   @db.VarChar(10)
+  bankName      String   @db.VarChar(150)
+  accountNumber String   @db.VarChar(50)
+  ifscCode      String   @db.VarChar(20)
+  branch        String   @db.VarChar(150)
+  lrPrefix      String   @default("AT/25-26/") @db.VarChar(30)
+  invoicePrefix String   @default("INV/25-26/") @db.VarChar(30)
+  createdAt     DateTime @default(now()) @db.Timestamptz
+  updatedAt     DateTime @updatedAt @db.Timestamptz
+
+  // Relationships
+  companyUsers        CompanyUser[]
+  vehicles            Vehicle[]
+  drivers             Driver[]
+  customers           Customer[]
+  trips               Trip[]
+  tripExpenses        TripExpense[]
+  driverAdvances      DriverAdvance[]
+  tripSettlements     TripSettlement[]
+  invoices            Invoice[]
+  payments            Payment[]
+  vehicleDocuments    VehicleDocument[]
+  maintenanceRecords  MaintenanceRecord[]
+  auditLogs           AuditLog[]
+
+  @@unique([gstin])
+  @@index([stateCode])
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @db.VarChar(255)
+  name         String   @db.VarChar(150)
+  phone        String   @db.VarChar(20)
+  avatarUrl    String?  @db.Text
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
+
+  companyUsers CompanyUser[]
+
+  @@index([email])
+}
+
+model CompanyUser {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  userId    String   @db.Uuid
+  role      UserRole @default(OPERATIONS)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+  @@index([companyId, role])
+}
+
+// ==========================================
+// 3. FLEET & DRIVER REGISTRY
+// ==========================================
+
+model Vehicle {
+  id                   String        @id @default(uuid()) @db.Uuid
+  companyId            String        @db.Uuid
+  registrationNumber   String        @db.VarChar(20) // e.g. WB-19-K-4821
+  vehicleType          VehicleType
+  makeModel            String        @db.VarChar(100) // e.g. Tata Signa 2823
+  capacityTonnes       Decimal       @db.Decimal(8, 2)
+  unladenWeightTonnes  Decimal       @db.Decimal(8, 2)
+  chassisNumber        String        @db.VarChar(50)
+  engineNumber         String        @db.VarChar(50)
+  status               VehicleStatus @default(AVAILABLE)
+  currentOdometerKm    Int           @default(0)
+  fastagBalance        Decimal       @default(0.00) @db.Decimal(12, 2)
+  assignedDriverId     String?       @db.Uuid
+  activeTripId         String?       @db.Uuid
+  notes                String?       @db.Text
+  createdAt            DateTime      @default(now()) @db.Timestamptz
+  updatedAt            DateTime      @updatedAt @db.Timestamptz
+
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assignedDriver     Driver?             @relation(fields: [assignedDriverId], references: [id], onDelete: SetNull)
+  trips              Trip[]
+  tripExpenses       TripExpense[]
+  vehicleDocuments   VehicleDocument[]
+  maintenanceRecords MaintenanceRecord[]
+
+  @@unique([companyId, registrationNumber]) // Company-specific uniqueness
+  @@index([companyId, status])
+  @@index([companyId, vehicleType])
+}
+
+model Driver {
+  id                     String       @id @default(uuid()) @db.Uuid
+  companyId              String       @db.Uuid
+  fullName               String       @db.VarChar(150)
+  phone                  String       @db.VarChar(20)
+  altPhone               String?      @db.VarChar(20)
+  licenseNumber          String       @db.VarChar(50) // e.g. WB1920140029182
+  licenseExpiry          DateTime     @db.Date
+  badgeNumber            String?      @db.VarChar(50)
+  address                String       @db.Text
+  emergencyContact       String       @db.VarChar(150)
+  emergencyPhone         String       @db.VarChar(20)
+  status                 DriverStatus @default(AVAILABLE)
+  currentAdvanceBalance  Decimal      @default(0.00) @db.Decimal(12, 2)
+  perDayBata             Decimal      @default(500.00) @db.Decimal(10, 2)
+  totalTripsCompleted    Int          @default(0)
+  joinedDate             DateTime     @db.Date
+  createdAt              DateTime     @default(now()) @db.Timestamptz
+  updatedAt              DateTime     @updatedAt @db.Timestamptz
+
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  assignedTrucks  Vehicle[]
+  trips           Trip[]
+  driverAdvances  DriverAdvance[]
+  tripSettlements TripSettlement[]
+
+  @@unique([companyId, licenseNumber]) // Company-specific uniqueness
+  @@index([companyId, status])
+  @@index([companyId, phone])
+}
+
+// ==========================================
+// 4. CUSTOMERS & CONSIGNORS
+// ==========================================
+
+model Customer {
+  id                  String   @id @default(uuid()) @db.Uuid
+  companyId           String   @db.Uuid
+  name                String   @db.VarChar(200)
+  tradeName           String?  @db.VarChar(200)
+  gstin               String   @db.VarChar(15) // 15 alphanumeric
+  pan                 String   @db.VarChar(10)
+  contactPerson       String   @db.VarChar(150)
+  phone               String   @db.VarChar(20)
+  email               String?  @db.VarChar(255)
+  billingAddress      String   @db.Text
+  city                String   @db.VarChar(100)
+  state               String   @db.VarChar(100)
+  stateCode           String   @db.VarChar(2) // e.g. 19 for WB, 21 for Odisha
+  pincode             String   @db.VarChar(10)
+  creditPeriodDays    Int      @default(30)
+  creditLimit         Decimal  @default(0.00) @db.Decimal(14, 2)
+  currentOutstanding  Decimal  @default(0.00) @db.Decimal(14, 2)
+  totalFreightBilled  Decimal  @default(0.00) @db.Decimal(14, 2)
+  createdAt           DateTime @default(now()) @db.Timestamptz
+  updatedAt           DateTime @updatedAt @db.Timestamptz
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trips    Trip[]
+  invoices Invoice[]
+  payments Payment[]
+
+  @@unique([companyId, gstin]) // Unique GSTIN per company
+  @@index([companyId, name])
+  @@index([companyId, currentOutstanding])
+}
+
+// ==========================================
+// 5. TRIPS & DISPATCH LIFECYCLE
+// ==========================================
+
+model Trip {
+  id                   String     @id @default(uuid()) @db.Uuid
+  companyId            String     @db.Uuid
+  tripNumber           String     @db.VarChar(50) // e.g. TR-2026-0001
+  lrNumber             String     @db.VarChar(50) // Lorry Receipt / Bilty No.
+  customerId           String     @db.Uuid
+  vehicleId            String     @db.Uuid
+  driverId             String     @db.Uuid
+  originCity           String     @db.VarChar(100)
+  destinationCity      String     @db.VarChar(100)
+  goodsType            String     @db.VarChar(150) // e.g. TMT Steel, Paper, Cement
+  weightTonnes         Decimal    @db.Decimal(8, 2)
+  ratePerTonne         Decimal    @db.Decimal(10, 2)
+  freightAmount        Decimal    @db.Decimal(12, 2)
+  otherCharges         Decimal    @default(0.00) @db.Decimal(10, 2)
+  totalRevenue         Decimal    @db.Decimal(12, 2) // freightAmount + otherCharges
+  totalExpenses        Decimal    @default(0.00) @db.Decimal(12, 2)
+  totalAdvances        Decimal    @default(0.00) @db.Decimal(12, 2)
+  tripContribution     Decimal    @default(0.00) @db.Decimal(12, 2) // totalRevenue - totalExpenses
+  dispatchDate         DateTime   @db.Timestamptz
+  expectedDeliveryDate DateTime   @db.Timestamptz
+  actualDeliveryDate   DateTime?  @db.Timestamptz
+  status               TripStatus @default(PLANNED)
+  startOdometerKm      Int        @default(0)
+  endOdometerKm        Int?
+  podReceived          Boolean    @default(false)
+  podDocumentUrl       String?    @db.Text
+  isSettled            Boolean    @default(false)
+  isInvoiced           Boolean    @default(false)
+  notes                String?    @db.Text
+  createdAt            DateTime   @default(now()) @db.Timestamptz
+  updatedAt            DateTime   @updatedAt @db.Timestamptz
+
+  company      Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer     Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  vehicle      Vehicle         @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  driver       Driver          @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  tripExpenses TripExpense[]
+  advances     DriverAdvance[]
+  settlement   TripSettlement?
+  invoice      Invoice?
+
+  @@unique([companyId, tripNumber])
+  @@unique([companyId, lrNumber])
+  @@index([companyId, status])
+  @@index([companyId, dispatchDate])
+  @@index([companyId, customerId])
+  @@index([companyId, vehicleId])
+  @@index([companyId, driverId])
+}
+
+// ==========================================
+// 6. EXPENSES, ADVANCES & SETTLEMENTS
+// ==========================================
+
+model TripExpense {
+  id                String          @id @default(uuid()) @db.Uuid
+  companyId         String          @db.Uuid
+  tripId            String          @db.Uuid
+  vehicleId         String          @db.Uuid
+  category          ExpenseCategory
+  amount            Decimal         @db.Decimal(12, 2)
+  paymentMode       PaymentMode
+  date              DateTime        @db.Date
+  description       String          @db.Text
+  litresFuel        Decimal?        @db.Decimal(8, 2)
+  ratePerLitre      Decimal?        @db.Decimal(8, 2)
+  pumpName          String?         @db.VarChar(150)
+  odometerReading   Int?
+  receiptNumber     String?         @db.VarChar(100)
+  receiptUrl        String?         @db.Text
+  recordedBy        String          @db.VarChar(150)
+  isDriverDisbursed Boolean         @default(false) // If true, paid from cash advance
+  createdAt         DateTime        @default(now()) @db.Timestamptz
+  updatedAt         DateTime        @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trip    Trip    @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, tripId])
+  @@index([companyId, category])
+  @@index([companyId, date])
+}
+
+model DriverAdvance {
+  id             String      @id @default(uuid()) @db.Uuid
+  companyId      String      @db.Uuid
+  tripId         String      @db.Uuid
+  driverId       String      @db.Uuid
+  amount         Decimal     @db.Decimal(12, 2)
+  advanceType    AdvanceType
+  date           DateTime    @db.Date
+  referenceNotes String?     @db.Text
+  disbursedBy    String      @db.VarChar(150)
+  isSettled      Boolean     @default(false)
+  createdAt      DateTime    @default(now()) @db.Timestamptz
+  updatedAt      DateTime    @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trip    Trip    @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  driver  Driver  @relation(fields: [driverId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, driverId])
+  @@index([companyId, tripId])
+  @@index([companyId, isSettled])
+}
+
+model TripSettlement {
+  id                   String           @id @default(uuid()) @db.Uuid
+  companyId            String           @db.Uuid
+  tripId               String           @unique @db.Uuid // 1:1 with Trip
+  driverId             String           @db.Uuid
+  totalAdvanceGiven    Decimal          @db.Decimal(12, 2)
+  driverCashExpenses   Decimal          @db.Decimal(12, 2)
+  driverBataAllowance  Decimal          @db.Decimal(10, 2)
+  otherDeductions      Decimal          @default(0.00) @db.Decimal(10, 2)
+  netPayableToDriver   Decimal          @db.Decimal(12, 2) // Pos = Company owes driver; Neg = Driver refunds
+  status               SettlementStatus @default(PENDING_APPROVAL)
+  settledDate          DateTime         @db.Date
+  settledBy            String           @db.VarChar(150)
+  settlementNotes      String?          @db.Text
+  createdAt            DateTime         @default(now()) @db.Timestamptz
+  updatedAt            DateTime         @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trip    Trip    @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  driver  Driver  @relation(fields: [driverId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, status])
+  @@index([companyId, driverId])
+}
+
+// ==========================================
+// 7. INVOICES & PAYMENTS (GTA GST BILLING)
+// ==========================================
+
+model Invoice {
+  id              String               @id @default(uuid()) @db.Uuid
+  companyId       String               @db.Uuid
+  invoiceNumber   String               @db.VarChar(50) // e.g. INV/25-26/0140
+  tripId          String               @unique @db.Uuid // 1:1 with Trip in MVP
+  customerId      String               @db.Uuid
+  issueDate       DateTime             @db.Date
+  dueDate         DateTime             @db.Date
+  taxableAmount   Decimal              @db.Decimal(12, 2)
+  isRcmApplicable Boolean              @default(true) // Goods Transport Agency Reverse Charge
+  cgstRatePercent Decimal              @default(0.00) @db.Decimal(5, 2)
+  sgstRatePercent Decimal              @default(0.00) @db.Decimal(5, 2)
+  igstRatePercent Decimal              @default(0.00) @db.Decimal(5, 2)
+  cgstAmount      Decimal              @default(0.00) @db.Decimal(10, 2)
+  sgstAmount      Decimal              @default(0.00) @db.Decimal(10, 2)
+  igstAmount      Decimal              @default(0.00) @db.Decimal(10, 2)
+  totalAmount     Decimal              @db.Decimal(12, 2)
+  amountPaid      Decimal              @default(0.00) @db.Decimal(12, 2)
+  balanceDue      Decimal              @db.Decimal(12, 2)
+  paymentStatus   InvoicePaymentStatus @default(UNPAID)
+  notes           String?              @db.Text
+  createdAt       DateTime             @default(now()) @db.Timestamptz
+  updatedAt       DateTime             @updatedAt @db.Timestamptz
+
+  company  Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  trip     Trip      @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  customer Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  payments Payment[]
+
+  @@unique([companyId, invoiceNumber])
+  @@index([companyId, customerId])
+  @@index([companyId, paymentStatus])
+  @@index([companyId, issueDate])
+}
+
+model Payment {
+  id              String            @id @default(uuid()) @db.Uuid
+  companyId       String            @db.Uuid
+  invoiceId       String            @db.Uuid
+  customerId      String            @db.Uuid
+  amount          Decimal           @db.Decimal(12, 2)
+  paymentDate     DateTime          @db.Date
+  paymentMode     PaymentRecordMode
+  referenceNumber String            @db.VarChar(100) // NEFT/UTR/Cheque No.
+  tdsDeducted     Decimal           @default(0.00) @db.Decimal(10, 2) // Section 194C TDS
+  bankAccount     String            @db.VarChar(150)
+  recordedBy      String            @db.VarChar(150)
+  notes           String?           @db.Text
+  createdAt       DateTime          @default(now()) @db.Timestamptz
+  updatedAt       DateTime          @updatedAt @db.Timestamptz
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  invoice  Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, invoiceId])
+  @@index([companyId, customerId])
+  @@index([companyId, paymentDate])
+}
+
+// ==========================================
+// 8. VEHICLE COMPLIANCE & MAINTENANCE
+// ==========================================
+
+model VehicleDocument {
+  id               String       @id @default(uuid()) @db.Uuid
+  companyId        String       @db.Uuid
+  vehicleId        String       @db.Uuid
+  docType          DocumentType
+  documentNumber   String       @db.VarChar(100)
+  issuingAuthority String       @db.VarChar(150)
+  issueDate        DateTime     @db.Date
+  expiryDate       DateTime     @db.Date
+  documentUrl      String?      @db.Text
+  createdAt        DateTime     @default(now()) @db.Timestamptz
+  updatedAt        DateTime     @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@unique([vehicleId, docType]) // One active document type per vehicle
+  @@index([companyId, expiryDate])
+  @@index([companyId, docType])
+}
+
+model MaintenanceRecord {
+  id              String          @id @default(uuid()) @db.Uuid
+  companyId       String          @db.Uuid
+  vehicleId       String          @db.Uuid
+  serviceType     MaintenanceType
+  garageName      String          @db.VarChar(150)
+  cost            Decimal         @db.Decimal(12, 2)
+  odometerReading Int
+  serviceDate     DateTime        @db.Date
+  partsReplaced   String?         @db.Text
+  invoiceNumber   String?         @db.VarChar(100)
+  notes           String?         @db.Text
+  createdAt       DateTime        @default(now()) @db.Timestamptz
+  updatedAt       DateTime        @updatedAt @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  @@index([companyId, vehicleId])
+  @@index([companyId, serviceDate])
+}
+
+// ==========================================
+// 9. AUDIT LOG (IMMUTABLE AUDIT TRAIL)
+// ==========================================
+
+model AuditLog {
+  id                String      @id @default(uuid()) @db.Uuid
+  companyId         String      @db.Uuid
+  userId            String      @db.Uuid
+  userName          String      @db.VarChar(150)
+  action            AuditAction
+  entityType        AuditEntity
+  entityId          String      @db.Uuid
+  summary           String      @db.Text
+  ipAddress         String?     @db.VarChar(45)
+  previousStateJson String?     @db.Text
+  newStateJson      String?     @db.Text
+  timestamp         DateTime    @default(now()) @db.Timestamptz
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, timestamp])
+  @@index([companyId, entityType, entityId])
+}

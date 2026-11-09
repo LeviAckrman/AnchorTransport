@@ -1,0 +1,363 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Authenticated user profile in AnchorTransport TMS",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique Firebase user ID (matches request.auth.uid)" },
+        "email": { "type": "string", "format": "email", "description": "User email address" },
+        "name": { "type": "string", "maxLength": 100, "description": "Full name of user" },
+        "phone": { "type": "string", "maxLength": 15, "description": "Contact phone number" },
+        "defaultCompanyId": { "type": "string", "description": "Default active company UUID" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "name"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Transport business company record (fleet owner)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Company UUID" },
+        "name": { "type": "string", "maxLength": 150, "description": "Registered company trade name" },
+        "gstin": { "type": "string", "pattern": "^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$", "description": "15-character Indian GST identification number" },
+        "pan": { "type": "string", "pattern": "^[A-Z]{5}[0-9]{4}[A-Z]{1}$", "description": "Permanent Account Number" },
+        "address": { "type": "string", "maxLength": 250, "description": "Registered office address" },
+        "city": { "type": "string", "maxLength": 80, "description": "City name" },
+        "state": { "type": "string", "maxLength": 50, "description": "State name" },
+        "pincode": { "type": "string", "maxLength": 6, "description": "Postal pincode" },
+        "ownerId": { "type": "string", "description": "User ID of the fleet business owner" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "ownerId"]
+    },
+    "CompanyMember": {
+      "title": "CompanyMember",
+      "description": "Membership and role assignment in a transport company",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "User UID" },
+        "companyId": { "type": "string", "description": "Company UUID" },
+        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MANAGER", "ACCOUNTANT", "OPERATIONS", "OPERATIONS_STAFF"] },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "format": "email" },
+        "status": { "type": "string", "enum": ["ACTIVE", "INVITED", "SUSPENDED"] },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "companyId", "role", "email", "status"]
+    },
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "Commercial transport vehicle or truck in fleet",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Vehicle UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "registrationNumber": { "type": "string", "pattern": "^[A-Z]{2}[0-9]{2}[A-Z]{0,3}[0-9]{4}$", "description": "Indian vehicle registration number (e.g. WB19B1234)" },
+        "truckType": { "type": "string", "enum": ["OPEN_BODY", "CONTAINER", "TRAILER", "TANKER", "TIPPER", "LCV"] },
+        "make": { "type": "string", "maxLength": 50, "description": "Manufacturer (e.g. Tata Motors, Ashok Leyland)" },
+        "model": { "type": "string", "maxLength": 50, "description": "Truck model (e.g. Signa 4825.TK)" },
+        "capacityTons": { "type": "number", "description": "Gross registered payload capacity in Metric Tons" },
+        "year": { "type": "number", "description": "Manufacturing year" },
+        "status": { "type": "string", "enum": ["AVAILABLE", "ON_TRIP", "MAINTENANCE", "INACTIVE"] },
+        "chassisNumber": { "type": "string", "maxLength": 50 },
+        "engineNumber": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "registrationNumber", "truckType", "status"]
+    },
+    "Driver": {
+      "title": "Driver",
+      "description": "Employed or contracted commercial truck driver",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Driver UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "name": { "type": "string", "maxLength": 100, "description": "Driver full name" },
+        "phone": { "type": "string", "maxLength": 15, "description": "Driver mobile number" },
+        "licenseNumber": { "type": "string", "maxLength": 30, "description": "Commercial Driving License Number" },
+        "licenseExpiry": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["ACTIVE", "ON_TRIP", "ON_LEAVE", "INACTIVE"] },
+        "address": { "type": "string", "maxLength": 200 },
+        "aadhaarNumber": { "type": "string", "maxLength": 16 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "name", "phone", "licenseNumber", "status"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Shipper, consignor, consignee, or freight client",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Customer UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "companyName": { "type": "string", "maxLength": 150 },
+        "contactPerson": { "type": "string", "maxLength": 100 },
+        "phone": { "type": "string", "maxLength": 15 },
+        "email": { "type": "string", "format": "email" },
+        "gstin": { "type": "string", "pattern": "^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$" },
+        "address": { "type": "string", "maxLength": 200 },
+        "city": { "type": "string", "maxLength": 80 },
+        "state": { "type": "string", "maxLength": 50 },
+        "paymentTermsDays": { "type": "number" },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE", "BLOCKED"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "companyName", "phone", "status"]
+    },
+    "Trip": {
+      "title": "Trip",
+      "description": "Freight shipment dispatch record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Trip UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "tripNumber": { "type": "string", "maxLength": 50, "description": "Sequential trip voucher number" },
+        "vehicleId": { "type": "string", "description": "Assigned vehicle UUID" },
+        "driverId": { "type": "string", "description": "Assigned driver UUID" },
+        "customerId": { "type": "string", "description": "Customer/Consignor UUID" },
+        "originCity": { "type": "string", "maxLength": 80, "description": "Loading city" },
+        "destinationCity": { "type": "string", "maxLength": 80, "description": "Unloading city" },
+        "freightAmount": { "type": "number", "description": "Total agreed freight in INR" },
+        "advanceAmount": { "type": "number", "description": "Customer freight advance in INR" },
+        "driverAdvance": { "type": "number", "description": "Trip advance cash issued to driver in INR" },
+        "status": { "type": "string", "enum": ["PLANNED", "DISPATCHED", "IN_TRANSIT", "UNLOADED", "SETTLED", "CANCELLED"] },
+        "billingStatus": { "type": "string", "enum": ["UNBILLED", "BILLED", "PAID"] },
+        "startDate": { "type": "string", "format": "date-time" },
+        "completedDate": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "tripNumber", "vehicleId", "driverId", "customerId", "status", "freightAmount"]
+    },
+    "TripExpense": {
+      "title": "TripExpense",
+      "description": "Trip and operational operational expenses (fuel, tolls, repairs)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Expense UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "tripId": { "type": "string", "description": "Associated Trip UUID" },
+        "vehicleId": { "type": "string", "description": "Associated Vehicle UUID" },
+        "category": { "type": "string", "enum": ["DIESEL", "TOLL", "REPAIR", "POLICE_CHALLAN", "LOADING_UNLOADING", "DRIVER_ALLOWANCE", "MISC"] },
+        "amount": { "type": "number", "description": "Expense monetary amount in INR" },
+        "expenseDate": { "type": "string", "format": "date-time" },
+        "paymentMode": { "type": "string", "enum": ["CASH", "CARD", "FASTAG", "UPI", "PETRO_CARD", "CREDIT"] },
+        "vendorName": { "type": "string", "maxLength": 100 },
+        "receiptDocUrl": { "type": "string", "maxLength": 500 },
+        "approvedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "tripId", "category", "amount", "expenseDate"]
+    },
+    "DriverAdvance": {
+      "title": "DriverAdvance",
+      "description": "Cash or digital advance issued to driver for trip operations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Advance UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "tripId": { "type": "string", "description": "Trip UUID" },
+        "driverId": { "type": "string", "description": "Driver UUID" },
+        "amount": { "type": "number", "description": "Advance amount in INR" },
+        "advanceDate": { "type": "string", "format": "date-time" },
+        "paymentMode": { "type": "string", "enum": ["CASH", "BANK_TRANSFER", "UPI"] },
+        "remarks": { "type": "string", "maxLength": 200 },
+        "status": { "type": "string", "enum": ["PAID", "ADJUSTED", "RECOVERED"] },
+        "settledInSettlementId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "tripId", "driverId", "amount", "advanceDate", "status"]
+    },
+    "TripSettlement": {
+      "title": "TripSettlement",
+      "description": "Trip financial reconciliation and driver settlement voucher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Settlement UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "tripId": { "type": "string", "description": "Trip UUID" },
+        "driverId": { "type": "string", "description": "Driver UUID" },
+        "grossFreight": { "type": "number" },
+        "driverAdvancesTotal": { "type": "number" },
+        "fuelExpensesTotal": { "type": "number" },
+        "tollExpensesTotal": { "type": "number" },
+        "otherExpensesTotal": { "type": "number" },
+        "netPayableToDriver": { "type": "number" },
+        "settlementDate": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["DRAFT", "APPROVED", "SETTLED"] },
+        "settledBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "tripId", "driverId", "grossFreight", "status", "settlementDate"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Customer freight commercial invoice / bill",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Invoice UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "invoiceNumber": { "type": "string", "maxLength": 50, "description": "GST-compliant sequential invoice number" },
+        "customerId": { "type": "string", "description": "Customer UUID" },
+        "tripId": { "type": "string", "description": "Associated Trip UUID" },
+        "subtotal": { "type": "number" },
+        "taxRate": { "type": "number" },
+        "taxAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "balanceDue": { "type": "number" },
+        "invoiceDate": { "type": "string", "format": "date-time" },
+        "dueDate": { "type": "string", "format": "date-time" },
+        "paymentStatus": { "type": "string", "enum": ["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"] },
+        "notes": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "invoiceNumber", "customerId", "totalAmount", "paymentStatus", "invoiceDate"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Customer payment remittance receipt against invoice",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Payment UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "invoiceId": { "type": "string", "description": "Invoice UUID" },
+        "customerId": { "type": "string", "description": "Customer UUID" },
+        "amount": { "type": "number" },
+        "paymentDate": { "type": "string", "format": "date-time" },
+        "paymentMode": { "type": "string", "enum": ["NEFT_RTGS", "CHEQUE", "UPI", "CASH"] },
+        "transactionRef": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["COMPLETED", "PENDING", "FAILED"] },
+        "receivedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "invoiceId", "customerId", "amount", "paymentDate", "paymentMode", "status"]
+    },
+    "VehicleDocument": {
+      "title": "VehicleDocument",
+      "description": "Commercial vehicle compliance certificate or permit",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Document UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "vehicleId": { "type": "string", "description": "Vehicle UUID" },
+        "documentType": { "type": "string", "enum": ["RC", "FITNESS", "INSURANCE", "NATIONAL_PERMIT", "STATE_PERMIT", "PUC", "ROAD_TAX"] },
+        "documentNumber": { "type": "string", "maxLength": 60 },
+        "issuedDate": { "type": "string", "format": "date-time" },
+        "expiryDate": { "type": "string", "format": "date-time" },
+        "fileUrl": { "type": "string", "maxLength": 500 },
+        "alertDaysBeforeExpiry": { "type": "number" },
+        "status": { "type": "string", "enum": ["ACTIVE", "EXPIRED", "EXPIRING_SOON"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "vehicleId", "documentType", "documentNumber", "expiryDate", "status"]
+    },
+    "MaintenanceRecord": {
+      "title": "MaintenanceRecord",
+      "description": "Fleet vehicle maintenance, overhaul, and workshop service record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Maintenance UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "vehicleId": { "type": "string", "description": "Vehicle UUID" },
+        "serviceType": { "type": "string", "enum": ["SCHEDULED_SERVICE", "TYRE_REPLACEMENT", "ENGINE_REPAIR", "BRAKE_OVERHAUL", "ELECTRICAL", "ACCIDENT_REPAIR"] },
+        "odometerKm": { "type": "number" },
+        "serviceDate": { "type": "string", "format": "date-time" },
+        "workshopName": { "type": "string", "maxLength": 100 },
+        "cost": { "type": "number" },
+        "partsReplaced": { "type": "string", "maxLength": 250 },
+        "nextServiceDueKm": { "type": "number" },
+        "nextServiceDueDate": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["SCHEDULED", "IN_PROGRESS", "COMPLETED"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "vehicleId", "serviceType", "cost", "serviceDate", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and operational audit trail entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Audit Log UUID" },
+        "companyId": { "type": "string", "description": "Owning company UUID" },
+        "entityType": { "type": "string", "maxLength": 50 },
+        "entityId": { "type": "string", "maxLength": 60 },
+        "action": { "type": "string", "enum": ["CREATE", "UPDATE", "DELETE", "STATUS_CHANGE", "SETTLE", "PAYMENT"] },
+        "actorId": { "type": "string", "description": "User UID who performed action" },
+        "actorEmail": { "type": "string", "format": "email" },
+        "actorRole": { "type": "string", "maxLength": 30 },
+        "details": { "type": "string", "maxLength": 500 },
+        "ipAddress": { "type": "string", "maxLength": 45 },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "entityType", "entityId", "action", "actorId", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Private user profiles managed by authenticated users"
+    },
+    "/companies/{companyId}": {
+      "schema": "Company",
+      "description": "Multi-tenant company profiles owned by transport operators"
+    },
+    "/companies/{companyId}/members/{userId}": {
+      "schema": "CompanyMember",
+      "description": "Role-based membership assignments within a company"
+    },
+    "/companies/{companyId}/vehicles/{vehicleId}": {
+      "schema": "Vehicle",
+      "description": "Fleet commercial truck inventory belonging to the company"
+    },
+    "/companies/{companyId}/drivers/{driverId}": {
+      "schema": "Driver",
+      "description": "Drivers employed or contracted by the transport company"
+    },
+    "/companies/{companyId}/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Shippers, consignors, and freight client accounts"
+    },
+    "/companies/{companyId}/trips/{tripId}": {
+      "schema": "Trip",
+      "description": "Shipment dispatches and freight trips for the company"
+    },
+    "/companies/{companyId}/expenses/{expenseId}": {
+      "schema": "TripExpense",
+      "description": "Direct trip operational expenses (diesel, toll, maintenance)"
+    },
+    "/companies/{companyId}/advances/{advanceId}": {
+      "schema": "DriverAdvance",
+      "description": "Trip advances disbursed to drivers"
+    },
+    "/companies/{companyId}/settlements/{settlementId}": {
+      "schema": "TripSettlement",
+      "description": "Post-trip financial reconciliation vouchers"
+    },
+    "/companies/{companyId}/invoices/{invoiceId}": {
+      "schema": "Invoice",
+      "description": "Client freight billing invoices and payment tracking"
+    },
+    "/companies/{companyId}/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Remittance receipts received against client invoices"
+    },
+    "/companies/{companyId}/documents/{documentId}": {
+      "schema": "VehicleDocument",
+      "description": "Compliance certificates, permits, and fitness documents"
+    },
+    "/companies/{companyId}/maintenance/{maintenanceId}": {
+      "schema": "MaintenanceRecord",
+      "description": "Vehicle service and maintenance workshop records"
+    },
+    "/companies/{companyId}/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Tamper-evident, immutable audit trail for company events"
+    }
+  }
+}

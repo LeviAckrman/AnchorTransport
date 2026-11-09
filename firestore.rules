@@ -1,0 +1,315 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------------------
+    // 1. GLOBAL SAFETY NET - Default Deny
+    // ------------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ------------------------------------------------------------------------
+    // 2. GLOBAL HELPER FUNCTIONS
+    // ------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Check membership in the company subcollection
+    function isCompanyMember(companyId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid));
+    }
+
+    // Get member's role within the specified company
+    function getMemberRole(companyId) {
+      return get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.role;
+    }
+
+    // Role-based hierarchy helpers
+    function isOwner(companyId) {
+      return isCompanyMember(companyId) && getMemberRole(companyId) == 'OWNER';
+    }
+
+    function isOwnerOrAdmin(companyId) {
+      return isCompanyMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN']);
+    }
+
+    function isAccountant(companyId) {
+      return isCompanyMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN', 'ACCOUNTANT']);
+    }
+
+    function isFleetStaff(companyId) {
+      return isCompanyMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS', 'OPERATIONS_STAFF']);
+    }
+
+    function isManager(companyId) {
+      return isCompanyMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN', 'MANAGER']);
+    }
+
+    // ------------------------------------------------------------------------
+    // 3. TEST PING ENDPOINT
+    // ------------------------------------------------------------------------
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // ------------------------------------------------------------------------
+    // 4. USER PROFILES (/users/{userId})
+    // ------------------------------------------------------------------------
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId);
+      allow create: if isSignedIn() && request.auth.uid == userId
+                    && incoming().keys().hasAll(['id', 'email', 'name'])
+                    && incoming().id == userId
+                    && incoming().email is string
+                    && incoming().name is string
+                    && incoming().name.size() <= 100;
+      allow update: if isSignedIn() && request.auth.uid == userId
+                    && incoming().id == existing().id
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------------------
+    // 5. MULTI-TENANT COMPANY ROOT (/companies/{companyId})
+    // ------------------------------------------------------------------------
+    match /companies/{companyId} {
+      allow read: if isCompanyMember(companyId);
+      allow create: if isSignedIn() && isValidId(companyId)
+                    && incoming().ownerId == request.auth.uid
+                    && incoming().id == companyId;
+      allow update: if isOwnerOrAdmin(companyId)
+                    && incoming().id == existing().id
+                    && incoming().ownerId == existing().ownerId; // Never transfer ownership via client update
+      allow delete: if false;
+
+      // ----------------------------------------------------------------------
+      // 5.1 COMPANY MEMBERS (/companies/{companyId}/members/{userId})
+      // ----------------------------------------------------------------------
+      match /members/{userId} {
+        allow read: if isCompanyMember(companyId);
+        // Only Company Owner or Admin can add or modify member roles
+        allow create: if isOwnerOrAdmin(companyId)
+                      && isValidId(userId)
+                      && incoming().userId == userId
+                      && incoming().companyId == companyId
+                      && incoming().role in ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS', 'OPERATIONS_STAFF'];
+        allow update: if isOwnerOrAdmin(companyId)
+                      && incoming().userId == existing().userId
+                      && incoming().companyId == existing().companyId
+                      // Prevent non-owners from demoting the owner
+                      && (existing().role != 'OWNER' || isOwner(companyId));
+        allow delete: if isOwner(companyId) && existing().role != 'OWNER';
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.2 FLEET VEHICLES (/companies/{companyId}/vehicles/{vehicleId})
+      // ----------------------------------------------------------------------
+      match /vehicles/{vehicleId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isFleetStaff(companyId)
+                      && isValidId(vehicleId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'registrationNumber', 'truckType', 'status'])
+                      && incoming().status in ['AVAILABLE', 'ON_TRIP', 'MAINTENANCE', 'INACTIVE'];
+        allow update: if isFleetStaff(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.3 DRIVERS (/companies/{companyId}/drivers/{driverId})
+      // ----------------------------------------------------------------------
+      match /drivers/{driverId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isFleetStaff(companyId)
+                      && isValidId(driverId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'name', 'phone', 'licenseNumber', 'status'])
+                      && incoming().status in ['ACTIVE', 'ON_TRIP', 'ON_LEAVE', 'INACTIVE'];
+        allow update: if isFleetStaff(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.4 CUSTOMERS (/companies/{companyId}/customers/{customerId})
+      // ----------------------------------------------------------------------
+      match /customers/{customerId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if (isFleetStaff(companyId) || isAccountant(companyId))
+                      && isValidId(customerId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'companyName', 'phone', 'status']);
+        allow update: if (isFleetStaff(companyId) || isAccountant(companyId))
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.5 TRIPS (/companies/{companyId}/trips/{tripId})
+      // ----------------------------------------------------------------------
+      match /trips/{tripId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isFleetStaff(companyId)
+                      && isValidId(tripId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'tripNumber', 'vehicleId', 'driverId', 'customerId', 'status', 'freightAmount'])
+                      && incoming().status in ['PLANNED', 'DISPATCHED', 'IN_TRANSIT', 'UNLOADED', 'SETTLED', 'CANCELLED'];
+        allow update: if isFleetStaff(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.6 TRIP EXPENSES (/companies/{companyId}/expenses/{expenseId})
+      // ----------------------------------------------------------------------
+      match /expenses/{expenseId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if (isFleetStaff(companyId) || isAccountant(companyId))
+                      && isValidId(expenseId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'tripId', 'category', 'amount', 'expenseDate'])
+                      && incoming().category in ['DIESEL', 'TOLL', 'REPAIR', 'POLICE_CHALLAN', 'LOADING_UNLOADING', 'DRIVER_ALLOWANCE', 'MISC'];
+        allow update: if (isFleetStaff(companyId) || isAccountant(companyId))
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.7 DRIVER ADVANCES (/companies/{companyId}/advances/{advanceId})
+      // ----------------------------------------------------------------------
+      match /advances/{advanceId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if (isFleetStaff(companyId) || isAccountant(companyId))
+                      && isValidId(advanceId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'tripId', 'driverId', 'amount', 'advanceDate', 'status'])
+                      && incoming().status in ['PAID', 'ADJUSTED', 'RECOVERED'];
+        allow update: if (isFleetStaff(companyId) || isAccountant(companyId))
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.8 TRIP SETTLEMENTS (/companies/{companyId}/settlements/{settlementId})
+      // ----------------------------------------------------------------------
+      match /settlements/{settlementId} {
+        allow read: if isCompanyMember(companyId);
+        // Financial settlement approval is strictly restricted to Accountant, Admin, or Owner
+        allow create: if isAccountant(companyId)
+                      && isValidId(settlementId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'tripId', 'driverId', 'grossFreight', 'status', 'settlementDate'])
+                      && incoming().status in ['DRAFT', 'APPROVED', 'SETTLED'];
+        allow update: if isAccountant(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.9 INVOICES (/companies/{companyId}/invoices/{invoiceId})
+      // ----------------------------------------------------------------------
+      match /invoices/{invoiceId} {
+        allow read: if isCompanyMember(companyId);
+        // Invoice creation and adjustments restricted to Accounting staff
+        allow create: if isAccountant(companyId)
+                      && isValidId(invoiceId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'invoiceNumber', 'customerId', 'totalAmount', 'paymentStatus', 'invoiceDate'])
+                      && incoming().paymentStatus in ['UNPAID', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'];
+        allow update: if isAccountant(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.10 PAYMENTS (/companies/{companyId}/payments/{paymentId})
+      // ----------------------------------------------------------------------
+      match /payments/{paymentId} {
+        allow read: if isCompanyMember(companyId);
+        // Inward customer payment booking restricted to Accounting staff
+        allow create: if isAccountant(companyId)
+                      && isValidId(paymentId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'invoiceId', 'customerId', 'amount', 'paymentDate', 'paymentMode', 'status'])
+                      && incoming().status in ['COMPLETED', 'PENDING', 'FAILED'];
+        allow update: if isAccountant(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.11 VEHICLE COMPLIANCE DOCUMENTS (/companies/{companyId}/documents/{docId})
+      // ----------------------------------------------------------------------
+      match /documents/{docId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isFleetStaff(companyId)
+                      && isValidId(docId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'vehicleId', 'documentType', 'documentNumber', 'expiryDate', 'status'])
+                      && incoming().documentType in ['RC', 'FITNESS', 'INSURANCE', 'NATIONAL_PERMIT', 'STATE_PERMIT', 'PUC', 'ROAD_TAX'];
+        allow update: if isFleetStaff(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.12 MAINTENANCE RECORDS (/companies/{companyId}/maintenance/{maintenanceId})
+      // ----------------------------------------------------------------------
+      match /maintenance/{maintenanceId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isFleetStaff(companyId)
+                      && isValidId(maintenanceId)
+                      && incoming().companyId == companyId
+                      && incoming().keys().hasAll(['id', 'companyId', 'vehicleId', 'serviceType', 'cost', 'serviceDate', 'status'])
+                      && incoming().serviceType in ['SCHEDULED_SERVICE', 'TYRE_REPLACEMENT', 'ENGINE_REPAIR', 'BRAKE_OVERHAUL', 'ELECTRICAL', 'ACCIDENT_REPAIR']
+                      && incoming().status in ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED'];
+        allow update: if isFleetStaff(companyId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().id == existing().id;
+        allow delete: if isOwnerOrAdmin(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 5.13 AUDIT LOGS (/companies/{companyId}/auditLogs/{logId})
+      // ----------------------------------------------------------------------
+      match /auditLogs/{logId} {
+        // Only Owner and Admin can inspect audit logs
+        allow read: if isOwnerOrAdmin(companyId);
+        // Any authenticated company member can append an immutable audit log
+        allow create: if isCompanyMember(companyId)
+                      && isValidId(logId)
+                      && incoming().companyId == companyId
+                      && incoming().actorId == request.auth.uid
+                      && incoming().keys().hasAll(['id', 'companyId', 'entityType', 'entityId', 'action', 'actorId', 'timestamp']);
+        // AUDIT LOG IMMUTABILITY: Updating or deleting audit logs is strictly prohibited for everyone
+        allow update, delete: if false;
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "AnchorTransport TMS",
+  "description": "Production-oriented Transport Management System for Indian transport companies managing fleet, trips, freight, driver advances, settlements, GST invoices, and compliance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

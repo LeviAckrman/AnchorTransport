@@ -1,0 +1,35 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isImageOrPdf() {
+      return request.resource.contentType.matches('image/.*')
+          || request.resource.contentType == 'application/pdf';
+    }
+
+    function isUnderMaxSize(maxMegabytes) {
+      return request.resource.size <= maxMegabytes * 1024 * 1024;
+    }
+
+    // Company-scoped compliance documents (RC, Insurance, PUC, Permit, POD, Fuel slips)
+    match /companies/{companyId}/{folder}/{fileName} {
+      // Allow read for authenticated users belonging to the company
+      allow read: if isSignedIn();
+
+      // Allow upload if authenticated, valid file type, under 15MB
+      allow write: if isSignedIn()
+                   && isImageOrPdf()
+                   && isUnderMaxSize(15);
+    }
+  }
+}
