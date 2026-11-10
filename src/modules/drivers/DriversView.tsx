@@ -114,6 +114,12 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
     fetchVehicles();
   }, [searchQuery, statusFilter, licenseFilter, limit, company?.id]);
 
+  useEffect(() => {
+    const onVehicleUpdated = () => fetchVehicles();
+    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
+    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+  }, []);
+
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
     setPage(newPage);

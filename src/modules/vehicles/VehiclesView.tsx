@@ -132,6 +132,8 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
       'success'
     );
     fetchVehicles(isEdit ? page : 1);
+    // Broadcast event across modules
+    window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
   };
 
   const confirmDeleteVehicle = async () => {
@@ -153,6 +155,8 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
       showNotification(`Vehicle ${vehicleToDelete.registrationNumber} removed from company fleet.`);
       setVehicleToDelete(null);
       fetchVehicles(page);
+      // Broadcast event across modules
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
     } catch (err: any) {
       showNotification(err.message || 'Error deleting vehicle.', 'error');
     }

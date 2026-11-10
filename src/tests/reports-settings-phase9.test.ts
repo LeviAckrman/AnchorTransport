@@ -11,7 +11,7 @@
  * 7. Large Dataset Performance (Aggregation resilience)
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, before } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
 import { signSessionToken } from '../server/auth';
@@ -148,6 +148,9 @@ async function makeRequest(
 }
 
 describe('PHASE 9: Reports and Company Settings Tests', () => {
+  before(() => {
+    serverFleetStore.seedCompanyData(COMPANY_A);
+  });
   // =========================================================================
   // 1. TRIP REPORT
   // =========================================================================

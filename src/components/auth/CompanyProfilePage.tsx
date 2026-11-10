@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { Building2, Save, CheckCircle2, AlertCircle, ShieldAlert, CreditCard, Hash } from 'lucide-react';
+import { Building2, Save, CheckCircle2, AlertCircle, ShieldAlert, CreditCard, Hash, RotateCcw, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { PageHeader } from '../layout/PageHeader';
+import { clearStoreForNewCustomer } from '../../lib/storage';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 
 export const CompanyProfilePage: React.FC = () => {
   const { company, role, permissions, updateCompanyProfile } = useAuth();
@@ -32,6 +34,44 @@ export const CompanyProfilePage: React.FC = () => {
 
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const { token } = useAuth();
+  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
+
+  const handleResetData = async () => {
+    setResetting(true);
+    try {
+      await fetch('/api/fleet/reset-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${activeToken}`,
+        },
+        body: JSON.stringify({ scope: 'current_company' }),
+      });
+
+      clearStoreForNewCustomer();
+
+      setFeedback({
+        type: 'success',
+        message: 'All operational data (vehicles, trips, drivers, invoices, expenses) has been reset to 0 for a clean customer start. Refreshing...',
+      });
+
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: err.message || 'Failed to reset operational data.',
+      });
+    } finally {
+      setResetting(false);
+      setIsResetDialogOpen(false);
+    }
+  };
 
   const canEdit = permissions?.canManageCompany ?? false;
 
@@ -339,6 +379,54 @@ export const CompanyProfilePage: React.FC = () => {
           </div>
         )}
       </form>
+
+      {/* Danger Zone: Data Reset for New Customers */}
+      {canEdit && (
+        <div className="bg-white rounded-2xl border border-rose-200 shadow-xs overflow-hidden mt-8">
+          <div className="p-4 sm:p-6 bg-rose-50/50 border-b border-rose-100 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center font-bold">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">Danger Zone: Reset Company Data</h3>
+                <p className="text-xs text-slate-500">
+                  Wipe all demo vehicles, trips, drivers, and invoices to start completely fresh for new real customers.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={resetting}
+              onClick={() => setIsResetDialogOpen(true)}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-semibold text-xs sm:text-sm rounded-xl transition-colors flex items-center gap-2 shadow-xs disabled:opacity-50"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>{resetting ? 'Resetting...' : 'Reset All Data'}</span>
+            </button>
+          </div>
+          <div className="p-4 sm:p-6 bg-white text-xs text-slate-600 space-y-1">
+            <p>
+              • <strong>What gets cleared:</strong> All vehicles, active & past trips, driver advance slips, trip expenses, customer billing records, and tax invoices for this company.
+            </p>
+            <p>
+              • <strong>What is preserved:</strong> Your company profile, GST registration, bank account details, user accounts, and numbering configuration.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        isOpen={isResetDialogOpen}
+        title="Reset All Data for New Customers?"
+        message="Are you sure you want to reset all operational data? This will permanently delete all demo vehicles, trips, driver advances, settlements, and invoices for your company so you can start with a clean slate. Your company profile and login will remain intact."
+        confirmLabel="Yes, Reset Everything to 0"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={resetting}
+        onConfirm={handleResetData}
+        onClose={() => setIsResetDialogOpen(false)}
+      />
     </div>
   );
 };

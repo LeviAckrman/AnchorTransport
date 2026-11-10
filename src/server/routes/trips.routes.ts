@@ -1021,3 +1021,63 @@ tripsRouter.delete(
     }
   }
 );
+
+/**
+ * POST /api/trips/reset & POST /trips/reset
+ * Resets all trip dispatches for the authenticated company,
+ * clearing trips, linked expenses, advances, and freeing vehicles/drivers to AVAILABLE.
+ */
+const handleResetCompanyTrips = async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const companyId = req.companyId!;
+
+    // Find all trips for this company
+    const companyTrips = serverFleetStore.trips.filter((t) => t.companyId === companyId);
+    const companyTripIds = new Set(companyTrips.map((t) => t.id));
+
+    // Remove company trips
+    serverFleetStore.trips = serverFleetStore.trips.filter((t) => t.companyId !== companyId);
+
+    // Remove trip expenses & advances linked to this company
+    serverFleetStore.expenses = serverFleetStore.expenses.filter((e) => e.companyId !== companyId);
+    serverFleetStore.advances = serverFleetStore.advances.filter((a) => a.companyId !== companyId);
+    serverFleetStore.settlements = serverFleetStore.settlements.filter((s) => s.companyId !== companyId);
+    serverFleetStore.invoices = serverFleetStore.invoices.filter((i) => i.companyId !== companyId);
+
+    // Reset vehicles for this company back to AVAILABLE and clear activeTripId
+    serverFleetStore.vehicles = serverFleetStore.vehicles.map((v) => {
+      if (v.companyId === companyId) {
+        return {
+          ...v,
+          status: v.status === 'UNDER_MAINTENANCE' ? 'UNDER_MAINTENANCE' : 'AVAILABLE',
+          activeTripId: undefined,
+        };
+      }
+      return v;
+    });
+
+    // Reset drivers for this company back to AVAILABLE and clear currentAdvanceBalancePaise
+    serverFleetStore.drivers = serverFleetStore.drivers.map((d) => {
+      if (d.companyId === companyId) {
+        return {
+          ...d,
+          status: 'AVAILABLE',
+          currentAdvanceBalancePaise: 0,
+        };
+      }
+      return d;
+    });
+
+    res.json({
+      success: true,
+      message: 'All commercial trips have been reset. Fleet is clear and ready for new dispatches.',
+      resetTripsCount: companyTrips.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to reset trips' });
+  }
+};
+
+tripsRouter.post('/trips/reset', requireAuth, requireRoles(['OWNER', 'ADMIN', 'MANAGER']), handleResetCompanyTrips);
+tripsRouter.post('/api/trips/reset', requireAuth, requireRoles(['OWNER', 'ADMIN', 'MANAGER']), handleResetCompanyTrips);
+

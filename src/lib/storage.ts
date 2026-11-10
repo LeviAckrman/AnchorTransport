@@ -55,34 +55,22 @@ export interface TmsStore {
   auditLogs: AuditLog[];
 }
 
-function getInitialStore(): TmsStore {
+export function getInitialStore(): TmsStore {
   return {
     company: INITIAL_COMPANY,
     companyUsers: INITIAL_COMPANY_USERS,
     currentRole: 'OWNER',
-    vehicles: INITIAL_VEHICLES,
+    vehicles: [],
     drivers: INITIAL_DRIVERS,
-    customers: INITIAL_CUSTOMERS,
+    customers: [],
     trips: INITIAL_TRIPS,
     expenses: INITIAL_EXPENSES,
     advances: INITIAL_ADVANCES,
     settlements: INITIAL_SETTLEMENTS,
     invoices: INITIAL_INVOICES,
     payments: INITIAL_PAYMENTS,
-    documents: INITIAL_DOCUMENTS,
-    auditLogs: [
-      {
-        id: 'log_01',
-        companyId: INITIAL_COMPANY.id,
-        userId: 'usr_owner_01',
-        userName: 'Anupam Ghosh',
-        action: 'DISPATCH',
-        entityType: 'TRIP',
-        entityId: 'trip_01',
-        summary: 'Dispatched trip TR-2026-0038 (Durgapur to Siliguri) on WB-19-K-4821',
-        timestamp: '2026-11-01T08:30:00Z',
-      },
-    ],
+    documents: [],
+    auditLogs: [],
   };
 }
 
@@ -100,6 +88,60 @@ export function loadStore(): TmsStore {
       saveStore(initial);
       return initial;
     }
+
+    // Purge default mock customers from storage so customers only appear after user adds them
+    if (Array.isArray(parsed.customers)) {
+      parsed.customers = parsed.customers.filter(
+        (c) =>
+          c.id !== 'cust_01' &&
+          c.id !== 'cust_02' &&
+          c.id !== 'cust_03' &&
+          c.name !== 'Shyam Steel Industries Ltd.' &&
+          c.name !== 'Emami Paper Mills Ltd.' &&
+          c.name !== 'Haldia Petrochemicals Ltd.'
+      );
+    } else {
+      parsed.customers = [];
+    }
+
+    // Purge default mock vehicles from storage so trucks only appear after user adds them
+    if (Array.isArray(parsed.vehicles)) {
+      parsed.vehicles = parsed.vehicles.filter(
+        (v) =>
+          v.id !== 'veh_01' &&
+          v.id !== 'veh_02' &&
+          v.id !== 'veh_03' &&
+          v.id !== 'veh_04' &&
+          v.id !== 'veh_05' &&
+          v.registrationNumber !== 'WB-19-K-4821' &&
+          v.registrationNumber !== 'WB-29-B-7104' &&
+          v.registrationNumber !== 'WB-11-D-9033' &&
+          v.registrationNumber !== 'WB-23-C-1980' &&
+          v.registrationNumber !== 'WB-02-Z-5510'
+      );
+    } else {
+      parsed.vehicles = [];
+    }
+
+    // Purge default mock documents from storage
+    if (Array.isArray(parsed.documents)) {
+      parsed.documents = parsed.documents.filter(
+        (d) =>
+          d.id !== 'doc_01' &&
+          d.id !== 'doc_02' &&
+          d.id !== 'doc_03' &&
+          d.id !== 'doc_04' &&
+          d.id !== 'doc_05' &&
+          d.vehicleReg !== 'WB-19-K-4821' &&
+          d.vehicleReg !== 'WB-29-B-7104' &&
+          d.vehicleReg !== 'WB-11-D-9033' &&
+          d.vehicleReg !== 'WB-23-C-1980' &&
+          d.vehicleReg !== 'WB-02-Z-5510'
+      );
+    } else {
+      parsed.documents = [];
+    }
+
     return parsed;
   } catch (err) {
     console.error('Failed to load AnchorTransport store from localStorage, resetting:', err);
@@ -119,4 +161,28 @@ export function resetStore(): TmsStore {
   const initial = getInitialStore();
   saveStore(initial);
   return initial;
+}
+
+/**
+ * Resets all operational records (vehicles, trips, drivers, invoices, expenses)
+ * to an empty clean slate for real new customers onboarding.
+ */
+export function clearStoreForNewCustomer(): TmsStore {
+  const store = loadStore();
+  const cleanStore: TmsStore = {
+    ...store,
+    vehicles: [],
+    drivers: [],
+    customers: [],
+    trips: [],
+    expenses: [],
+    advances: [],
+    settlements: [],
+    invoices: [],
+    payments: [],
+    documents: [],
+    auditLogs: [],
+  };
+  saveStore(cleanStore);
+  return cleanStore;
 }

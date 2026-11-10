@@ -110,6 +110,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
       isEdit ? `Customer ${customer.name} updated successfully.` : `Customer ${customer.name} registered to company directory.`,
       'success'
     );
+    window.dispatchEvent(new CustomEvent('tms:customer-updated'));
     fetchCustomers(isEdit ? page : 1);
   };
 
@@ -131,6 +132,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
 
       showNotification(`Customer ${customerToDelete.name} deleted.`);
       setCustomerToDelete(null);
+      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
       fetchCustomers(page);
     } catch (err: any) {
       showNotification(err.message || 'Error deleting customer.', 'error');

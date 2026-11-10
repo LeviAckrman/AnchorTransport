@@ -79,6 +79,56 @@ export function getStateFromGstin(gstin: string): { code: string; name: string }
 }
 
 /**
+ * Synchronizes compliance document records for a vehicle into serverFleetStore.documents
+ */
+export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void {
+  // Clear any previously existing documents for this vehicle in company
+  serverFleetStore.documents = serverFleetStore.documents.filter(
+    (d) => !(d.companyId === companyId && d.vehicleId === vehicle.id)
+  );
+
+  const now = Date.now();
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const pushDoc = (
+    docType: any,
+    documentNumber?: string,
+    expiryDate?: string,
+    issuingAuthority = 'Transport Authority'
+  ) => {
+    if (!expiryDate) return;
+    const daysUntil = Math.ceil((new Date(expiryDate).getTime() - now) / (1000 * 60 * 60 * 24));
+    serverFleetStore.documents.push({
+      id: `doc_${companyId}_${vehicle.id}_${docType.toLowerCase()}`,
+      companyId,
+      vehicleId: vehicle.id,
+      vehicleReg: vehicle.registrationNumber,
+      docType,
+      documentNumber: documentNumber || `${docType}-PENDING`,
+      issuingAuthority,
+      issueDate: todayStr,
+      expiryDate,
+      daysUntilExpiry: daysUntil,
+      status: daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID',
+    });
+  };
+
+  if (vehicle.insuranceExpiry) {
+    pushDoc('INSURANCE', vehicle.insurancePolicyNumber, vehicle.insuranceExpiry, 'General Insurance Company');
+  }
+  if (vehicle.fitnessExpiry) {
+    pushDoc('FITNESS', vehicle.fitnessCertificateNumber, vehicle.fitnessExpiry, 'RTO Transport Department');
+  }
+  if (vehicle.permitExpiry) {
+    const pType = vehicle.permitType === 'STATE' ? 'STATE_PERMIT' : 'NATIONAL_PERMIT';
+    pushDoc(pType, vehicle.permitNumber, vehicle.permitExpiry, 'State Transport Authority');
+  }
+  if (vehicle.pucExpiry) {
+    pushDoc('PUC', vehicle.pucNumber, vehicle.pucExpiry, 'Pollution Testing Center');
+  }
+}
+
+/**
  * Check if the active user role has access to driver sensitive personal info
  */
 function canAccessSensitiveInfo(role?: UserRole): boolean {
@@ -390,40 +440,8 @@ fleetRouter.post('/vehicles', requireAuth, async (req: AuthenticatedRequest, res
 
     serverFleetStore.vehicles.unshift(newVehicle);
 
-    // Sync documents if dates provided
-    if (insuranceExpiry) {
-      const daysUntil = Math.ceil((new Date(insuranceExpiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-      serverFleetStore.documents.push({
-        id: `doc_${companyId}_${Date.now()}_ins`,
-        companyId,
-        vehicleId: newVehicle.id,
-        vehicleReg: newVehicle.registrationNumber,
-        docType: 'INSURANCE',
-        documentNumber: insurancePolicyNumber || 'INS-PENDING',
-        issuingAuthority: 'General Insurance Agency',
-        issueDate: nowIso.split('T')[0],
-        expiryDate: insuranceExpiry,
-        daysUntilExpiry: daysUntil,
-        status: daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID',
-      });
-    }
-
-    if (fitnessExpiry) {
-      const daysUntil = Math.ceil((new Date(fitnessExpiry).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-      serverFleetStore.documents.push({
-        id: `doc_${companyId}_${Date.now()}_fit`,
-        companyId,
-        vehicleId: newVehicle.id,
-        vehicleReg: newVehicle.registrationNumber,
-        docType: 'FITNESS',
-        documentNumber: fitnessCertificateNumber || 'FIT-PENDING',
-        issuingAuthority: 'Regional Transport Authority',
-        issueDate: nowIso.split('T')[0],
-        expiryDate: fitnessExpiry,
-        daysUntilExpiry: daysUntil,
-        status: daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID',
-      });
-    }
+    // Sync all compliance documents for vehicle
+    syncVehicleDocuments(newVehicle, companyId);
 
     // Also persist to Firestore if available
     if (adminDb) {
@@ -557,6 +575,9 @@ fleetRouter.put('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, 
     if (notes !== undefined) vehicle.notes = notes;
 
     vehicle.updatedAt = new Date().toISOString();
+
+    // Re-sync compliance documents
+    syncVehicleDocuments(vehicle, companyId);
 
     // Persist to Firestore if available
     if (adminDb) {
@@ -1713,3 +1734,353 @@ fleetRouter.post(
     }
   }
 );
+
+/**
+ * POST /api/fleet/reset-data
+ * Completely resets operational data (vehicles, drivers, customers, trips, expenses, invoices)
+ * for new customers or a fresh start.
+ */
+fleetRouter.post('/reset-data', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const companyId = req.companyId!;
+    const role = req.user?.role || 'OWNER';
+    const scope = req.body?.scope || 'current_company';
+
+    if (role !== 'OWNER' && role !== 'ADMIN') {
+      res.status(403).json({
+        success: false,
+        error: 'Only Company Owners and System Admins have permission to reset company data.',
+      });
+      return;
+    }
+
+    if (scope === 'all') {
+      // Clear all demo data across the server store
+      serverFleetStore.trips = [];
+      serverFleetStore.expenses = [];
+      serverFleetStore.advances = [];
+      serverFleetStore.settlements = [];
+      serverFleetStore.invoices = [];
+      serverFleetStore.payments = [];
+      serverFleetStore.vehicles = [];
+      serverFleetStore.drivers = [];
+      serverFleetStore.customers = [];
+      serverFleetStore.documents = [];
+
+      res.json({
+        success: true,
+        message: 'All system data across all companies has been completely reset to a clean slate for new customers.',
+        clearedScope: 'all',
+      });
+      return;
+    }
+
+    // Default: Reset data specifically for the authenticated company
+    serverFleetStore.clearCompanyData(companyId);
+
+    res.json({
+      success: true,
+      message: `All vehicles, drivers, customers, trips, expenses, and invoices have been cleared for your company. Ready for fresh onboarding.`,
+      clearedScope: 'current_company',
+      companyId,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to reset company data' });
+  }
+});
+
+fleetRouter.post('/api/fleet/reset-data', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  // Delegate to same handler
+  const companyId = req.companyId!;
+  const role = req.user?.role || 'OWNER';
+  const scope = req.body?.scope || 'current_company';
+
+  if (role !== 'OWNER' && role !== 'ADMIN') {
+    res.status(403).json({
+      success: false,
+      error: 'Only Company Owners and System Admins have permission to reset company data.',
+    });
+    return;
+  }
+
+  if (scope === 'all') {
+    serverFleetStore.trips = [];
+    serverFleetStore.expenses = [];
+    serverFleetStore.advances = [];
+    serverFleetStore.settlements = [];
+    serverFleetStore.invoices = [];
+    serverFleetStore.payments = [];
+    serverFleetStore.vehicles = [];
+    serverFleetStore.drivers = [];
+    serverFleetStore.customers = [];
+    serverFleetStore.documents = [];
+
+    res.json({
+      success: true,
+      message: 'All system data across all companies has been completely reset to a clean slate for new customers.',
+      clearedScope: 'all',
+    });
+    return;
+  }
+
+  serverFleetStore.clearCompanyData(companyId);
+  res.json({
+    success: true,
+    message: `All vehicles, drivers, customers, trips, expenses, and invoices have been cleared for your company. Ready for fresh onboarding.`,
+    clearedScope: 'current_company',
+    companyId,
+  });
+});
+
+/**
+ * ============================================================================
+ * VEHICLE DOCUMENTS & COMPLIANCE VAULT ENDPOINTS
+ * ============================================================================
+ */
+
+// GET /api/fleet/documents
+fleetRouter.get('/documents', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleGetDocuments(req, res);
+});
+fleetRouter.get('/api/fleet/documents', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleGetDocuments(req, res);
+});
+
+async function handleGetDocuments(req: AuthenticatedRequest, res: Response) {
+  try {
+    const companyId = req.companyId!;
+    const { vehicleId, status, docType, search } = req.query;
+
+    let list = serverFleetStore.documents.filter((d) => d.companyId === companyId);
+
+    // Refresh dynamic status
+    const now = Date.now();
+    list.forEach((doc) => {
+      const expTime = new Date(doc.expiryDate).getTime();
+      const daysUntil = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
+      doc.daysUntilExpiry = daysUntil;
+      doc.status = daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID';
+    });
+
+    if (vehicleId && vehicleId !== 'ALL') {
+      list = list.filter((d) => d.vehicleId === vehicleId);
+    }
+
+    if (status && status !== 'ALL') {
+      list = list.filter((d) => d.status === status);
+    }
+
+    if (docType && docType !== 'ALL') {
+      list = list.filter((d) => d.docType === docType);
+    }
+
+    if (search && typeof search === 'string' && search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(
+        (d) =>
+          d.vehicleReg.toLowerCase().includes(q) ||
+          d.documentNumber.toLowerCase().includes(q) ||
+          (d.issuingAuthority && d.issuingAuthority.toLowerCase().includes(q))
+      );
+    }
+
+    // Sort: Expired first, then earliest expiring
+    list.sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+
+    const allCompanyDocs = serverFleetStore.documents.filter((d) => d.companyId === companyId);
+    const summary = {
+      total: allCompanyDocs.length,
+      expired: allCompanyDocs.filter((d) => d.status === 'EXPIRED').length,
+      expiringSoon: allCompanyDocs.filter((d) => d.status === 'EXPIRING_SOON').length,
+      valid: allCompanyDocs.filter((d) => d.status === 'VALID').length,
+    };
+
+    res.json({
+      success: true,
+      documents: list,
+      summary,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to fetch compliance documents' });
+  }
+}
+
+// POST /api/fleet/documents
+fleetRouter.post('/documents', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleCreateDocument(req, res);
+});
+fleetRouter.post('/api/fleet/documents', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleCreateDocument(req, res);
+});
+
+async function handleCreateDocument(req: AuthenticatedRequest, res: Response) {
+  try {
+    const companyId = req.companyId!;
+    const { vehicleId, docType, documentNumber, issuingAuthority, issueDate, expiryDate, documentUrl } = req.body;
+
+    if (!vehicleId) {
+      res.status(400).json({ success: false, error: 'Vehicle selection is required.' });
+      return;
+    }
+
+    const vehicle = serverFleetStore.vehicles.find((v) => v.id === vehicleId && v.companyId === companyId);
+    if (!vehicle) {
+      res.status(404).json({ success: false, error: 'Vehicle not found in your fleet.' });
+      return;
+    }
+
+    if (!docType) {
+      res.status(400).json({ success: false, error: 'Document type is required.' });
+      return;
+    }
+
+    if (!documentNumber || !documentNumber.trim()) {
+      res.status(400).json({ success: false, error: 'Certificate or policy number is required.' });
+      return;
+    }
+
+    if (!expiryDate) {
+      res.status(400).json({ success: false, error: 'Document expiry date is required.' });
+      return;
+    }
+
+    const now = Date.now();
+    const daysUntil = Math.ceil((new Date(expiryDate).getTime() - now) / (1000 * 60 * 60 * 24));
+    const status: 'VALID' | 'EXPIRING_SOON' | 'EXPIRED' =
+      daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID';
+
+    const newDocId = `doc_${companyId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newDoc: VehicleDocument = {
+      id: newDocId,
+      companyId,
+      vehicleId: vehicle.id,
+      vehicleReg: vehicle.registrationNumber,
+      docType,
+      documentNumber: documentNumber.trim().toUpperCase(),
+      issuingAuthority: issuingAuthority?.trim() || 'Transport Authority',
+      issueDate: issueDate || new Date().toISOString().split('T')[0],
+      expiryDate,
+      documentUrl: documentUrl?.trim() || undefined,
+      daysUntilExpiry: daysUntil,
+      status,
+    };
+
+    serverFleetStore.documents.unshift(newDoc);
+
+    // Sync back to vehicle fields
+    if (docType === 'FITNESS') {
+      vehicle.fitnessExpiry = expiryDate;
+      vehicle.fitnessCertificateNumber = documentNumber.trim().toUpperCase();
+    } else if (docType === 'INSURANCE') {
+      vehicle.insuranceExpiry = expiryDate;
+      vehicle.insurancePolicyNumber = documentNumber.trim().toUpperCase();
+    } else if (docType === 'NATIONAL_PERMIT' || docType === 'STATE_PERMIT') {
+      vehicle.permitExpiry = expiryDate;
+      vehicle.permitNumber = documentNumber.trim().toUpperCase();
+      vehicle.permitType = docType === 'STATE_PERMIT' ? 'STATE' : 'NATIONAL';
+    } else if (docType === 'PUC') {
+      vehicle.pucExpiry = expiryDate;
+      vehicle.pucNumber = documentNumber.trim().toUpperCase();
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `${docType.replace('_', ' ')} recorded successfully for ${vehicle.registrationNumber}.`,
+      document: newDoc,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to record document' });
+  }
+}
+
+// PUT /api/fleet/documents/:id
+fleetRouter.put('/documents/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleUpdateDocument(req, res);
+});
+fleetRouter.put('/api/fleet/documents/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleUpdateDocument(req, res);
+});
+
+async function handleUpdateDocument(req: AuthenticatedRequest, res: Response) {
+  try {
+    const companyId = req.companyId!;
+    const docId = req.params.id;
+    const doc = serverFleetStore.documents.find((d) => d.id === docId && d.companyId === companyId);
+
+    if (!doc) {
+      res.status(404).json({ success: false, error: 'Document certificate not found in your vault.' });
+      return;
+    }
+
+    const { documentNumber, issuingAuthority, issueDate, expiryDate, documentUrl } = req.body;
+
+    if (documentNumber) doc.documentNumber = documentNumber.trim().toUpperCase();
+    if (issuingAuthority) doc.issuingAuthority = issuingAuthority.trim();
+    if (issueDate) doc.issueDate = issueDate;
+    if (expiryDate) {
+      doc.expiryDate = expiryDate;
+      const daysUntil = Math.ceil((new Date(expiryDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+      doc.daysUntilExpiry = daysUntil;
+      doc.status = daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID';
+
+      // Sync parent vehicle
+      const vehicle = serverFleetStore.vehicles.find((v) => v.id === doc.vehicleId && v.companyId === companyId);
+      if (vehicle) {
+        if (doc.docType === 'FITNESS') {
+          vehicle.fitnessExpiry = expiryDate;
+          if (documentNumber) vehicle.fitnessCertificateNumber = doc.documentNumber;
+        } else if (doc.docType === 'INSURANCE') {
+          vehicle.insuranceExpiry = expiryDate;
+          if (documentNumber) vehicle.insurancePolicyNumber = doc.documentNumber;
+        } else if (doc.docType === 'NATIONAL_PERMIT' || doc.docType === 'STATE_PERMIT') {
+          vehicle.permitExpiry = expiryDate;
+          if (documentNumber) vehicle.permitNumber = doc.documentNumber;
+        } else if (doc.docType === 'PUC') {
+          vehicle.pucExpiry = expiryDate;
+          if (documentNumber) vehicle.pucNumber = doc.documentNumber;
+        }
+      }
+    }
+    if (documentUrl !== undefined) doc.documentUrl = documentUrl ? documentUrl.trim() : undefined;
+
+    res.json({
+      success: true,
+      message: `Document ${doc.docType} renewed/updated successfully.`,
+      document: doc,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to update document' });
+  }
+}
+
+// DELETE /api/fleet/documents/:id
+fleetRouter.delete('/documents/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleDeleteDocument(req, res);
+});
+fleetRouter.delete('/api/fleet/documents/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handleDeleteDocument(req, res);
+});
+
+async function handleDeleteDocument(req: AuthenticatedRequest, res: Response) {
+  try {
+    const companyId = req.companyId!;
+    const docId = req.params.id;
+    const doc = serverFleetStore.documents.find((d) => d.id === docId && d.companyId === companyId);
+
+    if (!doc) {
+      res.status(404).json({ success: false, error: 'Document not found.' });
+      return;
+    }
+
+    serverFleetStore.documents = serverFleetStore.documents.filter((d) => d.id !== docId);
+
+    res.json({
+      success: true,
+      message: `Document ${doc.documentNumber} (${doc.docType}) deleted from vault.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Failed to delete document' });
+  }
+}
+
+

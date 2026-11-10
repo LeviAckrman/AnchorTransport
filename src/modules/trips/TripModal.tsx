@@ -45,17 +45,17 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [customerId, setCustomerId] = useState('');
   const [vehicleId, setVehicleId] = useState('');
   const [driverId, setDriverId] = useState('');
-  const [originCity, setOriginCity] = useState('Kolkata, WB');
-  const [destinationCity, setDestinationCity] = useState('Siliguri, WB');
-  const [dispatchDate, setDispatchDate] = useState(new Date().toISOString().split('T')[0]);
-  const [expectedDeliveryDate, setExpectedDeliveryDate] = useState(
-    new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0]
-  );
-  const [goodsType, setGoodsType] = useState('TMT Steel Rods');
-  const [weightTonnes, setWeightTonnes] = useState('24.5');
-  const [ratePerTonneRupees, setRatePerTonneRupees] = useState('2400');
+  const [availableCustomers, setAvailableCustomers] = useState<Customer[]>(localCustomers);
+  const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>(localVehicles);
+  const [originCity, setOriginCity] = useState('');
+  const [destinationCity, setDestinationCity] = useState('');
+  const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
+  const [goodsType, setGoodsType] = useState('');
+  const [weightTonnes, setWeightTonnes] = useState('');
+  const [ratePerTonneRupees, setRatePerTonneRupees] = useState('');
   const [otherChargesRupees, setOtherChargesRupees] = useState('0');
-  const [initialAdvanceRupees, setInitialAdvanceRupees] = useState('15000');
+  const [initialAdvanceRupees, setInitialAdvanceRupees] = useState('0');
   const [status, setStatus] = useState<TripStatus>('DISPATCHED');
   const [notes, setNotes] = useState('');
 
@@ -63,6 +63,62 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [autoTripNumber, setAutoTripNumber] = useState('');
   const [autoLrNumber, setAutoLrNumber] = useState('');
+
+  // Live fetch / sync customers when modal opens so only added parties appear
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/customers?limit=100', {
+        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+      })
+        .then((res) => parseResponseJson<any>(res))
+        .then((data) => {
+          if (data && data.success && Array.isArray(data.data)) {
+            setAvailableCustomers(data.data);
+          }
+        })
+        .catch(() => {
+          setAvailableCustomers(localCustomers);
+        });
+    }
+  }, [isOpen, localCustomers, activeToken]);
+
+  // Live fetch / sync vehicles when modal opens so only added trucks appear
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/vehicles?limit=100', {
+        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+      })
+        .then((res) => parseResponseJson<any>(res))
+        .then((data) => {
+          if (data && data.success && Array.isArray(data.data)) {
+            setAvailableVehicles(data.data);
+          }
+        })
+        .catch(() => {
+          setAvailableVehicles(localVehicles);
+        });
+    }
+  }, [isOpen, localVehicles, activeToken]);
+
+  const resetForm = () => {
+    setCustomerId('');
+    setVehicleId('');
+    setDriverId('');
+    setOriginCity('');
+    setDestinationCity('');
+    const todayStr = new Date().toISOString().split('T')[0];
+    setDispatchDate(todayStr);
+    const expDate = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
+    setExpectedDeliveryDate(expDate);
+    setGoodsType('');
+    setWeightTonnes('');
+    setRatePerTonneRupees('');
+    setOtherChargesRupees('0');
+    setInitialAdvanceRupees('0');
+    setStatus('DISPATCHED');
+    setNotes('');
+    setError(null);
+  };
 
   // Fetch unique next numbers when creating a new trip
   useEffect(() => {
@@ -87,36 +143,40 @@ export const TripModal: React.FC<TripModalProps> = ({
 
   // Initialize or populate form
   useEffect(() => {
-    if (tripToEdit) {
-      setCustomerId(tripToEdit.customerId);
-      setVehicleId(tripToEdit.vehicleId);
-      setDriverId(tripToEdit.driverId);
-      setOriginCity(tripToEdit.originCity);
-      setDestinationCity(tripToEdit.destinationCity);
-      setDispatchDate(tripToEdit.dispatchDate.split('T')[0]);
-      setExpectedDeliveryDate(tripToEdit.expectedDeliveryDate.split('T')[0]);
-      setGoodsType(tripToEdit.goodsType);
-      setWeightTonnes(tripToEdit.weightTonnes.toString());
-      setRatePerTonneRupees((tripToEdit.ratePerTonnePaise / 100).toString());
-      setOtherChargesRupees(((tripToEdit.otherChargesPaise || 0) / 100).toString());
-      setInitialAdvanceRupees('0');
-      setStatus(tripToEdit.status);
-      setNotes(tripToEdit.notes || '');
-      setAutoTripNumber(tripToEdit.tripNumber);
-      setAutoLrNumber(tripToEdit.lrNumber);
-    } else {
-      if (localCustomers[0]) setCustomerId(localCustomers[0].id);
-      if (localVehicles[0]) setVehicleId(localVehicles[0].id);
-      if (localDrivers[0]) setDriverId(localDrivers[0].id);
+    if (isOpen) {
+      if (tripToEdit) {
+        setCustomerId(tripToEdit.customerId);
+        setVehicleId(tripToEdit.vehicleId);
+        setDriverId(tripToEdit.driverId);
+        setOriginCity(tripToEdit.originCity);
+        setDestinationCity(tripToEdit.destinationCity);
+        setDispatchDate(tripToEdit.dispatchDate.split('T')[0]);
+        setExpectedDeliveryDate(tripToEdit.expectedDeliveryDate ? tripToEdit.expectedDeliveryDate.split('T')[0] : '');
+        setGoodsType(tripToEdit.goodsType);
+        setWeightTonnes(tripToEdit.weightTonnes.toString());
+        setRatePerTonneRupees((tripToEdit.ratePerTonnePaise / 100).toString());
+        setOtherChargesRupees(((tripToEdit.otherChargesPaise || 0) / 100).toString());
+        setInitialAdvanceRupees('0');
+        setStatus(tripToEdit.status);
+        setNotes(tripToEdit.notes || '');
+        setAutoTripNumber(tripToEdit.tripNumber);
+        setAutoLrNumber(tripToEdit.lrNumber);
+        setError(null);
+      } else {
+        // Guaranteed clean reset: never prefill mock data for new commercial dispatches
+        resetForm();
+      }
     }
-  }, [tripToEdit, localCustomers, localVehicles, localDrivers]);
+  }, [isOpen, tripToEdit]);
 
   if (!isOpen) return null;
 
   // Selected entities for conflict warnings & validation
-  const selectedVehicle = localVehicles.find((v) => v.id === vehicleId);
+  const effectiveCustomers = availableCustomers.length > 0 ? availableCustomers : localCustomers;
+  const effectiveVehicles = availableVehicles.length > 0 ? availableVehicles : localVehicles;
+  const selectedVehicle = effectiveVehicles.find((v) => v.id === vehicleId);
   const selectedDriver = localDrivers.find((d) => d.id === driverId);
-  const selectedCustomer = localCustomers.find((c) => c.id === customerId);
+  const selectedCustomer = effectiveCustomers.find((c) => c.id === customerId);
 
   // Computed financial figures
   const weight = parseFloat(weightTonnes) || 0;
@@ -138,11 +198,20 @@ export const TripModal: React.FC<TripModalProps> = ({
     setLoading(true);
 
     try {
-      if (!customerId || !vehicleId || !driverId) {
-        throw new Error('Please select a Customer, Vehicle, and Driver for this dispatch.');
+      if (!customerId) {
+        throw new Error('Please select a Customer / Consignor for this dispatch.');
+      }
+      if (!vehicleId) {
+        throw new Error('Please select an assigned Vehicle / Commercial Truck.');
+      }
+      if (!driverId) {
+        throw new Error('Please select an assigned Commercial Driver.');
       }
       if (!originCity.trim() || !destinationCity.trim()) {
-        throw new Error('Origin and destination cities are required.');
+        throw new Error('Both loading origin and delivery destination cities are required.');
+      }
+      if (!goodsType.trim()) {
+        throw new Error('Commodity / goods description is required.');
       }
       if (weight <= 0) {
         throw new Error('Cargo weight must be a positive number in tonnes.');
@@ -150,6 +219,8 @@ export const TripModal: React.FC<TripModalProps> = ({
       if (rateRupees <= 0) {
         throw new Error('Freight rate per tonne must be greater than zero.');
       }
+
+      const finalExpectedDelivery = expectedDeliveryDate || new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
 
       const payload = {
         tripNumber: autoTripNumber,
@@ -160,7 +231,7 @@ export const TripModal: React.FC<TripModalProps> = ({
         originCity: originCity.trim(),
         destinationCity: destinationCity.trim(),
         dispatchDate,
-        expectedDeliveryDate,
+        expectedDeliveryDate: finalExpectedDelivery,
         goodsType: goodsType.trim(),
         weightTonnes: weight,
         ratePerTonnePaise: rupeesToPaise(rateRupees),
@@ -189,6 +260,7 @@ export const TripModal: React.FC<TripModalProps> = ({
       }
 
       onSuccess(data.trip, Boolean(tripToEdit));
+      resetForm();
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error occurred while saving trip.');
@@ -272,13 +344,28 @@ export const TripModal: React.FC<TripModalProps> = ({
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 bg-white"
               required
             >
-              <option value="">-- Choose Consignor / Client --</option>
-              {localCustomers.map((c) => (
+              <option value="">
+                {effectiveCustomers.length === 0
+                  ? '-- No Customer Parties Registered --'
+                  : '-- Choose Consignor / Client --'}
+              </option>
+              {effectiveCustomers.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name} (GSTIN: {c.gstin} - {c.city}, {c.state})
                 </option>
               ))}
             </select>
+            {effectiveCustomers.length === 0 && (
+              <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-semibold block">No customer parties registered yet.</span>
+                  <span className="text-[11px] text-amber-700">
+                    Customers will only appear here after you register them in the Customers (Parties) module.
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -334,13 +421,29 @@ export const TripModal: React.FC<TripModalProps> = ({
                 }`}
                 required
               >
-                <option value="">-- Choose Commercial Truck --</option>
-                {localVehicles.map((v) => (
+                <option value="">
+                  {effectiveVehicles.length === 0
+                    ? '-- No Commercial Trucks Registered --'
+                    : '-- Choose Commercial Truck --'}
+                </option>
+                {effectiveVehicles.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.registrationNumber} — {v.makeModel} ({v.capacityTonnes}T | {v.status.replace('_', ' ')})
                   </option>
                 ))}
               </select>
+
+              {effectiveVehicles.length === 0 && (
+                <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold block">No commercial trucks registered yet.</span>
+                    <span className="text-[11px] text-amber-700">
+                      Trucks will only appear here after you register them in the Vehicles / Trucks module.
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Vehicle Warnings */}
               {isVehicleBusy && (
@@ -477,12 +580,18 @@ export const TripModal: React.FC<TripModalProps> = ({
                 Total Freight Revenue
               </span>
               <span className="text-xs text-emerald-700">
-                {weight} Tonnes @ ₹{rateRupees}/Tonne {otherRupees > 0 ? `+ ₹${otherRupees} extra charges` : ''}
+                {weight > 0 && rateRupees > 0 ? (
+                  `${weight} Tonnes @ ₹${rateRupees}/Tonne ${otherRupees > 0 ? `+ ₹${otherRupees} extra charges` : ''}`
+                ) : (
+                  'Enter cargo weight and freight rate above to calculate agreed freight revenue'
+                )}
               </span>
             </div>
             <div className="text-right">
               <span className="font-bold text-emerald-900 text-lg">
-                {formatINR(rupeesToPaise(totalRevenueRupees))}
+                {weight > 0 && rateRupees > 0
+                  ? formatINR(rupeesToPaise(totalRevenueRupees))
+                  : '₹0'}
               </span>
             </div>
           </div>
@@ -526,27 +635,42 @@ export const TripModal: React.FC<TripModalProps> = ({
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-200">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={loading}
-            className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={loading}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5"
-          >
-            {loading ? (
-              <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <Navigation className="w-4 h-4" />
+        <div className="flex items-center justify-between pt-3 border-t border-slate-200">
+          <div>
+            {!tripToEdit && (
+              <button
+                type="button"
+                onClick={resetForm}
+                disabled={loading}
+                className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer"
+                title="Clear all fields"
+              >
+                Reset Form
+              </button>
             )}
-            <span>{tripToEdit ? 'Save Changes' : status === 'DISPATCHED' ? 'Book & Dispatch Trip' : 'Book Planned Trip'}</span>
-          </button>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={loading}
+              className="px-4 py-2 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5"
+            >
+              {loading ? (
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Navigation className="w-4 h-4" />
+              )}
+              <span>{tripToEdit ? 'Save Changes' : status === 'DISPATCHED' ? 'Book & Dispatch Trip' : 'Book Planned Trip'}</span>
+            </button>
+          </div>
         </div>
       </form>
     </Modal>

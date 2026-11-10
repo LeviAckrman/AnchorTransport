@@ -37,6 +37,7 @@ import {
   saveStore,
   resetStore,
 } from './lib/storage';
+import { parseResponseJson } from './lib/safeFetch';
 import {
   UserRole,
   Trip,
@@ -72,6 +73,7 @@ import { DriverAdvancesView } from './modules/financials/DriverAdvancesView';
 import { SettlementsView } from './modules/financials/SettlementsView';
 import { InvoicesView } from './modules/invoices/InvoicesView';
 import { ReportsView } from './modules/reports/ReportsView';
+import { VehicleDocumentsView } from './modules/vehicles/VehicleDocumentsView';
 
 // Auth & Security Components
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -96,12 +98,24 @@ function AppContent() {
   const [newTripCustomer, setNewTripCustomer] = useState('');
   const [newTripVehicle, setNewTripVehicle] = useState('');
   const [newTripDriver, setNewTripDriver] = useState('');
-  const [newTripOrigin, setNewTripOrigin] = useState('Kolkata, WB');
-  const [newTripDestination, setNewTripDestination] = useState('Siliguri, WB');
-  const [newTripWeight, setNewTripWeight] = useState('22.5');
-  const [newTripRate, setNewTripRate] = useState('2600'); // ₹2,600/tonne
-  const [newTripAdvance, setNewTripAdvance] = useState('15000'); // ₹15,000 cash advance
-  const [newTripGoods, setNewTripGoods] = useState('TMT Steel Rods');
+  const [newTripOrigin, setNewTripOrigin] = useState('');
+  const [newTripDestination, setNewTripDestination] = useState('');
+  const [newTripWeight, setNewTripWeight] = useState('');
+  const [newTripRate, setNewTripRate] = useState('');
+  const [newTripAdvance, setNewTripAdvance] = useState('');
+  const [newTripGoods, setNewTripGoods] = useState('');
+
+  const resetQuickTripForm = () => {
+    setNewTripCustomer('');
+    setNewTripVehicle('');
+    setNewTripDriver('');
+    setNewTripOrigin('');
+    setNewTripDestination('');
+    setNewTripWeight('');
+    setNewTripRate('');
+    setNewTripAdvance('');
+    setNewTripGoods('');
+  };
 
   // Synchronize company context when changed via AuthContext (multi-tenant switching)
   useEffect(() => {
@@ -113,6 +127,60 @@ function AppContent() {
       }));
     }
   }, [authCompany, authRole]);
+
+  // Dynamically synchronize customers from API so customers only show after user adds them
+  useEffect(() => {
+    const fetchLiveCustomers = async () => {
+      try {
+        const activeToken = localStorage.getItem('token') || '';
+        const res = await fetch('/api/customers?limit=100', {
+          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+        });
+        const data = await parseResponseJson<any>(res);
+        if (res.ok && data?.success && Array.isArray(data.data)) {
+          setStore((prev) => ({
+            ...prev,
+            customers: data.data,
+          }));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    fetchLiveCustomers();
+
+    const onCustomerUpdated = () => fetchLiveCustomers();
+    window.addEventListener('tms:customer-updated', onCustomerUpdated);
+    return () => window.removeEventListener('tms:customer-updated', onCustomerUpdated);
+  }, [authCompany?.id]);
+
+  // Dynamically synchronize vehicles from API so trucks only show after user adds them
+  useEffect(() => {
+    const fetchLiveVehicles = async () => {
+      try {
+        const activeToken = localStorage.getItem('token') || '';
+        const res = await fetch('/api/vehicles?limit=100', {
+          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+        });
+        const data = await parseResponseJson<any>(res);
+        if (res.ok && data?.success && Array.isArray(data.data)) {
+          setStore((prev) => ({
+            ...prev,
+            vehicles: data.data,
+          }));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    fetchLiveVehicles();
+
+    const onVehicleUpdated = () => fetchLiveVehicles();
+    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
+    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+  }, [authCompany?.id]);
 
   // Sync state to localStorage whenever store changes
   useEffect(() => {
@@ -169,7 +237,26 @@ function AppContent() {
   const handleCreateTrip = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTripCustomer || !newTripVehicle || !newTripDriver) {
-      alert('Please select customer, vehicle, and driver');
+      showToast('Please select customer, vehicle, and driver.');
+      return;
+    }
+    if (!newTripOrigin.trim() || !newTripDestination.trim()) {
+      showToast('Please provide both loading origin and unloading destination cities.');
+      return;
+    }
+    if (!newTripGoods.trim()) {
+      showToast('Please enter commodity / goods description.');
+      return;
+    }
+
+    const weight = parseFloat(newTripWeight);
+    const rateRupees = parseFloat(newTripRate);
+    if (isNaN(weight) || weight <= 0) {
+      showToast('Cargo weight must be a positive number in tonnes.');
+      return;
+    }
+    if (isNaN(rateRupees) || rateRupees <= 0) {
+      showToast('Freight rate per tonne must be greater than zero.');
       return;
     }
 
@@ -177,10 +264,11 @@ function AppContent() {
     const vehicleObj = store.vehicles.find((v) => v.id === newTripVehicle);
     const driverObj = store.drivers.find((d) => d.id === newTripDriver);
 
-    if (!customerObj || !vehicleObj || !driverObj) return;
+    if (!customerObj || !vehicleObj || !driverObj) {
+      showToast('Selected customer, vehicle, or driver could not be found.');
+      return;
+    }
 
-    const weight = parseFloat(newTripWeight) || 20;
-    const rateRupees = parseFloat(newTripRate) || 2500;
     const freightAmountPaise = Math.round(weight * rateRupees * 100);
     const advancePaise = Math.round((parseFloat(newTripAdvance) || 0) * 100);
 
@@ -202,9 +290,9 @@ function AppContent() {
       driverId: driverObj.id,
       driverName: driverObj.fullName,
       driverPhone: driverObj.phone,
-      originCity: newTripOrigin,
-      destinationCity: newTripDestination,
-      goodsType: newTripGoods,
+      originCity: newTripOrigin.trim(),
+      destinationCity: newTripDestination.trim(),
+      goodsType: newTripGoods.trim(),
       weightTonnes: weight,
       ratePerTonnePaise: rateRupees * 100,
       freightAmountPaise,
@@ -250,7 +338,7 @@ function AppContent() {
         amountPaise: advancePaise,
         advanceType: 'CASH_DISPATCH',
         date: new Date().toISOString().split('T')[0],
-        referenceNotes: `Dispatched on trip ${tripNum} (${newTripOrigin} -> ${newTripDestination})`,
+        referenceNotes: `Dispatched on trip ${tripNum} (${newTripOrigin.trim()} -> ${newTripDestination.trim()})`,
         disbursedBy: user?.name || 'Owner',
         isSettled: false,
       });
@@ -264,6 +352,7 @@ function AppContent() {
       advances: newAdvances,
     }));
 
+    resetQuickTripForm();
     setIsQuickTripOpen(false);
     showToast(`Trip ${tripNum} (${vehicleObj.registrationNumber}) dispatched successfully!`);
   };
@@ -559,69 +648,7 @@ function AppContent() {
 
           {/* DOCUMENTS COMPLIANCE VIEW */}
           {activeTab === 'documents' && (
-            <div className="space-y-6 max-w-7xl mx-auto">
-              <PageHeader
-                title="Vehicle Document Compliance Vault"
-                subtitle="Fitness certificates, National Permits, Road Tax, Insurance, and PUC expiry monitor"
-              />
-
-              <DataTable
-                data={store.documents}
-                keyExtractor={(d) => d.id}
-                columns={[
-                  {
-                    header: 'Truck Registration',
-                    accessor: (d) => <span className="font-bold font-mono text-slate-900">{d.vehicleReg}</span>,
-                    sortable: true,
-                  },
-                  {
-                    header: 'Document Type',
-                    accessor: (d) => <span className="font-semibold text-slate-800">{d.docType.replace('_', ' ')}</span>,
-                  },
-                  {
-                    header: 'Certificate No.',
-                    accessor: (d) => <span className="font-mono text-xs text-slate-600">{d.documentNumber}</span>,
-                  },
-                  {
-                    header: 'Authority',
-                    accessor: 'issuingAuthority',
-                  },
-                  {
-                    header: 'Expiry Date',
-                    accessor: (d) => (
-                      <div>
-                        <span className="font-medium text-slate-900 block">{d.expiryDate}</span>
-                        <span
-                          className={`text-xs font-semibold ${
-                            d.daysUntilExpiry < 0
-                              ? 'text-rose-700'
-                              : d.daysUntilExpiry <= 30
-                              ? 'text-amber-700'
-                              : 'text-slate-500'
-                          }`}
-                        >
-                          {d.daysUntilExpiry < 0
-                            ? `Expired ${Math.abs(d.daysUntilExpiry)} days ago`
-                            : `Expires in ${d.daysUntilExpiry} days`}
-                        </span>
-                      </div>
-                    ),
-                    sortable: true,
-                  },
-                  {
-                    header: 'Status',
-                    accessor: (d) => (
-                      <Badge
-                        variant={d.status === 'VALID' ? 'success' : d.status === 'EXPIRING_SOON' ? 'warning' : 'danger'}
-                        dot
-                      >
-                        {d.status === 'VALID' ? 'Valid' : d.status === 'EXPIRING_SOON' ? 'Expiring Soon' : 'EXPIRED'}
-                      </Badge>
-                    ),
-                  },
-                ]}
-              />
-            </div>
+            <VehicleDocumentsView userRole={authRole || 'OPERATIONS'} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
           )}
 
           {/* SETTINGS VIEW (COMPANY PROFILE) */}
@@ -677,7 +704,10 @@ function AppContent() {
       {/* Quick Dispatch Modal */}
       <Modal
         isOpen={isQuickTripOpen}
-        onClose={() => setIsQuickTripOpen(false)}
+        onClose={() => {
+          resetQuickTripForm();
+          setIsQuickTripOpen(false);
+        }}
         title="Dispatch New Fleet Trip"
         subtitle="Assign vehicle, driver, load weight, and record initial cash advance"
         maxWidth="lg"
@@ -686,7 +716,7 @@ function AppContent() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Select Customer / Consignor
+                Select Customer / Consignor <span className="text-rose-500">*</span>
               </label>
               <select
                 value={newTripCustomer}
@@ -694,17 +724,38 @@ function AppContent() {
                 className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500"
                 required
               >
+                <option value="">
+                  {store.customers.length === 0
+                    ? '-- No Customer Parties Registered --'
+                    : '-- Choose Consignor / Client --'}
+                </option>
                 {store.customers.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} ({c.city})
                   </option>
                 ))}
               </select>
+              {store.customers.length === 0 && (
+                <div className="mt-1.5 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-[11px] text-amber-800">
+                  <span>No parties found. Add in Customer (Parties) first.</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetQuickTripForm();
+                      setIsQuickTripOpen(false);
+                      setActiveTab('customers');
+                    }}
+                    className="text-indigo-700 font-bold underline hover:text-indigo-900 cursor-pointer ml-2"
+                  >
+                    Add Customer
+                  </button>
+                </div>
+              )}
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Select Vehicle / Truck
+                Select Vehicle / Truck <span className="text-rose-500">*</span>
               </label>
               <select
                 value={newTripVehicle}
@@ -712,17 +763,45 @@ function AppContent() {
                 className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500"
                 required
               >
+                <option value="">
+                  {store.vehicles.length === 0
+                    ? '-- No Commercial Trucks Registered --'
+                    : '-- Choose Commercial Truck --'}
+                </option>
                 {store.vehicles.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.registrationNumber} - {v.vehicleType} ({v.status})
                   </option>
                 ))}
               </select>
+              {store.vehicles.length === 0 && (
+                <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold block">No commercial trucks registered yet.</span>
+                      <span className="text-[11px] text-amber-700">
+                        Trucks will only appear after you register them in Vehicles / Trucks.
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsQuickTripOpen(false);
+                      setActiveTab('vehicles');
+                    }}
+                    className="px-2 py-1 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded shrink-0 cursor-pointer"
+                  >
+                    Go to Trucks
+                  </button>
+                </div>
+              )}
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Select Driver
+                Select Driver <span className="text-rose-500">*</span>
               </label>
               <select
                 value={newTripDriver}
@@ -730,6 +809,7 @@ function AppContent() {
                 className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500"
                 required
               >
+                <option value="">-- Choose Commercial Driver --</option>
                 {store.drivers.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.fullName} (DL: {d.licenseNumber})
@@ -740,7 +820,7 @@ function AppContent() {
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Goods Description
+                Goods Description <span className="text-rose-500">*</span>
               </label>
               <input
                 type="text"
@@ -754,12 +834,13 @@ function AppContent() {
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Origin City
+                Origin City <span className="text-rose-500">*</span>
               </label>
               <input
                 type="text"
                 value={newTripOrigin}
                 onChange={(e) => setNewTripOrigin(e.target.value)}
+                placeholder="e.g. Kolkata, WB (Dankuni Hub)"
                 className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800"
                 required
               />
@@ -767,12 +848,13 @@ function AppContent() {
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Destination City
+                Destination City <span className="text-rose-500">*</span>
               </label>
               <input
                 type="text"
                 value={newTripDestination}
                 onChange={(e) => setNewTripDestination(e.target.value)}
+                placeholder="e.g. Siliguri, WB / Jamshedpur, JH"
                 className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800"
                 required
               />
@@ -780,27 +862,30 @@ function AppContent() {
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Weight (Metric Tonnes)
+                Weight (Metric Tonnes) <span className="text-rose-500">*</span>
               </label>
               <input
                 type="number"
-                step="0.1"
+                step="0.05"
                 value={newTripWeight}
                 onChange={(e) => setNewTripWeight(e.target.value)}
-                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800"
+                placeholder="e.g. 24.5"
+                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 font-mono"
                 required
               />
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">
-                Agreed Freight Rate (₹ / Tonne)
+                Agreed Freight Rate (₹ / Tonne) <span className="text-rose-500">*</span>
               </label>
               <input
                 type="number"
+                step="10"
                 value={newTripRate}
                 onChange={(e) => setNewTripRate(e.target.value)}
-                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800"
+                placeholder="e.g. 2600"
+                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 font-mono"
                 required
               />
             </div>
@@ -813,8 +898,8 @@ function AppContent() {
                 type="number"
                 value={newTripAdvance}
                 onChange={(e) => setNewTripAdvance(e.target.value)}
-                placeholder="15000"
-                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800"
+                placeholder="0"
+                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 font-mono"
               />
               <span className="text-[11px] text-slate-500 mt-1 block">
                 Cash given at dispatch for en-route diesel, toll, and food. Does NOT count as an expense until settled.
@@ -824,15 +909,32 @@ function AppContent() {
 
           <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
             <div className="text-xs text-slate-600">
-              Est. Total Freight:{' '}
-              <span className="font-bold text-indigo-700 text-sm">
-                ₹{((parseFloat(newTripWeight) || 0) * (parseFloat(newTripRate) || 0)).toLocaleString()}
-              </span>
+              {newTripWeight && newTripRate ? (
+                <>
+                  Est. Total Freight:{' '}
+                  <span className="font-bold text-indigo-700 text-sm">
+                    ₹{((parseFloat(newTripWeight) || 0) * (parseFloat(newTripRate) || 0)).toLocaleString()}
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-400 italic">Enter weight and rate to view freight estimate</span>
+              )}
             </div>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setIsQuickTripOpen(false)}
+                onClick={resetQuickTripForm}
+                className="px-3 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                title="Clear all fields"
+              >
+                Reset Form
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  resetQuickTripForm();
+                  setIsQuickTripOpen(false);
+                }}
                 className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Cancel

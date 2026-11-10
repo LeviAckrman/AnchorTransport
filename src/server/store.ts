@@ -70,15 +70,15 @@ export interface VehicleAttentionItem {
 
 class ServerFleetStore {
   public trips: Trip[] = [...INITIAL_TRIPS];
-  public vehicles: Vehicle[] = [...INITIAL_VEHICLES];
+  public vehicles: Vehicle[] = [];
   public drivers: Driver[] = [...INITIAL_DRIVERS];
-  public customers: Customer[] = [...INITIAL_CUSTOMERS];
+  public customers: Customer[] = [];
   public expenses: TripExpense[] = [...INITIAL_EXPENSES];
   public advances: DriverAdvance[] = [...INITIAL_ADVANCES];
   public settlements: TripSettlement[] = [...INITIAL_SETTLEMENTS];
   public invoices: Invoice[] = [...INITIAL_INVOICES];
   public payments: Payment[] = [...INITIAL_PAYMENTS];
-  public documents: VehicleDocument[] = [...INITIAL_DOCUMENTS];
+  public documents: VehicleDocument[] = [];
 
   /**
    * Calculate company-scoped metrics with optional date range filter

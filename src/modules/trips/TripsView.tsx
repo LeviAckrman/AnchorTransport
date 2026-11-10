@@ -22,6 +22,7 @@ import {
   Calendar,
   XCircle,
   Scale,
+  RotateCcw,
 } from 'lucide-react';
 import { Trip, Vehicle, Driver, Customer, UserRole, TripStatus } from '../../types/tms';
 import { formatINR, paiseToRupees } from '../../lib/currency';
@@ -51,8 +52,54 @@ export const TripsView: React.FC<TripsViewProps> = ({
   const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
 
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [liveCustomers, setLiveCustomers] = useState<Customer[]>(localCustomers);
+  const [liveVehicles, setLiveVehicles] = useState<Vehicle[]>(localVehicles);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Sync customers live from API whenever customer is added/updated in Customers tab
+  useEffect(() => {
+    const fetchCustomersList = async () => {
+      try {
+        const res = await fetch('/api/customers?limit=100', {
+          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+        });
+        const data = await parseResponseJson<any>(res);
+        if (res.ok && data?.success && Array.isArray(data.data)) {
+          setLiveCustomers(data.data);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchCustomersList();
+
+    const onCustomerUpdated = () => fetchCustomersList();
+    window.addEventListener('tms:customer-updated', onCustomerUpdated);
+    return () => window.removeEventListener('tms:customer-updated', onCustomerUpdated);
+  }, [activeToken]);
+
+  // Sync vehicles live from API whenever truck is added/updated in Vehicles tab
+  useEffect(() => {
+    const fetchVehiclesList = async () => {
+      try {
+        const res = await fetch('/api/vehicles?limit=100', {
+          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+        });
+        const data = await parseResponseJson<any>(res);
+        if (res.ok && data?.success && Array.isArray(data.data)) {
+          setLiveVehicles(data.data);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchVehiclesList();
+
+    const onVehicleUpdated = () => fetchVehiclesList();
+    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
+    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+  }, [activeToken]);
 
   // Filters and Pagination
   const [searchQuery, setSearchQuery] = useState('');
@@ -84,6 +131,29 @@ export const TripsView: React.FC<TripsViewProps> = ({
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [tripForStatusChange, setTripForStatusChange] = useState<{ trip: Trip; targetStatus: TripStatus } | null>(null);
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isResetTripsDialogOpen, setIsResetTripsDialogOpen] = useState(false);
+  const [resettingTrips, setResettingTrips] = useState(false);
+
+  const handleResetTrips = async () => {
+    setResettingTrips(true);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
+
+      const res = await fetch('/api/trips/reset', { method: 'POST', headers });
+      const data = await parseResponseJson<any>(res);
+      if (!res.ok || !data || !data.success) {
+        throw new Error(data?.error || 'Failed to reset trips.');
+      }
+      showNotification('All trips have been reset. Fleet is clean and ready for user dispatches.');
+      setIsResetTripsDialogOpen(false);
+      fetchTrips(1);
+    } catch (err: any) {
+      showNotification(err.message || 'Error resetting trips', 'error');
+    } finally {
+      setResettingTrips(false);
+    }
+  };
 
   const fetchTrips = async (targetPage = 1) => {
     setLoading(true);
@@ -237,13 +307,25 @@ export const TripsView: React.FC<TripsViewProps> = ({
         title="Commercial Trips & Dispatch Console"
         subtitle="Manage company-owned truck dispatches, route execution, cargo bills, live contribution, and POD delivery receipts"
         actions={
-          <button
-            onClick={() => setIsCreateOpen(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Dispatch New Trip</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {(userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'MANAGER') && (
+              <button
+                onClick={() => setIsResetTripsDialogOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                title="Reset all trips and clear data until new dispatches are created"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                <span>Reset Trips</span>
+              </button>
+            )}
+            <button
+              onClick={() => setIsCreateOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Dispatch New Trip</span>
+            </button>
+          </div>
         }
       />
 
@@ -682,9 +764,9 @@ export const TripsView: React.FC<TripsViewProps> = ({
           isOpen={isCreateOpen}
           onClose={() => setIsCreateOpen(false)}
           onSuccess={handleModalSuccess}
-          localVehicles={localVehicles}
+          localVehicles={liveVehicles}
           localDrivers={localDrivers}
-          localCustomers={localCustomers}
+          localCustomers={liveCustomers}
         />
       )}
 
@@ -694,9 +776,9 @@ export const TripsView: React.FC<TripsViewProps> = ({
           onClose={() => setTripToEdit(null)}
           tripToEdit={tripToEdit}
           onSuccess={handleModalSuccess}
-          localVehicles={localVehicles}
+          localVehicles={liveVehicles}
           localDrivers={localDrivers}
-          localCustomers={localCustomers}
+          localCustomers={liveCustomers}
         />
       )}
 
@@ -721,6 +803,18 @@ export const TripsView: React.FC<TripsViewProps> = ({
           onConfirm={handleStatusTransitionConfirm}
         />
       )}
+
+      {/* Reset Trips Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={isResetTripsDialogOpen}
+        onClose={() => setIsResetTripsDialogOpen(false)}
+        onConfirm={handleResetTrips}
+        title="Reset All Commercial Trips"
+        message="Are you sure you want to reset all commercial trips? This will clear all trip dispatches, related trip expenses, and driver advances, and return assigned trucks and drivers back to Available status. New data will only be added after you dispatch new trips."
+        confirmLabel={resettingTrips ? 'Resetting...' : 'Reset All Trips'}
+        cancelLabel="Keep Current Trips"
+        variant="danger"
+      />
     </div>
   );
 };
