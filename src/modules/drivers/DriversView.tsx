@@ -137,6 +137,8 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
       'success'
     );
     fetchDrivers(isEdit ? page : 1);
+    // Broadcast event across modules
+    window.dispatchEvent(new CustomEvent('tms:driver-updated'));
   };
 
   const confirmDeleteDriver = async () => {
@@ -158,6 +160,8 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
       showNotification(`Driver ${driverToDelete.fullName} removed from company directory.`);
       setDriverToDelete(null);
       fetchDrivers(page);
+      // Broadcast event across modules
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
     } catch (err: any) {
       showNotification(err.message || 'Error deleting driver.', 'error');
     }

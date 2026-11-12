@@ -61,14 +61,14 @@ export function getInitialStore(): TmsStore {
     companyUsers: INITIAL_COMPANY_USERS,
     currentRole: 'OWNER',
     vehicles: [],
-    drivers: INITIAL_DRIVERS,
+    drivers: [],
     customers: [],
-    trips: INITIAL_TRIPS,
-    expenses: INITIAL_EXPENSES,
-    advances: INITIAL_ADVANCES,
-    settlements: INITIAL_SETTLEMENTS,
-    invoices: INITIAL_INVOICES,
-    payments: INITIAL_PAYMENTS,
+    trips: [],
+    expenses: [],
+    advances: [],
+    settlements: [],
+    invoices: [],
+    payments: [],
     documents: [],
     auditLogs: [],
   };
@@ -140,6 +140,65 @@ export function loadStore(): TmsStore {
       );
     } else {
       parsed.documents = [];
+    }
+
+    // Purge default mock drivers from storage so drivers only appear after user adds them
+    if (Array.isArray(parsed.drivers)) {
+      parsed.drivers = parsed.drivers.filter(
+        (d) =>
+          d.id !== 'drv_01' &&
+          d.id !== 'drv_02' &&
+          d.id !== 'drv_03' &&
+          d.id !== 'drv_04' &&
+          d.id !== 'drv_05' &&
+          d.fullName !== 'Rajesh Yadav' &&
+          d.fullName !== 'Md. Farooq Alam' &&
+          d.fullName !== 'Somenath Karmakar' &&
+          d.fullName !== 'Gurpreet Singh'
+      );
+    } else {
+      parsed.drivers = [];
+    }
+
+    // Purge default mock trips from storage so trips only appear after user adds them
+    if (Array.isArray(parsed.trips)) {
+      parsed.trips = parsed.trips.filter(
+        (t) => !['trip_01', 'trip_02', 'trip_03', 'trip_04'].includes(t.id) &&
+          !['TR-2026-0001', 'TR-2026-0002', 'TR-2026-0003', 'TR-2026-0004'].includes(t.tripNumber)
+      );
+    } else {
+      parsed.trips = [];
+    }
+
+    // Purge default mock expenses, advances, settlements, invoices, payments
+    if (Array.isArray(parsed.expenses)) {
+      parsed.expenses = parsed.expenses.filter((e) => !['exp_01', 'exp_02', 'exp_03', 'exp_04', 'exp_05'].includes(e.id));
+    } else {
+      parsed.expenses = [];
+    }
+
+    if (Array.isArray(parsed.advances)) {
+      parsed.advances = parsed.advances.filter((a) => !['adv_01', 'adv_02'].includes(a.id));
+    } else {
+      parsed.advances = [];
+    }
+
+    if (Array.isArray(parsed.settlements)) {
+      parsed.settlements = parsed.settlements.filter((s) => !['stl_01'].includes(s.id));
+    } else {
+      parsed.settlements = [];
+    }
+
+    if (Array.isArray(parsed.invoices)) {
+      parsed.invoices = parsed.invoices.filter((i) => !['inv_01', 'inv_02', 'inv_03'].includes(i.id));
+    } else {
+      parsed.invoices = [];
+    }
+
+    if (Array.isArray(parsed.payments)) {
+      parsed.payments = parsed.payments.filter((p) => !['pay_01', 'pay_02'].includes(p.id));
+    } else {
+      parsed.payments = [];
     }
 
     return parsed;

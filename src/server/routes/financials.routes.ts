@@ -73,9 +73,10 @@ function syncTripFinancialTotals(trip: Trip): void {
  * GET /api/expenses
  * Lists recorded expenses for the company with pagination, category filter, date filter, and search.
  */
-financialsRouter.get('/expenses', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.get('/expenses', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const page = parseInt(req.query.page as string, 10) || 1;
     const limit = parseInt(req.query.limit as string, 10) || 15;
     const search = ((req.query.search as string) || '').trim().toLowerCase();
@@ -179,9 +180,10 @@ financialsRouter.get('/expenses', requireAuth, (req: AuthenticatedRequest, res: 
  * GET /api/expenses/:id
  * Retrieves details for a specific expense
  */
-financialsRouter.get('/expenses/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.get('/expenses/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const expense = serverFleetStore.expenses.find((e) => e.id === req.params.id && e.companyId === companyId);
 
     if (!expense) {
@@ -209,7 +211,7 @@ financialsRouter.get('/expenses/:id', requireAuth, (req: AuthenticatedRequest, r
  * POST /api/expenses
  * Records a new trip expense
  */
-financialsRouter.post('/expenses', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.post('/expenses', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const {
@@ -298,6 +300,15 @@ financialsRouter.post('/expenses', requireAuth, (req: AuthenticatedRequest, res:
     // Recalculate trip contribution (Revenue - Expenses)
     syncTripFinancialTotals(trip);
 
+    await serverFleetStore.persistToFirestore(companyId, 'expenses', newExpense.id, newExpense);
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
+    if (newExpense.paymentMode === 'FASTAG') {
+      const veh = serverFleetStore.vehicles.find((v) => v.id === trip.vehicleId && v.companyId === companyId);
+      if (veh) {
+        await serverFleetStore.persistToFirestore(companyId, 'vehicles', veh.id, veh);
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: `Recorded ${newExpense.category} expense of ₹${(amount / 100).toFixed(0)} for trip ${trip.tripNumber}.`,
@@ -313,7 +324,7 @@ financialsRouter.post('/expenses', requireAuth, (req: AuthenticatedRequest, res:
  * PUT /api/expenses/:id
  * Updates an existing trip expense
  */
-financialsRouter.put('/expenses/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.put('/expenses/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const expense = serverFleetStore.expenses.find((e) => e.id === req.params.id && e.companyId === companyId);
@@ -380,7 +391,10 @@ financialsRouter.put('/expenses/:id', requireAuth, (req: AuthenticatedRequest, r
     const trip = serverFleetStore.trips.find((t) => t.id === expense.tripId && t.companyId === companyId);
     if (trip) {
       syncTripFinancialTotals(trip);
+      await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
     }
+
+    await serverFleetStore.persistToFirestore(companyId, 'expenses', expense.id, expense);
 
     res.json({
       success: true,
@@ -397,7 +411,7 @@ financialsRouter.put('/expenses/:id', requireAuth, (req: AuthenticatedRequest, r
  * DELETE /api/expenses/:id
  * Deletes an expense voucher
  */
-financialsRouter.delete('/expenses/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.delete('/expenses/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const expenseIndex = serverFleetStore.expenses.findIndex((e) => e.id === req.params.id && e.companyId === companyId);
@@ -417,11 +431,13 @@ financialsRouter.delete('/expenses/:id', requireAuth, (req: AuthenticatedRequest
     }
 
     serverFleetStore.expenses.splice(expenseIndex, 1);
+    await serverFleetStore.deleteFromFirestore(companyId, 'expenses', expense.id);
 
     // Recalculate trip contribution
     const trip = serverFleetStore.trips.find((t) => t.id === expense.tripId && t.companyId === companyId);
     if (trip) {
       syncTripFinancialTotals(trip);
+      await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
     }
 
     res.json({
@@ -442,9 +458,10 @@ financialsRouter.delete('/expenses/:id', requireAuth, (req: AuthenticatedRequest
  * GET /api/advances
  * Lists driver cash advances
  */
-financialsRouter.get('/advances', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.get('/advances', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const page = parseInt(req.query.page as string, 10) || 1;
     const limit = parseInt(req.query.limit as string, 10) || 15;
     const search = ((req.query.search as string) || '').trim().toLowerCase();
@@ -517,7 +534,7 @@ financialsRouter.get('/advances', requireAuth, (req: AuthenticatedRequest, res: 
  * Records money advanced to a driver.
  * Advances are cash movements. They must NOT automatically count as trip expenses.
  */
-financialsRouter.post('/advances', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.post('/advances', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const {
@@ -579,10 +596,14 @@ financialsRouter.post('/advances', requireAuth, (req: AuthenticatedRequest, res:
     if (driver) {
       driver.currentAdvanceBalancePaise = (driver.currentAdvanceBalancePaise || 0) + amount;
       driver.updatedAt = new Date().toISOString();
+      await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
     }
 
     // Recompute trip totals (increases totalAdvancesPaise, but totalExpensesPaise and contributionPaise REMAIN UNTOUCHED!)
     syncTripFinancialTotals(trip);
+
+    await serverFleetStore.persistToFirestore(companyId, 'advances', newAdvance.id, newAdvance);
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
 
     res.status(201).json({
       success: true,
@@ -603,9 +624,10 @@ financialsRouter.post('/advances', requireAuth, (req: AuthenticatedRequest, res:
  * GET /api/settlements
  * Lists settlement history with status filter
  */
-financialsRouter.get('/settlements', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.get('/settlements', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const page = parseInt(req.query.page as string, 10) || 1;
     const limit = parseInt(req.query.limit as string, 10) || 15;
     const status = req.query.status as string;
@@ -662,9 +684,10 @@ financialsRouter.get('/settlements', requireAuth, (req: AuthenticatedRequest, re
  * GET /api/settlements/:id
  * Retrieves full settlement dossier with attached expenses and advances
  */
-financialsRouter.get('/settlements/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.get('/settlements/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const settlement = serverFleetStore.settlements.find((s) => s.id === req.params.id && s.companyId === companyId);
 
     if (!settlement) {
@@ -698,7 +721,7 @@ financialsRouter.get('/settlements/:id', requireAuth, (req: AuthenticatedRequest
  * 2. Calculation: Total advances minus approved deductions equals remaining driver balance.
  * 3. Atomic status and balance updating on finalization.
  */
-financialsRouter.post('/settlements', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.post('/settlements', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const {
@@ -812,6 +835,12 @@ financialsRouter.post('/settlements', requireAuth, (req: AuthenticatedRequest, r
       syncTripFinancialTotals(trip);
     }
 
+    await serverFleetStore.persistToFirestore(companyId, 'settlements', newSettlement.id, newSettlement);
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
+    if (driver) {
+      await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
+    }
+
     res.status(201).json({
       success: true,
       message: isFinalized
@@ -831,7 +860,7 @@ financialsRouter.post('/settlements', requireAuth, (req: AuthenticatedRequest, r
  * Updates or finalizes a settlement.
  * STRICTLY PREVENTS CHANGES TO FINALIZED SETTLEMENTS without an authorized correction process!
  */
-financialsRouter.put('/settlements/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+financialsRouter.put('/settlements/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const settlement = serverFleetStore.settlements.find((s) => s.id === req.params.id && s.companyId === companyId);
@@ -915,6 +944,11 @@ financialsRouter.put('/settlements/:id', requireAuth, (req: AuthenticatedRequest
         }
         syncTripFinancialTotals(trip);
       }
+    }
+
+    await serverFleetStore.persistToFirestore(companyId, 'settlements', settlement.id, settlement);
+    if (trip) {
+      await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
     }
 
     res.json({

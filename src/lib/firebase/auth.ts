@@ -6,6 +6,8 @@
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut,
   sendPasswordResetEmail,
   updateProfile,
@@ -38,6 +40,7 @@ export interface AuthSessionResponse {
     companyName: string;
     role: string;
   }>;
+  token?: string;
   error?: string;
 }
 
@@ -65,6 +68,15 @@ export async function registerFirebaseUser({
  */
 export async function loginFirebaseUser(email: string, password: string): Promise<FirebaseUser> {
   const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
+  return userCredential.user;
+}
+
+/**
+ * Sign in using Firebase Google popup
+ */
+export async function loginWithGoogle(): Promise<FirebaseUser> {
+  const provider = new GoogleAuthProvider();
+  const userCredential = await signInWithPopup(auth, provider);
   return userCredential.user;
 }
 

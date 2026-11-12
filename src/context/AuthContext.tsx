@@ -9,6 +9,7 @@ import { ROLE_PERMISSIONS, RolePermissionSet } from '../lib/permissions';
 import {
   registerFirebaseUser,
   loginFirebaseUser,
+  loginWithGoogle,
   logoutFirebaseUser,
   resetFirebasePassword,
   syncSessionWithBackend,
@@ -56,6 +57,7 @@ interface AuthContextType {
   needsOnboarding: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  loginWithGoogleAuth: () => Promise<{ success: boolean; error?: string }>;
   register: (
     email: string,
     password: string,
@@ -281,6 +283,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Login failed.' };
+    }
+  };
+
+  /**
+   * Login using Google Provider popup
+   */
+  const loginWithGoogleAuth = async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const fbUser = await loginWithGoogle();
+      if (fbUser) {
+        const session = await syncSessionWithBackend(fbUser);
+        if (session.success && session.user) {
+          saveSession(
+            session.user,
+            session.company || null,
+            (session.role as UserRole) || null,
+            (session.accessibleCompanies as AccessibleCompany[]) || [],
+            Boolean(session.needsOnboarding),
+            session.token
+          );
+          return { success: true };
+        }
+        return { success: false, error: session.error || 'Failed to sync Google session' };
+      }
+      return { success: false, error: 'Google sign-in cancelled or failed' };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Google sign-in failed' };
     }
   };
 
@@ -524,6 +553,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         needsOnboarding,
         isLoading,
         login,
+        loginWithGoogleAuth,
         register,
         onboardCompany,
         resetPassword,

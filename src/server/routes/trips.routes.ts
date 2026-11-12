@@ -117,9 +117,11 @@ export function syncTripFinancials(trip: Trip): Trip {
  * GET /api/trips
  * Returns company-scoped trips with search, multi-field filters, and pagination
  */
-tripsRouter.get('/trips', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+tripsRouter.get('/trips', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
+
     const search = ((req.query.search as string) || '').trim().toLowerCase();
     const status = (req.query.status as string) || 'ALL';
     const vehicleId = (req.query.vehicleId as string) || 'ALL';
@@ -220,9 +222,10 @@ tripsRouter.get('/trips', requireAuth, (req: AuthenticatedRequest, res: Response
  * GET /api/trips/next-numbers
  * Returns unique next trip and LR numbers for quick form population
  */
-tripsRouter.get('/trips/next-numbers', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+tripsRouter.get('/trips/next-numbers', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const tripNumber = generateTripNumber(companyId);
     const lrNumber = generateLrNumber(companyId);
 
@@ -240,9 +243,10 @@ tripsRouter.get('/trips/next-numbers', requireAuth, (req: AuthenticatedRequest, 
  * GET /api/trips/:id
  * Returns complete Trip Dossier with vehicle, driver, customer, expenses, advances, and timeline
  */
-tripsRouter.get('/trips/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+tripsRouter.get('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const trip = serverFleetStore.trips.find((t) => t.id === req.params.id && t.companyId === companyId);
 
     if (!trip) {
@@ -507,21 +511,15 @@ tripsRouter.post('/trips', requireAuth, async (req: AuthenticatedRequest, res: R
         };
         serverFleetStore.advances.push(adv);
         driver.currentAdvanceBalancePaise += initialAdvance;
+        await serverFleetStore.persistToFirestore(companyId, 'advances', adv.id, adv);
+        await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
       }
     }
 
     // Persist to Firestore if configured
-    if (adminDb) {
-      try {
-        await adminDb
-          .collection('companies')
-          .doc(companyId)
-          .collection('trips')
-          .doc(newTrip.id)
-          .set(newTrip);
-      } catch (fbErr) {
-        console.warn('Firestore trip sync note:', fbErr);
-      }
+    await serverFleetStore.persistToFirestore(companyId, 'trips', newTrip.id, newTrip);
+    if (vehicle) {
+      await serverFleetStore.persistToFirestore(companyId, 'vehicles', vehicle.id, vehicle);
     }
 
     res.status(201).json({
@@ -649,6 +647,8 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
 
     // Recalculate contribution
     syncTripFinancials(trip);
+
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
 
     res.json({
       success: true,
@@ -804,6 +804,14 @@ async function handleStatusTransition(req: AuthenticatedRequest, res: Response) 
     // Refresh financials
     syncTripFinancials(trip);
 
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
+    if (vehicle) {
+      await serverFleetStore.persistToFirestore(companyId, 'vehicles', vehicle.id, vehicle);
+    }
+    if (driver) {
+      await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
+    }
+
     res.json({
       success: true,
       message: `Trip ${trip.tripNumber} status updated to ${targetStatus}.`,
@@ -883,6 +891,15 @@ tripsRouter.post('/trips/:id/expenses', requireAuth, async (req: AuthenticatedRe
     // Recalculate trip contribution
     syncTripFinancials(trip);
 
+    await serverFleetStore.persistToFirestore(companyId, 'expenses', newExpense.id, newExpense);
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
+    if (paymentMode === 'FASTAG') {
+      const veh = serverFleetStore.vehicles.find((v) => v.id === trip.vehicleId && v.companyId === companyId);
+      if (veh) {
+        await serverFleetStore.persistToFirestore(companyId, 'vehicles', veh.id, veh);
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: `Recorded ${newExpense.category} expense of ₹${(amount / 100).toFixed(0)} for trip ${trip.tripNumber}.`,
@@ -935,10 +952,14 @@ tripsRouter.post('/trips/:id/advances', requireAuth, async (req: AuthenticatedRe
     const driver = serverFleetStore.drivers.find((d) => d.id === trip.driverId && d.companyId === companyId);
     if (driver) {
       driver.currentAdvanceBalancePaise += amount;
+      await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
     }
 
     // Recalculate trip totals (advances increased, expenses UNCHANGED)
     syncTripFinancials(trip);
+
+    await serverFleetStore.persistToFirestore(companyId, 'advances', newAdvance.id, newAdvance);
+    await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
 
     res.status(201).json({
       success: true,
@@ -1011,6 +1032,7 @@ tripsRouter.delete(
       }
 
       serverFleetStore.trips.splice(tripIndex, 1);
+      await serverFleetStore.deleteFromFirestore(companyId, 'trips', trip.id);
 
       res.json({
         success: true,

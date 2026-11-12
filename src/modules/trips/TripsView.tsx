@@ -54,6 +54,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
   const [trips, setTrips] = useState<Trip[]>([]);
   const [liveCustomers, setLiveCustomers] = useState<Customer[]>(localCustomers);
   const [liveVehicles, setLiveVehicles] = useState<Vehicle[]>(localVehicles);
+  const [liveDrivers, setLiveDrivers] = useState<Driver[]>(localDrivers);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,6 +100,28 @@ export const TripsView: React.FC<TripsViewProps> = ({
     const onVehicleUpdated = () => fetchVehiclesList();
     window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
     return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+  }, [activeToken]);
+
+  // Sync drivers live from API whenever driver is added/updated in Drivers tab
+  useEffect(() => {
+    const fetchDriversList = async () => {
+      try {
+        const res = await fetch('/api/drivers?limit=100', {
+          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+        });
+        const data = await parseResponseJson<any>(res);
+        if (res.ok && data?.success && Array.isArray(data.data)) {
+          setLiveDrivers(data.data);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchDriversList();
+
+    const onDriverUpdated = () => fetchDriversList();
+    window.addEventListener('tms:driver-updated', onDriverUpdated);
+    return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
   }, [activeToken]);
 
   // Filters and Pagination
@@ -765,7 +788,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
           onClose={() => setIsCreateOpen(false)}
           onSuccess={handleModalSuccess}
           localVehicles={liveVehicles}
-          localDrivers={localDrivers}
+          localDrivers={liveDrivers}
           localCustomers={liveCustomers}
         />
       )}
@@ -777,7 +800,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
           tripToEdit={tripToEdit}
           onSuccess={handleModalSuccess}
           localVehicles={liveVehicles}
-          localDrivers={localDrivers}
+          localDrivers={liveDrivers}
           localCustomers={liveCustomers}
         />
       )}

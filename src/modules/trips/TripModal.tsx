@@ -47,6 +47,7 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [driverId, setDriverId] = useState('');
   const [availableCustomers, setAvailableCustomers] = useState<Customer[]>(localCustomers);
   const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>(localVehicles);
+  const [availableDrivers, setAvailableDrivers] = useState<Driver[]>(localDrivers);
   const [originCity, setOriginCity] = useState('');
   const [destinationCity, setDestinationCity] = useState('');
   const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -99,6 +100,24 @@ export const TripModal: React.FC<TripModalProps> = ({
         });
     }
   }, [isOpen, localVehicles, activeToken]);
+
+  // Live fetch / sync drivers when modal opens so only added drivers appear
+  useEffect(() => {
+    if (isOpen) {
+      fetch('/api/drivers?limit=100', {
+        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+      })
+        .then((res) => parseResponseJson<any>(res))
+        .then((data) => {
+          if (data && data.success && Array.isArray(data.data)) {
+            setAvailableDrivers(data.data);
+          }
+        })
+        .catch(() => {
+          setAvailableDrivers(localDrivers);
+        });
+    }
+  }, [isOpen, localDrivers, activeToken]);
 
   const resetForm = () => {
     setCustomerId('');
@@ -174,8 +193,9 @@ export const TripModal: React.FC<TripModalProps> = ({
   // Selected entities for conflict warnings & validation
   const effectiveCustomers = availableCustomers.length > 0 ? availableCustomers : localCustomers;
   const effectiveVehicles = availableVehicles.length > 0 ? availableVehicles : localVehicles;
+  const effectiveDrivers = availableDrivers.length > 0 ? availableDrivers : localDrivers;
   const selectedVehicle = effectiveVehicles.find((v) => v.id === vehicleId);
-  const selectedDriver = localDrivers.find((d) => d.id === driverId);
+  const selectedDriver = effectiveDrivers.find((d) => d.id === driverId);
   const selectedCustomer = effectiveCustomers.find((c) => c.id === customerId);
 
   // Computed financial figures
@@ -472,13 +492,29 @@ export const TripModal: React.FC<TripModalProps> = ({
                 }`}
                 required
               >
-                <option value="">-- Choose Commercial Driver --</option>
-                {localDrivers.map((d) => (
+                <option value="">
+                  {effectiveDrivers.length === 0
+                    ? '-- No Commercial Drivers Registered --'
+                    : '-- Choose Commercial Driver --'}
+                </option>
+                {effectiveDrivers.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.fullName} ({d.phone} | DL: {d.licenseNumber} | {d.status.replace('_', ' ')})
                   </option>
                 ))}
               </select>
+
+              {effectiveDrivers.length === 0 && (
+                <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold block">No commercial drivers registered yet.</span>
+                    <span className="text-[11px] text-amber-700">
+                      Drivers will only appear here after you register them in the Drivers module.
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {isDriverBusy && (
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-700 font-medium">

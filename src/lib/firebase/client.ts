@@ -37,7 +37,9 @@ export const app: FirebaseApp = getApps().length
 
 // Initialize Services
 export const auth: Auth = getAuth(app);
-export const db: Firestore = getFirestore(app);
+export const db: Firestore = fallbackConfig.firestoreDatabaseId
+  ? getFirestore(app, fallbackConfig.firestoreDatabaseId)
+  : getFirestore(app);
 export const storage: FirebaseStorage = getStorage(app);
 
 // Connect Local Emulators if configured
@@ -144,4 +146,18 @@ export async function verifyFirebaseClientConnection(): Promise<{
       error: message,
     };
   }
+}
+
+async function testConnection() {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error('Please check your Firebase configuration.');
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  testConnection();
 }

@@ -87,9 +87,16 @@ function initializeAdmin(): App {
   });
 }
 
+const firestoreDatabaseId =
+  process.env.FIRESTORE_DATABASE_ID ||
+  process.env.VITE_FIRESTORE_DATABASE_ID ||
+  'ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d';
+
 export const adminApp: App = initializeAdmin();
 export const adminAuth: Auth = getAuth(adminApp);
-export const adminDb: Firestore = getFirestore(adminApp);
+export const adminDb: Firestore = firestoreDatabaseId
+  ? getFirestore(adminApp, firestoreDatabaseId)
+  : getFirestore(adminApp);
 export const adminStorage: Storage = getStorage(adminApp);
 
 export async function verifyFirebaseAdminConnection(): Promise<{

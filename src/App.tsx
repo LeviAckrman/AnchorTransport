@@ -182,6 +182,33 @@ function AppContent() {
     return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
   }, [authCompany?.id]);
 
+  // Dynamically synchronize drivers from API so drivers only show after user adds them
+  useEffect(() => {
+    const fetchLiveDrivers = async () => {
+      try {
+        const activeToken = localStorage.getItem('token') || '';
+        const res = await fetch('/api/drivers?limit=100', {
+          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+        });
+        const data = await parseResponseJson<any>(res);
+        if (res.ok && data?.success && Array.isArray(data.data)) {
+          setStore((prev) => ({
+            ...prev,
+            drivers: data.data,
+          }));
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    fetchLiveDrivers();
+
+    const onDriverUpdated = () => fetchLiveDrivers();
+    window.addEventListener('tms:driver-updated', onDriverUpdated);
+    return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
+  }, [authCompany?.id]);
+
   // Sync state to localStorage whenever store changes
   useEffect(() => {
     saveStore(store);
@@ -809,13 +836,40 @@ function AppContent() {
                 className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-800 focus:ring-2 focus:ring-indigo-500"
                 required
               >
-                <option value="">-- Choose Commercial Driver --</option>
+                <option value="">
+                  {store.drivers.length === 0
+                    ? '-- No Commercial Drivers Registered --'
+                    : '-- Choose Commercial Driver --'}
+                </option>
                 {store.drivers.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.fullName} (DL: {d.licenseNumber})
                   </option>
                 ))}
               </select>
+              {store.drivers.length === 0 && (
+                <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold block">No commercial drivers registered yet.</span>
+                      <span className="text-[11px] text-amber-700">
+                        Drivers will only appear after you register them in Drivers.
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsQuickTripOpen(false);
+                      setActiveTab('drivers');
+                    }}
+                    className="px-2 py-1 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded shrink-0 cursor-pointer"
+                  >
+                    Go to Drivers
+                  </button>
+                </div>
+              )}
             </div>
 
             <div>

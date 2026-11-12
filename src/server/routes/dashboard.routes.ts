@@ -21,7 +21,7 @@ export const dashboardRouter = Router();
  * 7. Recent trips
  * 8. Vehicles requiring attention
  */
-dashboardRouter.get('/stats', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+dashboardRouter.get('/stats', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId;
 
@@ -32,6 +32,8 @@ dashboardRouter.get('/stats', requireAuth, (req: AuthenticatedRequest, res: Resp
       });
       return;
     }
+
+    await serverFleetStore.hydrateFromFirestore(companyId);
 
     const period = (req.query.period as any) || 'all';
     const startDate = req.query.startDate as string | undefined;

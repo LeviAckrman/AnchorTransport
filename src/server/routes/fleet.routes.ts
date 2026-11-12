@@ -126,6 +126,16 @@ export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void 
   if (vehicle.pucExpiry) {
     pushDoc('PUC', vehicle.pucNumber, vehicle.pucExpiry, 'Pollution Testing Center');
   }
+
+  // Also persist generated compliance documents to Firestore if available
+  if (adminDb) {
+    const vehicleDocs = serverFleetStore.documents.filter(
+      (d) => d.companyId === companyId && d.vehicleId === vehicle.id
+    );
+    for (const d of vehicleDocs) {
+      serverFleetStore.persistToFirestore(companyId, 'documents', d.id, d).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -181,9 +191,11 @@ function sanitizeDriverForRole(driver: Driver, role?: UserRole): Driver {
  * GET /api/vehicles
  * Returns company-scoped vehicles with search, filtering, and pagination
  */
-fleetRouter.get('/vehicles', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+fleetRouter.get('/vehicles', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
+
     const search = ((req.query.search as string) || '').trim().toLowerCase();
     const status = (req.query.status as string) || 'ALL';
     const vehicleType = (req.query.vehicleType as string) || 'ALL';
@@ -263,9 +275,10 @@ fleetRouter.get('/vehicles', requireAuth, (req: AuthenticatedRequest, res: Respo
  * GET /api/vehicles/:id
  * Returns single vehicle details along with related documents and recent trips
  */
-fleetRouter.get('/vehicles/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+fleetRouter.get('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const vehicle = serverFleetStore.vehicles.find((v) => v.id === req.params.id && v.companyId === companyId);
 
     if (!vehicle) {
@@ -670,9 +683,11 @@ fleetRouter.delete(
  * GET /api/drivers
  * Returns company-scoped drivers with search, status filtering, and sensitive data protection
  */
-fleetRouter.get('/drivers', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+fleetRouter.get('/drivers', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
+
     const search = ((req.query.search as string) || '').trim().toLowerCase();
     const status = (req.query.status as string) || 'ALL';
     const licenseFilter = (req.query.licenseFilter as string) || 'ALL';
@@ -737,9 +752,10 @@ fleetRouter.get('/drivers', requireAuth, (req: AuthenticatedRequest, res: Respon
  * GET /api/drivers/:id
  * Returns single driver details with role-based sensitive data protection
  */
-fleetRouter.get('/drivers/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+fleetRouter.get('/drivers/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const driver = serverFleetStore.drivers.find((d) => d.id === req.params.id && d.companyId === companyId);
 
     if (!driver) {
@@ -1051,9 +1067,11 @@ fleetRouter.delete(
  * GET /api/customers
  * Returns company-scoped customers with search and pagination
  */
-fleetRouter.get('/customers', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+fleetRouter.get('/customers', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
+
     const search = ((req.query.search as string) || '').trim().toLowerCase();
     const balanceFilter = (req.query.balanceFilter as string) || 'ALL'; // ALL, OUTSTANDING, CLEARED
     const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
@@ -1105,9 +1123,10 @@ fleetRouter.get('/customers', requireAuth, (req: AuthenticatedRequest, res: Resp
  * GET /api/customers/:id
  * Returns single customer details with invoice history and outstanding breakdown
  */
-fleetRouter.get('/customers/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+fleetRouter.get('/customers/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const customer = serverFleetStore.customers.find((c) => c.id === req.params.id && c.companyId === companyId);
 
     if (!customer) {
@@ -1849,6 +1868,7 @@ fleetRouter.get('/api/fleet/documents', requireAuth, async (req: AuthenticatedRe
 async function handleGetDocuments(req: AuthenticatedRequest, res: Response) {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const { vehicleId, status, docType, search } = req.query;
 
     let list = serverFleetStore.documents.filter((d) => d.companyId === companyId);
@@ -1966,6 +1986,7 @@ async function handleCreateDocument(req: AuthenticatedRequest, res: Response) {
     };
 
     serverFleetStore.documents.unshift(newDoc);
+    await serverFleetStore.persistToFirestore(companyId, 'documents', newDoc.id, newDoc);
 
     // Sync back to vehicle fields
     if (docType === 'FITNESS') {
@@ -1982,6 +2003,8 @@ async function handleCreateDocument(req: AuthenticatedRequest, res: Response) {
       vehicle.pucExpiry = expiryDate;
       vehicle.pucNumber = documentNumber.trim().toUpperCase();
     }
+
+    await serverFleetStore.persistToFirestore(companyId, 'vehicles', vehicle.id, vehicle);
 
     res.status(201).json({
       success: true,
@@ -2039,9 +2062,12 @@ async function handleUpdateDocument(req: AuthenticatedRequest, res: Response) {
           vehicle.pucExpiry = expiryDate;
           if (documentNumber) vehicle.pucNumber = doc.documentNumber;
         }
+        await serverFleetStore.persistToFirestore(companyId, 'vehicles', vehicle.id, vehicle);
       }
     }
     if (documentUrl !== undefined) doc.documentUrl = documentUrl ? documentUrl.trim() : undefined;
+
+    await serverFleetStore.persistToFirestore(companyId, 'documents', doc.id, doc);
 
     res.json({
       success: true,
@@ -2073,6 +2099,7 @@ async function handleDeleteDocument(req: AuthenticatedRequest, res: Response) {
     }
 
     serverFleetStore.documents = serverFleetStore.documents.filter((d) => d.id !== docId);
+    await serverFleetStore.deleteFromFirestore(companyId, 'documents', docId);
 
     res.json({
       success: true,

@@ -76,27 +76,6 @@ export async function requireAuth(
   const token = req.cookies?.token || req.headers.authorization?.replace(/^Bearer\s+/, '');
 
   if (!token) {
-    try {
-      const { serverUsers, serverCompanyUsers } = await import('./routes/auth.routes');
-      const defaultUser = serverUsers[0];
-      const defaultMembership = serverCompanyUsers.find((cu) => cu.userId === defaultUser?.id && cu.isActive);
-      if (defaultMembership && defaultUser) {
-        req.user = {
-          userId: defaultUser.id,
-          email: defaultUser.email,
-          name: defaultUser.name,
-          companyId: defaultMembership.companyId,
-          role: defaultMembership.role,
-        };
-        req.companyId = defaultMembership.companyId;
-        req.role = defaultMembership.role;
-        next();
-        return;
-      }
-    } catch {
-      // Fall through to 401
-    }
-
     res.status(401).json({
       success: false,
       error: 'Authentication required. Please log in.',

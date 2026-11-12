@@ -104,6 +104,7 @@ export function syncCustomerOutstanding(customerId: string, companyId: string): 
 
   customer.currentOutstandingPaise = activeInvoices.reduce((sum, inv) => sum + Math.max(0, inv.balanceDuePaise), 0);
   customer.updatedAt = new Date().toISOString();
+  serverFleetStore.persistToFirestore(companyId, 'customers', customer.id, customer).catch(() => {});
 }
 
 // =========================================================================
@@ -114,9 +115,10 @@ export function syncCustomerOutstanding(customerId: string, companyId: string): 
  * GET /api/invoices
  * Lists company invoices with pagination, status filters, search, and summary stats
  */
-invoicesRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.get('/invoices', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const page = parseInt(req.query.page as string, 10) || 1;
     const limit = parseInt(req.query.limit as string, 10) || 15;
     const status = req.query.status as string;
@@ -211,9 +213,10 @@ invoicesRouter.get('/invoices', requireAuth, (req: AuthenticatedRequest, res: Re
  * GET /api/invoices/:id
  * Retrieves full invoice details with payments history and attached trip
  */
-invoicesRouter.get('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.get('/invoices/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const invoice = serverFleetStore.invoices.find((i) => i.id === req.params.id && i.companyId === companyId);
 
     if (!invoice) {
@@ -254,7 +257,7 @@ invoicesRouter.get('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res
  * 2. Prevent duplicate invoicing of the same trip unless an explicit billing workflow allows it.
  * 3. Decimal-safe GTA GST calculations (RCM 5% vs Forward Charge 5%/12%).
  */
-invoicesRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.post('/invoices', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const {
@@ -405,6 +408,7 @@ invoicesRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: R
     };
 
     serverFleetStore.invoices.push(newInvoice);
+    await serverFleetStore.persistToFirestore(companyId, 'invoices', newInvoice.id, newInvoice);
 
     // Link invoice to trip
     if (!isDraft) {
@@ -412,6 +416,7 @@ invoicesRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: R
       trip.invoiceId = newInvoice.id;
       trip.invoiceNumber = newInvoice.invoiceNumber;
       trip.updatedAt = new Date().toISOString();
+      await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
 
       // Update customer outstanding ledger
       syncCustomerOutstanding(customer.id, companyId);
@@ -436,7 +441,7 @@ invoicesRouter.post('/invoices', requireAuth, (req: AuthenticatedRequest, res: R
  * PUT /api/invoices/:id
  * Updates an invoice (allowed if not fully PAID or CANCELLED)
  */
-invoicesRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.put('/invoices/:id', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const invoice = serverFleetStore.invoices.find((i) => i.id === req.params.id && i.companyId === companyId);
@@ -529,7 +534,7 @@ invoicesRouter.put('/invoices/:id', requireAuth, (req: AuthenticatedRequest, res
  * Cancels an invoice.
  * Reverses customer outstanding balance and unlocks the trip for billing re-attempt.
  */
-invoicesRouter.post('/invoices/:id/cancel', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.post('/invoices/:id/cancel', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
     const invoice = serverFleetStore.invoices.find((i) => i.id === req.params.id && i.companyId === companyId);
@@ -571,10 +576,12 @@ invoicesRouter.post('/invoices/:id/cancel', requireAuth, (req: AuthenticatedRequ
       trip.invoiceId = undefined;
       trip.invoiceNumber = undefined;
       trip.updatedAt = new Date().toISOString();
+      await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
     }
 
     // Sync customer outstanding
     syncCustomerOutstanding(invoice.customerId, companyId);
+    await serverFleetStore.persistToFirestore(companyId, 'invoices', invoice.id, invoice);
 
     res.json({
       success: true,
@@ -594,9 +601,10 @@ invoicesRouter.post('/invoices/:id/cancel', requireAuth, (req: AuthenticatedRequ
  * GET /api/payments
  * Lists recorded payments with invoice, customer, and date filters
  */
-invoicesRouter.get('/payments', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.get('/payments', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const invoiceId = req.query.invoiceId as string;
     const customerId = req.query.customerId as string;
     const page = parseInt(req.query.page as string, 10) || 1;
@@ -650,15 +658,15 @@ invoicesRouter.get('/payments', requireAuth, (req: AuthenticatedRequest, res: Re
  * 3. Prevent duplicate payment submissions (unique reference number per invoice).
  * 4. Atomic balance updating and status derivation.
  */
-invoicesRouter.post('/invoices/:id/payments', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  handlePaymentRecording(req, res);
+invoicesRouter.post('/invoices/:id/payments', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handlePaymentRecording(req, res);
 });
 
-invoicesRouter.post('/payments', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  handlePaymentRecording(req, res);
+invoicesRouter.post('/payments', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  await handlePaymentRecording(req, res);
 });
 
-function handlePaymentRecording(req: AuthenticatedRequest, res: Response) {
+async function handlePaymentRecording(req: AuthenticatedRequest, res: Response) {
   try {
     const companyId = req.companyId!;
     const invoiceId = req.params.id || req.body.invoiceId;
@@ -765,6 +773,8 @@ function handlePaymentRecording(req: AuthenticatedRequest, res: Response) {
 
     // Sync customer outstanding
     syncCustomerOutstanding(invoice.customerId, companyId);
+    await serverFleetStore.persistToFirestore(companyId, 'payments', newPayment.id, newPayment);
+    await serverFleetStore.persistToFirestore(companyId, 'invoices', invoice.id, invoice);
 
     res.status(201).json({
       success: true,
@@ -785,9 +795,10 @@ function handlePaymentRecording(req: AuthenticatedRequest, res: Response) {
  * GET /api/reports/receivables
  * Generates receivables breakdown and aging report by customer
  */
-invoicesRouter.get('/reports/receivables', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+invoicesRouter.get('/reports/receivables', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const companyId = req.companyId!;
+    await serverFleetStore.hydrateFromFirestore(companyId);
     const customers = serverFleetStore.customers.filter((c) => c.companyId === companyId);
     const invoices = serverFleetStore.invoices.filter((i) => i.companyId === companyId && i.status !== 'CANCELLED');
     const payments = serverFleetStore.payments.filter((p) => p.companyId === companyId);

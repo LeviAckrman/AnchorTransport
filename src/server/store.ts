@@ -16,6 +16,7 @@ import {
   TripSettlement,
   Payment,
 } from '../types/tms';
+import { adminDb } from '../lib/firebase/admin';
 import {
   INITIAL_COMPANY,
   INITIAL_VEHICLES,
@@ -69,16 +70,133 @@ export interface VehicleAttentionItem {
 }
 
 class ServerFleetStore {
-  public trips: Trip[] = [...INITIAL_TRIPS];
+  public trips: Trip[] = [];
   public vehicles: Vehicle[] = [];
-  public drivers: Driver[] = [...INITIAL_DRIVERS];
+  public drivers: Driver[] = [];
   public customers: Customer[] = [];
-  public expenses: TripExpense[] = [...INITIAL_EXPENSES];
-  public advances: DriverAdvance[] = [...INITIAL_ADVANCES];
-  public settlements: TripSettlement[] = [...INITIAL_SETTLEMENTS];
-  public invoices: Invoice[] = [...INITIAL_INVOICES];
-  public payments: Payment[] = [...INITIAL_PAYMENTS];
+  public expenses: TripExpense[] = [];
+  public advances: DriverAdvance[] = [];
+  public settlements: TripSettlement[] = [];
+  public invoices: Invoice[] = [];
+  public payments: Payment[] = [];
   public documents: VehicleDocument[] = [];
+
+  private hydratedCompanies: Set<string> = new Set();
+
+  /**
+   * Hydrates company records from Firestore on-demand.
+   * If Firestore has no records for this company, the store remains empty.
+   */
+  async hydrateFromFirestore(companyId: string, force = false): Promise<void> {
+    if (!adminDb) return;
+    if (this.hydratedCompanies.has(companyId) && !force) return;
+
+    try {
+      const companyRef = adminDb.collection('companies').doc(companyId);
+      const [
+        vehSnap,
+        drvSnap,
+        custSnap,
+        tripSnap,
+        docSnap,
+        expSnap,
+        advSnap,
+        stlSnap,
+        invSnap,
+        paySnap,
+      ] = await Promise.all([
+        companyRef.collection('vehicles').get().catch(() => null),
+        companyRef.collection('drivers').get().catch(() => null),
+        companyRef.collection('customers').get().catch(() => null),
+        companyRef.collection('trips').get().catch(() => null),
+        companyRef.collection('documents').get().catch(() => null),
+        companyRef.collection('expenses').get().catch(() => null),
+        companyRef.collection('advances').get().catch(() => null),
+        companyRef.collection('settlements').get().catch(() => null),
+        companyRef.collection('invoices').get().catch(() => null),
+        companyRef.collection('payments').get().catch(() => null),
+      ]);
+
+      if (vehSnap && !vehSnap.empty) {
+        const items = vehSnap.docs.map((d) => d.data() as Vehicle);
+        this.vehicles = this.vehicles.filter((v) => v.companyId !== companyId).concat(items);
+      }
+      if (drvSnap && !drvSnap.empty) {
+        const items = drvSnap.docs.map((d) => d.data() as Driver);
+        this.drivers = this.drivers.filter((d) => d.companyId !== companyId).concat(items);
+      }
+      if (custSnap && !custSnap.empty) {
+        const items = custSnap.docs.map((d) => d.data() as Customer);
+        this.customers = this.customers.filter((c) => c.companyId !== companyId).concat(items);
+      }
+      if (tripSnap && !tripSnap.empty) {
+        const items = tripSnap.docs.map((d) => d.data() as Trip);
+        this.trips = this.trips.filter((t) => t.companyId !== companyId).concat(items);
+      }
+      if (docSnap && !docSnap.empty) {
+        const items = docSnap.docs.map((d) => d.data() as VehicleDocument);
+        this.documents = this.documents.filter((d) => d.companyId !== companyId).concat(items);
+      }
+      if (expSnap && !expSnap.empty) {
+        const items = expSnap.docs.map((d) => d.data() as TripExpense);
+        this.expenses = this.expenses.filter((e) => e.companyId !== companyId).concat(items);
+      }
+      if (advSnap && !advSnap.empty) {
+        const items = advSnap.docs.map((d) => d.data() as DriverAdvance);
+        this.advances = this.advances.filter((a) => a.companyId !== companyId).concat(items);
+      }
+      if (stlSnap && !stlSnap.empty) {
+        const items = stlSnap.docs.map((d) => d.data() as TripSettlement);
+        this.settlements = this.settlements.filter((s) => s.companyId !== companyId).concat(items);
+      }
+      if (invSnap && !invSnap.empty) {
+        const items = invSnap.docs.map((d) => d.data() as Invoice);
+        this.invoices = this.invoices.filter((i) => i.companyId !== companyId).concat(items);
+      }
+      if (paySnap && !paySnap.empty) {
+        const items = paySnap.docs.map((d) => d.data() as Payment);
+        this.payments = this.payments.filter((p) => p.companyId !== companyId).concat(items);
+      }
+
+      this.hydratedCompanies.add(companyId);
+    } catch (err) {
+      console.warn('Hydration from Firestore note:', err);
+    }
+  }
+
+  /**
+   * Persist a user entity mutation into Firestore
+   */
+  async persistToFirestore(companyId: string, subcollection: string, docId: string, data: any): Promise<void> {
+    if (!adminDb) return;
+    try {
+      await adminDb
+        .collection('companies')
+        .doc(companyId)
+        .collection(subcollection)
+        .doc(docId)
+        .set(data, { merge: true });
+    } catch (err) {
+      console.warn(`Firestore save error (${subcollection}/${docId}):`, err);
+    }
+  }
+
+  /**
+   * Delete an entity from Firestore
+   */
+  async deleteFromFirestore(companyId: string, subcollection: string, docId: string): Promise<void> {
+    if (!adminDb) return;
+    try {
+      await adminDb
+        .collection('companies')
+        .doc(companyId)
+        .collection(subcollection)
+        .doc(docId)
+        .delete();
+    } catch (err) {
+      console.warn(`Firestore delete error (${subcollection}/${docId}):`, err);
+    }
+  }
 
   /**
    * Calculate company-scoped metrics with optional date range filter
@@ -337,6 +455,7 @@ class ServerFleetStore {
    * Clear all operational data for a given company (to test empty state)
    */
   clearCompanyData(companyId: string): void {
+    this.hydratedCompanies.delete(companyId);
     this.trips = this.trips.filter((t) => t.companyId !== companyId);
     this.expenses = this.expenses.filter((e) => e.companyId !== companyId);
     this.advances = this.advances.filter((a) => a.companyId !== companyId);
