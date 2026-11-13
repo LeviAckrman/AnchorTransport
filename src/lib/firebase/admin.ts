@@ -65,16 +65,27 @@ function getAdminCredentials() {
   return undefined;
 }
 
+const resolvedCredentials = getAdminCredentials();
+const isEmulatorRuntime = Boolean(
+  process.env.FIRESTORE_EMULATOR_HOST ||
+  process.env.FIREBASE_AUTH_EMULATOR_HOST ||
+  process.env.VITE_USE_FIREBASE_EMULATOR === 'true'
+);
+const hasExplicitAdminFirestoreAccess = Boolean(
+  resolvedCredentials ||
+  isEmulatorRuntime ||
+  process.env.GOOGLE_APPLICATION_CREDENTIALS
+);
+let adminFirestoreUnavailable = !hasExplicitAdminFirestoreAccess;
+
 function initializeAdmin(): App {
   if (getApps().length > 0) {
     return getApp();
   }
 
-  const credentials = getAdminCredentials();
-
-  if (credentials) {
+  if (resolvedCredentials) {
     return initializeApp({
-      credential: credentials,
+      credential: resolvedCredentials,
       projectId,
       storageBucket,
     });
@@ -99,6 +110,47 @@ export const adminDb: Firestore = firestoreDatabaseId
   : getFirestore(adminApp);
 export const adminStorage: Storage = getStorage(adminApp);
 
+export function isAdminFirestoreWritable(): boolean {
+  return Boolean(adminDb) && !adminFirestoreUnavailable;
+}
+
+function isAdminPermissionError(err: unknown): boolean {
+  const code = (err as any)?.code;
+  const msg = err instanceof Error ? err.message : String(err || '');
+  return (
+    code === 7 ||
+    code === 16 ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('UNAUTHENTICATED') ||
+    msg.includes('Could not load the default credentials')
+  );
+}
+
+/**
+ * Runs a best-effort server-side Admin Firestore operation only when explicit
+ * Service Account / Emulator credentials are configured. Automatically disables
+ * further Admin Firestore attempts on cross-project PERMISSION_DENIED errors so
+ * client-side authenticated Firebase SDK remains the clean persistence path.
+ */
+export async function runAdminFirestore<T>(
+  label: string,
+  operation: (db: Firestore) => Promise<T>
+): Promise<T | null> {
+  if (!adminDb || adminFirestoreUnavailable) {
+    return null;
+  }
+  try {
+    return await operation(adminDb);
+  } catch (err) {
+    if (isAdminPermissionError(err)) {
+      adminFirestoreUnavailable = true;
+      return null;
+    }
+    console.warn(`${label}:`, err);
+    return null;
+  }
+}
+
 export async function verifyFirebaseAdminConnection(): Promise<{
   initialized: boolean;
   projectId: string;
@@ -108,16 +160,8 @@ export async function verifyFirebaseAdminConnection(): Promise<{
   mode: 'emulator' | 'production_credentials' | 'adc';
   message: string;
 }> {
-  const isEmulator = Boolean(
-    process.env.FIRESTORE_EMULATOR_HOST ||
-    process.env.FIREBASE_AUTH_EMULATOR_HOST ||
-    process.env.VITE_USE_FIREBASE_EMULATOR === 'true'
-  );
-
-  const hasCredentials = Boolean(
-    process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
-    (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY)
-  );
+  const isEmulator = isEmulatorRuntime;
+  const hasCredentials = Boolean(resolvedCredentials);
 
   return {
     initialized: true,

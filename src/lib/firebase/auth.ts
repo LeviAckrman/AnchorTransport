@@ -33,10 +33,13 @@ export interface AuthSessionResponse {
     email: string;
     name: string;
     phone: string;
+    onboardingCompleted?: boolean;
+    onboardingCompletedAt?: string;
   };
   company?: any;
   role?: string;
   needsOnboarding?: boolean;
+  onboardingCompleted?: boolean;
   accessibleCompanies?: Array<{
     companyId: string;
     companyName: string;
@@ -136,6 +139,8 @@ export async function syncSessionWithBackend(
   firebaseUser: FirebaseUser | null,
   extra?: {
     phone?: string;
+    onboardingCompleted?: boolean;
+    onboardingCompletedAt?: string;
     firestoreCompany?: any;
     firestoreRole?: string;
     accessibleCompanies?: Array<{ companyId: string; companyName: string; role: string }>;
@@ -163,6 +168,8 @@ export async function syncSessionWithBackend(
         name: firebaseUser.displayName || firebaseUser.email?.split('@')[0],
         phone: extra?.phone ?? firebaseUser.phoneNumber ?? '',
         emailVerified: firebaseUser.emailVerified,
+        onboardingCompleted: extra?.onboardingCompleted,
+        onboardingCompletedAt: extra?.onboardingCompletedAt,
         firestoreCompany: extra?.firestoreCompany,
         firestoreRole: extra?.firestoreRole,
         accessibleCompanies: extra?.accessibleCompanies,

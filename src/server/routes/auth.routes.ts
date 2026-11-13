@@ -13,11 +13,12 @@ import {
   requireRoles,
 } from '../auth';
 import { UserRole } from '../../types/tms';
-import { adminAuth, adminDb } from '../../lib/firebase/admin';
+import { adminAuth, runAdminFirestore } from '../../lib/firebase/admin';
+import { loadAuthDb, persistAuthDb } from '../authDb';
 
 export const authRouter = Router();
 
-// In-memory server store (mirrored with Firestore & database)
+// In-memory server store (persisted to disk & mirrored with Firestore)
 export interface StoredUser {
   id: string;
   email: string;
@@ -25,6 +26,8 @@ export interface StoredUser {
   phone: string;
   passwordHash: string;
   isActive: boolean;
+  onboardingCompleted?: boolean;
+  onboardingCompletedAt?: string;
 }
 
 export interface StoredCompanyUser {
@@ -63,7 +66,7 @@ export interface StoredCompany {
 // Pre-computed hash of "Password@123" for demo seeding
 const DEMO_PASSWORD_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
 
-export const serverUsers: StoredUser[] = [
+const SEED_USERS: StoredUser[] = [
   {
     id: 'usr_owner_01',
     email: 'anupam@royalbengal.com',
@@ -71,6 +74,7 @@ export const serverUsers: StoredUser[] = [
     phone: '+91 98301 22890',
     passwordHash: DEMO_PASSWORD_HASH,
     isActive: true,
+    onboardingCompleted: true,
   },
   {
     id: 'usr_acct_02',
@@ -79,6 +83,7 @@ export const serverUsers: StoredUser[] = [
     phone: '+91 98310 99411',
     passwordHash: DEMO_PASSWORD_HASH,
     isActive: true,
+    onboardingCompleted: true,
   },
   {
     id: 'usr_ops_03',
@@ -87,10 +92,11 @@ export const serverUsers: StoredUser[] = [
     phone: '+91 94340 18273',
     passwordHash: DEMO_PASSWORD_HASH,
     isActive: true,
+    onboardingCompleted: true,
   },
 ];
 
-export const serverCompanies: StoredCompany[] = [
+const SEED_COMPANIES: StoredCompany[] = [
   {
     id: 'comp_wb_royal_001',
     name: 'Royal Bengal Roadlines Pvt. Ltd.',
@@ -159,7 +165,7 @@ export const serverCompanies: StoredCompany[] = [
   },
 ];
 
-export const serverCompanyUsers: StoredCompanyUser[] = [
+const SEED_COMPANY_USERS: StoredCompanyUser[] = [
   {
     id: 'cu_empty_owner',
     companyId: 'comp_empty_test_009',
@@ -198,6 +204,15 @@ export const serverCompanyUsers: StoredCompanyUser[] = [
   },
 ];
 
+const initialAuthDb = loadAuthDb(SEED_USERS, SEED_COMPANIES, SEED_COMPANY_USERS);
+export const serverUsers: StoredUser[] = initialAuthDb.users;
+export const serverCompanies: StoredCompany[] = initialAuthDb.companies;
+export const serverCompanyUsers: StoredCompanyUser[] = initialAuthDb.companyUsers;
+
+function saveAuthState(): void {
+  persistAuthDb(serverUsers, serverCompanies, serverCompanyUsers);
+}
+
 /**
  * Helper to set HTTP-only cookie
  */
@@ -222,6 +237,8 @@ authRouter.post('/session', async (req, res) => {
       email,
       name,
       phone,
+      onboardingCompleted: incomingOnboardingCompleted,
+      onboardingCompletedAt: incomingOnboardingCompletedAt,
       firestoreCompany,
       firestoreRole,
     } = req.body;
@@ -260,7 +277,9 @@ authRouter.post('/session', async (req, res) => {
     let user = serverUsers.find(
       (u) => (verifiedUid && u.id === verifiedUid) || u.email.toLowerCase() === verifiedEmail
     );
+    let stateChanged = false;
     if (!user) {
+      const completedFromFirestore = incomingOnboardingCompleted === true;
       user = {
         id: verifiedUid || `usr_${Date.now()}`,
         email: verifiedEmail,
@@ -268,28 +287,46 @@ authRouter.post('/session', async (req, res) => {
         phone: typeof phone === 'string' ? phone.trim() : '',
         passwordHash: DEMO_PASSWORD_HASH,
         isActive: true,
+        onboardingCompleted: completedFromFirestore,
+        onboardingCompletedAt: completedFromFirestore
+          ? (typeof incomingOnboardingCompletedAt === 'string' && incomingOnboardingCompletedAt) || new Date().toISOString()
+          : undefined,
       };
       serverUsers.push(user);
+      stateChanged = true;
 
-      // Also persist to Firestore if available
-      if (adminDb) {
-        try {
-          await adminDb.collection('users').doc(user.id).set(
-            {
-              id: user.id,
-              email: user.email,
-              name: user.name,
-              createdAt: new Date().toISOString(),
-            },
-            { merge: true }
-          );
-        } catch (err) {
-          console.warn('Firestore user doc sync note:', err);
-        }
-      }
+      // Also persist to Firestore if admin credentials are available
+      await runAdminFirestore('Firestore user doc sync note', async (db) => {
+        await db.collection('users').doc(user!.id).set(
+          {
+            id: user!.id,
+            email: user!.email,
+            name: user!.name,
+            onboardingCompleted: Boolean(user!.onboardingCompleted),
+            ...(user!.onboardingCompletedAt ? { onboardingCompletedAt: user!.onboardingCompletedAt } : {}),
+            createdAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      });
     } else {
-      if (!user.name && verifiedName) user.name = verifiedName;
-      if (!user.phone && typeof phone === 'string' && phone.trim()) user.phone = phone.trim();
+      if (!user.name && verifiedName) {
+        user.name = verifiedName;
+        stateChanged = true;
+      }
+      if (!user.phone && typeof phone === 'string' && phone.trim()) {
+        user.phone = phone.trim();
+        stateChanged = true;
+      }
+      // Monotonically promote onboardingCompleted from Firestore if true; never downgrade
+      if (incomingOnboardingCompleted === true && !user.onboardingCompleted) {
+        user.onboardingCompleted = true;
+        user.onboardingCompletedAt =
+          (typeof incomingOnboardingCompletedAt === 'string' && incomingOnboardingCompletedAt) ||
+          user.onboardingCompletedAt ||
+          new Date().toISOString();
+        stateChanged = true;
+      }
     }
 
     // Check company memberships
@@ -352,11 +389,23 @@ authRouter.post('/session', async (req, res) => {
       };
       serverCompanyUsers.push(restoredMembership);
       memberships = [restoredMembership];
+      stateChanged = true;
     }
 
-    if (memberships.length === 0) {
-      // User is logged in, but has not completed Company Onboarding yet!
-      // Generate a temporary onboarding session token
+    if (memberships.length > 0 && !user.onboardingCompleted) {
+      user.onboardingCompleted = true;
+      user.onboardingCompletedAt = user.onboardingCompletedAt || new Date().toISOString();
+      stateChanged = true;
+    }
+
+    if (stateChanged) {
+      saveAuthState();
+    }
+
+    const hasCompletedOnboarding = Boolean(user.onboardingCompleted) || memberships.length > 0;
+
+    if (!hasCompletedOnboarding) {
+      // User is logged in, but has not completed Onboarding yet!
       const onboardingToken = signSessionToken({
         userId: user.id,
         email: user.email,
@@ -369,11 +418,13 @@ authRouter.post('/session', async (req, res) => {
       res.json({
         success: true,
         needsOnboarding: true,
+        onboardingCompleted: false,
         user: {
           id: user.id,
           email: user.email,
           name: user.name,
           phone: user.phone,
+          onboardingCompleted: false,
         },
         token: onboardingToken,
         message: 'User authenticated. Company onboarding required.',
@@ -381,11 +432,13 @@ authRouter.post('/session', async (req, res) => {
       return;
     }
 
-    // Active membership exists
+    // Active membership exists or onboarding already permanently completed
     const activeMembership = memberships[0];
-    const company = serverCompanies.find((c) => c.id === activeMembership.companyId);
+    const company = activeMembership
+      ? serverCompanies.find((c) => c.id === activeMembership.companyId) || null
+      : null;
 
-    if (!company) {
+    if (activeMembership && !company) {
       res.status(404).json({ success: false, error: 'Associated company record not found.' });
       return;
     }
@@ -394,8 +447,8 @@ authRouter.post('/session', async (req, res) => {
       userId: user.id,
       email: user.email,
       name: user.name,
-      companyId: company.id,
-      role: activeMembership.role,
+      companyId: company?.id || '',
+      role: activeMembership?.role || 'OWNER',
     });
 
     setSessionCookie(res, token);
@@ -413,14 +466,17 @@ authRouter.post('/session', async (req, res) => {
       success: true,
       token,
       needsOnboarding: false,
+      onboardingCompleted: true,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
+        onboardingCompleted: true,
+        onboardingCompletedAt: user.onboardingCompletedAt,
       },
       company,
-      role: activeMembership.role,
+      role: activeMembership?.role || 'OWNER',
       accessibleCompanies,
     });
   } catch (error: any) {
@@ -456,7 +512,14 @@ authRouter.post('/login', async (req, res) => {
 
     // Find companies this user belongs to
     const memberships = serverCompanyUsers.filter((cu) => cu.userId === user.id && cu.isActive);
-    if (memberships.length === 0) {
+    if (memberships.length > 0 && !user.onboardingCompleted) {
+      user.onboardingCompleted = true;
+      user.onboardingCompletedAt = user.onboardingCompletedAt || new Date().toISOString();
+      saveAuthState();
+    }
+
+    const hasCompletedOnboarding = Boolean(user.onboardingCompleted) || memberships.length > 0;
+    if (!hasCompletedOnboarding) {
       // User registered but needs company onboarding
       const onboardingToken = signSessionToken({
         userId: user.id,
@@ -470,11 +533,13 @@ authRouter.post('/login', async (req, res) => {
       res.json({
         success: true,
         needsOnboarding: true,
+        onboardingCompleted: false,
         user: {
           id: user.id,
           email: user.email,
           name: user.name,
           phone: user.phone,
+          onboardingCompleted: false,
         },
         token: onboardingToken,
       });
@@ -483,9 +548,11 @@ authRouter.post('/login', async (req, res) => {
 
     // Select default active company
     const activeMembership = memberships[0];
-    const company = serverCompanies.find((c) => c.id === activeMembership.companyId);
+    const company = activeMembership
+      ? serverCompanies.find((c) => c.id === activeMembership.companyId) || null
+      : null;
 
-    if (!company) {
+    if (activeMembership && !company) {
       res.status(404).json({ success: false, error: 'Associated company record not found.' });
       return;
     }
@@ -494,8 +561,8 @@ authRouter.post('/login', async (req, res) => {
       userId: user.id,
       email: user.email,
       name: user.name,
-      companyId: company.id,
-      role: activeMembership.role,
+      companyId: company?.id || '',
+      role: activeMembership?.role || 'OWNER',
     });
 
     setSessionCookie(res, token);
@@ -513,14 +580,17 @@ authRouter.post('/login', async (req, res) => {
       success: true,
       token,
       needsOnboarding: false,
+      onboardingCompleted: true,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
+        onboardingCompleted: true,
+        onboardingCompletedAt: user.onboardingCompletedAt,
       },
       company,
-      role: activeMembership.role,
+      role: activeMembership?.role || 'OWNER',
       accessibleCompanies,
     });
   } catch (error: any) {
@@ -581,8 +651,10 @@ authRouter.post('/register', async (req, res) => {
       phone: phone?.trim() || '',
       passwordHash: hashedPassword,
       isActive: true,
+      onboardingCompleted: false,
     };
     serverUsers.push(newUser);
+    saveAuthState();
 
     // If company details provided at registration, execute trusted server-side onboarding immediately
     if (companyName && gstin) {
@@ -627,26 +699,39 @@ authRouter.post('/register', async (req, res) => {
         isActive: true,
       };
 
+      newUser.onboardingCompleted = true;
+      newUser.onboardingCompletedAt = new Date().toISOString();
+
       serverCompanies.push(newCompany);
       serverCompanyUsers.push(newMembership);
+      saveAuthState();
 
-      // Persist to Firestore
-      if (adminDb) {
-        try {
-          await adminDb.collection('companies').doc(newCompanyId).set({
-            ...newCompany,
-            createdAt: new Date().toISOString(),
-          });
-          await adminDb.collection('companies').doc(newCompanyId).collection('members').doc(newUserId).set({
-            userId: newUserId,
-            role: 'OWNER',
-            status: 'ACTIVE',
-            joinedAt: new Date().toISOString(),
-          });
-        } catch (dbErr) {
-          console.warn('Firestore sync warning during register:', dbErr);
-        }
-      }
+      // Persist to Firestore when admin credentials are available
+      await runAdminFirestore('Firestore sync warning during register', async (db) => {
+        await db.collection('companies').doc(newCompanyId).set({
+          ...newCompany,
+          createdAt: new Date().toISOString(),
+        });
+        await db.collection('companies').doc(newCompanyId).collection('members').doc(newUserId).set({
+          userId: newUserId,
+          role: 'OWNER',
+          status: 'ACTIVE',
+          joinedAt: new Date().toISOString(),
+        });
+        await db.collection('users').doc(newUserId).set(
+          {
+            id: newUserId,
+            email: newUser.email,
+            name: newUser.name,
+            onboardingCompleted: true,
+            onboardingCompletedAt: newUser.onboardingCompletedAt,
+            activeCompanyId: newCompanyId,
+            defaultCompanyId: newCompanyId,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      });
 
       const token = signSessionToken({
         userId: newUser.id,
@@ -662,11 +747,14 @@ authRouter.post('/register', async (req, res) => {
         success: true,
         token,
         needsOnboarding: false,
+        onboardingCompleted: true,
         user: {
           id: newUser.id,
           email: newUser.email,
           name: newUser.name,
           phone: newUser.phone,
+          onboardingCompleted: true,
+          onboardingCompletedAt: newUser.onboardingCompletedAt,
         },
         company: newCompany,
         role: 'OWNER',
@@ -695,11 +783,13 @@ authRouter.post('/register', async (req, res) => {
       success: true,
       token,
       needsOnboarding: true,
+      onboardingCompleted: false,
       user: {
         id: newUser.id,
         email: newUser.email,
         name: newUser.name,
         phone: newUser.phone,
+        onboardingCompleted: false,
       },
       message: 'Account created successfully. Please complete company onboarding.',
     });
@@ -795,31 +885,39 @@ authRouter.post('/onboard-company', requireAuth, async (req: AuthenticatedReques
     serverCompanies.push(newCompany);
     serverCompanyUsers.push(newMembership);
 
-    // Persist to Firestore
-    if (adminDb) {
-      try {
-        await adminDb.collection('companies').doc(companyId).set({
-          ...newCompany,
-          createdAt: new Date().toISOString(),
-        });
-        await adminDb.collection('companies').doc(companyId).collection('members').doc(userId).set({
-          userId,
-          role: 'OWNER',
-          status: 'ACTIVE',
-          joinedAt: new Date().toISOString(),
-        });
-        await adminDb.collection('users').doc(userId).set(
-          {
-            activeCompanyId: companyId,
-            role: 'OWNER',
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-      } catch (dbErr) {
-        console.warn('Firestore onboarding doc sync note:', dbErr);
-      }
+    // Permanently mark onboarding as completed on the user record in the database
+    const completedAt = new Date().toISOString();
+    const userRecord = serverUsers.find((u) => u.id === userId);
+    if (userRecord) {
+      userRecord.onboardingCompleted = true;
+      userRecord.onboardingCompletedAt = userRecord.onboardingCompletedAt || completedAt;
     }
+    saveAuthState();
+
+    // Persist to Firestore when admin credentials are available
+    await runAdminFirestore('Firestore onboarding doc sync note', async (db) => {
+      await db.collection('companies').doc(companyId).set({
+        ...newCompany,
+        createdAt: new Date().toISOString(),
+      });
+      await db.collection('companies').doc(companyId).collection('members').doc(userId).set({
+        userId,
+        role: 'OWNER',
+        status: 'ACTIVE',
+        joinedAt: new Date().toISOString(),
+      });
+      await db.collection('users').doc(userId).set(
+        {
+          activeCompanyId: companyId,
+          defaultCompanyId: companyId,
+          role: 'OWNER',
+          onboardingCompleted: true,
+          onboardingCompletedAt: userRecord?.onboardingCompletedAt || completedAt,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
+    });
 
     // Sign new session token with active companyId and OWNER role
     const newToken = signSessionToken({
@@ -835,6 +933,18 @@ authRouter.post('/onboard-company', requireAuth, async (req: AuthenticatedReques
     res.status(201).json({
       success: true,
       token: newToken,
+      needsOnboarding: false,
+      onboardingCompleted: true,
+      user: userRecord
+        ? {
+            id: userRecord.id,
+            email: userRecord.email,
+            name: userRecord.name,
+            phone: userRecord.phone,
+            onboardingCompleted: true,
+            onboardingCompletedAt: userRecord.onboardingCompletedAt,
+          }
+        : undefined,
       company: newCompany,
       role: 'OWNER',
       accessibleCompanies: [
@@ -900,12 +1010,55 @@ authRouter.post('/join-company', requireAuth, (req: AuthenticatedRequest, res) =
   };
 
   serverCompanyUsers.push(newMembership);
+  const joinedUser = serverUsers.find((u) => u.id === userId);
+  if (joinedUser && !joinedUser.onboardingCompleted) {
+    joinedUser.onboardingCompleted = true;
+    joinedUser.onboardingCompletedAt = joinedUser.onboardingCompletedAt || new Date().toISOString();
+  }
+  saveAuthState();
 
   res.status(201).json({
     success: true,
     message: `Joined ${company.name} as ${safeRole}.`,
     role: safeRole,
     company,
+  });
+});
+
+/**
+ * POST /api/auth/complete-onboarding
+ * Permanently marks onboardingCompleted = true for the authenticated user
+ */
+authRouter.post('/complete-onboarding', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.userId;
+  const user = serverUsers.find((u) => u.id === userId);
+  if (!user) {
+    res.status(404).json({ success: false, error: 'User not found.' });
+    return;
+  }
+
+  if (!user.onboardingCompleted) {
+    user.onboardingCompleted = true;
+    user.onboardingCompletedAt = user.onboardingCompletedAt || new Date().toISOString();
+    saveAuthState();
+  }
+
+  await runAdminFirestore('Firestore complete onboarding sync note', async (db) => {
+    await db.collection('users').doc(user.id).set(
+      {
+        onboardingCompleted: true,
+        onboardingCompletedAt: user.onboardingCompletedAt,
+        updatedAt: new Date().toISOString(),
+      },
+      { merge: true }
+    );
+  });
+
+  res.json({
+    success: true,
+    onboardingCompleted: true,
+    onboardingCompletedAt: user.onboardingCompletedAt,
+    needsOnboarding: false,
   });
 });
 
@@ -967,23 +1120,35 @@ authRouter.post('/logout', (_req, res) => {
  */
 authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
   const user = serverUsers.find((u) => u.id === req.user?.userId);
-  const company = serverCompanies.find((c) => c.id === req.companyId);
+  const memberships = user ? serverCompanyUsers.filter((cu) => cu.userId === user.id && cu.isActive) : [];
+  const company =
+    serverCompanies.find((c) => c.id === req.companyId) ||
+    (memberships[0] ? serverCompanies.find((c) => c.id === memberships[0].companyId) : undefined);
 
   if (!user) {
     res.status(404).json({ success: false, error: 'User entity not found.' });
     return;
   }
 
-  // If user has no company yet
-  if (!company) {
+  if (memberships.length > 0 && !user.onboardingCompleted) {
+    user.onboardingCompleted = true;
+    user.onboardingCompletedAt = user.onboardingCompletedAt || new Date().toISOString();
+    saveAuthState();
+  }
+
+  const hasCompletedOnboarding = Boolean(user.onboardingCompleted) || memberships.length > 0 || Boolean(company);
+
+  if (!hasCompletedOnboarding) {
     res.json({
       success: true,
       needsOnboarding: true,
+      onboardingCompleted: false,
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
         phone: user.phone,
+        onboardingCompleted: false,
       },
       company: null,
       role: null,
@@ -992,7 +1157,6 @@ authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
     return;
   }
 
-  const memberships = serverCompanyUsers.filter((cu) => cu.userId === user.id && cu.isActive);
   const accessibleCompanies = memberships.map((m) => {
     const c = serverCompanies.find((comp) => comp.id === m.companyId);
     return {
@@ -1005,14 +1169,17 @@ authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
   res.json({
     success: true,
     needsOnboarding: false,
+    onboardingCompleted: true,
     user: {
       id: user.id,
       email: user.email,
       name: user.name,
       phone: user.phone,
+      onboardingCompleted: true,
+      onboardingCompletedAt: user.onboardingCompletedAt,
     },
-    company,
-    role: req.role,
+    company: company || null,
+    role: req.role || memberships[0]?.role || 'OWNER',
     accessibleCompanies,
   });
 });
@@ -1036,6 +1203,7 @@ authRouter.patch('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
   };
 
   serverUsers[userIndex] = updated;
+  saveAuthState();
 
   res.json({
     success: true,
@@ -1044,6 +1212,8 @@ authRouter.patch('/profile', requireAuth, (req: AuthenticatedRequest, res) => {
       email: updated.email,
       name: updated.name,
       phone: updated.phone,
+      onboardingCompleted: Boolean(updated.onboardingCompleted),
+      onboardingCompletedAt: updated.onboardingCompletedAt,
     },
     message: 'Profile updated successfully.',
   });
@@ -1143,6 +1313,7 @@ authRouter.put('/company/profile', requireAuth, requireRoles(['OWNER', 'ADMIN'])
   };
 
   serverCompanies[companyIndex] = updated;
+  saveAuthState();
 
   res.json({
     success: true,
@@ -1236,6 +1407,7 @@ authRouter.post(
       };
 
       serverCompanyUsers.push(newMembership);
+      saveAuthState();
 
       res.status(201).json({
         success: true,

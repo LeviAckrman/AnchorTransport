@@ -16,7 +16,7 @@ import {
   TripSettlement,
   Payment,
 } from '../types/tms';
-import { adminDb } from '../lib/firebase/admin';
+import { runAdminFirestore } from '../lib/firebase/admin';
 import {
   INITIAL_COMPANY,
   INITIAL_VEHICLES,
@@ -69,6 +69,10 @@ export interface VehicleAttentionItem {
   }[];
 }
 
+function isValidFirestoreSegment(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && !value.includes('/');
+}
+
 class ServerFleetStore {
   public trips: Trip[] = [];
   public vehicles: Vehicle[] = [];
@@ -88,11 +92,12 @@ class ServerFleetStore {
    * If Firestore has no records for this company, the store remains empty.
    */
   async hydrateFromFirestore(companyId: string, force = false): Promise<void> {
-    if (!adminDb) return;
-    if (this.hydratedCompanies.has(companyId) && !force) return;
+    if (!isValidFirestoreSegment(companyId)) return;
+    const safeCompanyId = companyId.trim();
+    if (this.hydratedCompanies.has(safeCompanyId) && !force) return;
 
-    try {
-      const companyRef = adminDb.collection('companies').doc(companyId);
+    await runAdminFirestore('Hydration from Firestore note', async (db) => {
+      const companyRef = db.collection('companies').doc(safeCompanyId);
       const [
         vehSnap,
         drvSnap,
@@ -119,49 +124,47 @@ class ServerFleetStore {
 
       if (vehSnap && !vehSnap.empty) {
         const items = vehSnap.docs.map((d) => d.data() as Vehicle);
-        this.vehicles = this.vehicles.filter((v) => v.companyId !== companyId).concat(items);
+        this.vehicles = this.vehicles.filter((v) => v.companyId !== safeCompanyId).concat(items);
       }
       if (drvSnap && !drvSnap.empty) {
         const items = drvSnap.docs.map((d) => d.data() as Driver);
-        this.drivers = this.drivers.filter((d) => d.companyId !== companyId).concat(items);
+        this.drivers = this.drivers.filter((d) => d.companyId !== safeCompanyId).concat(items);
       }
       if (custSnap && !custSnap.empty) {
         const items = custSnap.docs.map((d) => d.data() as Customer);
-        this.customers = this.customers.filter((c) => c.companyId !== companyId).concat(items);
+        this.customers = this.customers.filter((c) => c.companyId !== safeCompanyId).concat(items);
       }
       if (tripSnap && !tripSnap.empty) {
         const items = tripSnap.docs.map((d) => d.data() as Trip);
-        this.trips = this.trips.filter((t) => t.companyId !== companyId).concat(items);
+        this.trips = this.trips.filter((t) => t.companyId !== safeCompanyId).concat(items);
       }
       if (docSnap && !docSnap.empty) {
         const items = docSnap.docs.map((d) => d.data() as VehicleDocument);
-        this.documents = this.documents.filter((d) => d.companyId !== companyId).concat(items);
+        this.documents = this.documents.filter((d) => d.companyId !== safeCompanyId).concat(items);
       }
       if (expSnap && !expSnap.empty) {
         const items = expSnap.docs.map((d) => d.data() as TripExpense);
-        this.expenses = this.expenses.filter((e) => e.companyId !== companyId).concat(items);
+        this.expenses = this.expenses.filter((e) => e.companyId !== safeCompanyId).concat(items);
       }
       if (advSnap && !advSnap.empty) {
         const items = advSnap.docs.map((d) => d.data() as DriverAdvance);
-        this.advances = this.advances.filter((a) => a.companyId !== companyId).concat(items);
+        this.advances = this.advances.filter((a) => a.companyId !== safeCompanyId).concat(items);
       }
       if (stlSnap && !stlSnap.empty) {
         const items = stlSnap.docs.map((d) => d.data() as TripSettlement);
-        this.settlements = this.settlements.filter((s) => s.companyId !== companyId).concat(items);
+        this.settlements = this.settlements.filter((s) => s.companyId !== safeCompanyId).concat(items);
       }
       if (invSnap && !invSnap.empty) {
         const items = invSnap.docs.map((d) => d.data() as Invoice);
-        this.invoices = this.invoices.filter((i) => i.companyId !== companyId).concat(items);
+        this.invoices = this.invoices.filter((i) => i.companyId !== safeCompanyId).concat(items);
       }
       if (paySnap && !paySnap.empty) {
         const items = paySnap.docs.map((d) => d.data() as Payment);
-        this.payments = this.payments.filter((p) => p.companyId !== companyId).concat(items);
+        this.payments = this.payments.filter((p) => p.companyId !== safeCompanyId).concat(items);
       }
 
-      this.hydratedCompanies.add(companyId);
-    } catch (err) {
-      console.warn('Hydration from Firestore note:', err);
-    }
+      this.hydratedCompanies.add(safeCompanyId);
+    });
   }
 
   /**
@@ -183,6 +186,21 @@ class ServerFleetStore {
       documents: VehicleDocument[];
     }>
   ): { [key: string]: number } {
+    if (!isValidFirestoreSegment(companyId)) {
+      return {
+        vehicles: 0,
+        drivers: 0,
+        customers: 0,
+        trips: 0,
+        expenses: 0,
+        advances: 0,
+        settlements: 0,
+        invoices: 0,
+        payments: 0,
+        documents: 0,
+      };
+    }
+
     const scopeList = <T extends { companyId?: string }>(arr?: T[]): T[] =>
       Array.isArray(arr) ? arr.map((item) => ({ ...item, companyId })) : [];
 
@@ -237,34 +255,42 @@ class ServerFleetStore {
    * Persist a user entity mutation into Firestore
    */
   async persistToFirestore(companyId: string, subcollection: string, docId: string, data: any): Promise<void> {
-    if (!adminDb) return;
-    try {
-      await adminDb
-        .collection('companies')
-        .doc(companyId)
-        .collection(subcollection)
-        .doc(docId)
-        .set(data, { merge: true });
-    } catch (err) {
-      console.warn(`Firestore save error (${subcollection}/${docId}):`, err);
+    if (
+      !isValidFirestoreSegment(companyId) ||
+      !isValidFirestoreSegment(subcollection) ||
+      !isValidFirestoreSegment(docId)
+    ) {
+      return;
     }
+    await runAdminFirestore(`Firestore save error (${subcollection}/${docId})`, async (db) => {
+      await db
+        .collection('companies')
+        .doc(companyId.trim())
+        .collection(subcollection.trim())
+        .doc(docId.trim())
+        .set(data, { merge: true });
+    });
   }
 
   /**
    * Delete an entity from Firestore
    */
   async deleteFromFirestore(companyId: string, subcollection: string, docId: string): Promise<void> {
-    if (!adminDb) return;
-    try {
-      await adminDb
-        .collection('companies')
-        .doc(companyId)
-        .collection(subcollection)
-        .doc(docId)
-        .delete();
-    } catch (err) {
-      console.warn(`Firestore delete error (${subcollection}/${docId}):`, err);
+    if (
+      !isValidFirestoreSegment(companyId) ||
+      !isValidFirestoreSegment(subcollection) ||
+      !isValidFirestoreSegment(docId)
+    ) {
+      return;
     }
+    await runAdminFirestore(`Firestore delete error (${subcollection}/${docId})`, async (db) => {
+      await db
+        .collection('companies')
+        .doc(companyId.trim())
+        .collection(subcollection.trim())
+        .doc(docId.trim())
+        .delete();
+    });
   }
 
   /**

@@ -22,7 +22,7 @@ interface RegisterPageProps {
 export const RegisterPage: React.FC<RegisterPageProps> = ({ onSwitchToLogin }) => {
   const { register } = useAuth();
 
-  const [mode, setMode] = useState<'quick' | 'full'>('full');
+  const [mode, setMode] = useState<'quick' | 'full'>('quick');
   const [ownerName, setOwnerName] = useState('');
   const [ownerEmail, setOwnerEmail] = useState('');
   const [password, setPassword] = useState('');

@@ -13,6 +13,8 @@
         "activeCompanyId": { "type": "string", "maxLength": 128, "description": "Currently active company UUID" },
         "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MANAGER", "ACCOUNTANT", "OPERATIONS"] },
         "photoUrl": { "type": "string", "maxLength": 500 },
+        "onboardingCompleted": { "type": "boolean", "description": "Whether the user has permanently completed initial welcome/company onboarding" },
+        "onboardingCompletedAt": { "type": "string", "format": "date-time", "maxLength": 40, "description": "ISO timestamp when onboarding was completed" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

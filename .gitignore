@@ -8,3 +8,4 @@ coverage/
 !.env.example
 *serviceAccountKey*.json
 *service-account*.json
+data/

@@ -10,7 +10,7 @@
  */
 
 import { serverFleetStore } from './store';
-import { adminDb } from '../lib/firebase/admin';
+import { runAdminFirestore } from '../lib/firebase/admin';
 
 export interface ServerAuditLog {
   id: string;
@@ -59,18 +59,21 @@ export async function logAuditEvent(params: {
   serverAuditLogs.push(entry);
 
   // Firestore background sync
-  if (adminDb && params.companyId) {
-    try {
-      const cleanData = JSON.parse(JSON.stringify(entry));
-      await adminDb
+  if (
+    typeof params.companyId === 'string' &&
+    params.companyId.trim().length > 0 &&
+    !params.companyId.includes('/') &&
+    entry.id.trim().length > 0
+  ) {
+    const cleanData = JSON.parse(JSON.stringify(entry));
+    await runAdminFirestore('Firestore audit log sync note', async (db) => {
+      await db
         .collection('companies')
-        .doc(params.companyId)
+        .doc(params.companyId.trim())
         .collection('audit_logs')
         .doc(entry.id)
         .set(cleanData);
-    } catch (err) {
-      console.warn('Firestore audit log sync note:', err);
-    }
+    });
   }
 
   return entry;

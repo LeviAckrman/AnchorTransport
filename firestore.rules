@@ -103,7 +103,8 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'email', 'name', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'email', 'name', 'phone', 'defaultCompanyId',
-          'activeCompanyId', 'role', 'photoUrl', 'createdAt', 'updatedAt'
+          'activeCompanyId', 'role', 'photoUrl', 'onboardingCompleted',
+          'onboardingCompletedAt', 'createdAt', 'updatedAt'
         ])
         && data.id == userId
         && isReqString(data, 'email', 200)
@@ -113,6 +114,8 @@ service cloud.firestore {
         && isOptString(data, 'activeCompanyId', 128)
         && (!( 'role' in data ) || (data.role is string && data.role in ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']))
         && isOptString(data, 'photoUrl', 500)
+        && isOptBool(data, 'onboardingCompleted')
+        && isOptString(data, 'onboardingCompletedAt', 40)
         && data.createdAt is timestamp
         && data.updatedAt == request.time;
     }
@@ -644,9 +647,11 @@ service cloud.firestore {
                     && (request.auth.uid == userId || isBootstrappedAdmin())
                     && isValidUser(incoming(), userId)
                     && incoming().createdAt == existing().createdAt
+                    && (!('onboardingCompleted' in existing()) || existing().onboardingCompleted != true || incoming().onboardingCompleted == true)
+                    && (!('onboardingCompletedAt' in existing()) || incoming().onboardingCompletedAt == existing().onboardingCompletedAt || isBootstrappedAdmin())
                     && (
                       isBootstrappedAdmin() ||
-                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'updatedAt'])
+                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'updatedAt'])
                     );
       allow delete: if false;
     }

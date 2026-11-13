@@ -8,7 +8,7 @@ import { Router, Response } from 'express';
 import { AuthenticatedRequest, requireAuth, requireRoles } from '../auth';
 import { serverFleetStore } from '../store';
 import { Vehicle, Driver, Customer, VehicleDocument, UserRole } from '../../types/tms';
-import { adminDb } from '../../lib/firebase/admin';
+import { isAdminFirestoreWritable, runAdminFirestore } from '../../lib/firebase/admin';
 
 export const fleetRouter = Router();
 
@@ -138,7 +138,7 @@ export function syncVehicleDocuments(
   }
 
   // Also persist generated compliance documents to Firestore if available
-  if (adminDb) {
+  if (isAdminFirestoreWritable()) {
     for (const d of createdDocs) {
       serverFleetStore.persistToFirestore(companyId, 'documents', d.id, d).catch(() => {});
     }
@@ -470,18 +470,14 @@ fleetRouter.post('/vehicles', requireAuth, async (req: AuthenticatedRequest, res
     const { documents: syncedDocs, deletedIds: deletedDocumentIds } = syncVehicleDocuments(newVehicle, companyId);
 
     // Also persist to Firestore if available
-    if (adminDb) {
-      try {
-        await adminDb
-          .collection('companies')
-          .doc(companyId)
-          .collection('vehicles')
-          .doc(newVehicle.id)
-          .set(newVehicle);
-      } catch (fbErr) {
-        console.warn('Firestore vehicle sync note:', fbErr);
-      }
-    }
+    await runAdminFirestore('Firestore vehicle sync note', async (db) => {
+      await db
+        .collection('companies')
+        .doc(companyId)
+        .collection('vehicles')
+        .doc(newVehicle.id)
+        .set(newVehicle);
+    });
 
     res.status(201).json({
       success: true,
@@ -610,18 +606,14 @@ fleetRouter.put('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, 
     const { documents: syncedDocs, deletedIds: deletedDocumentIds } = syncVehicleDocuments(vehicle, companyId);
 
     // Persist to Firestore if available
-    if (adminDb) {
-      try {
-        await adminDb
-          .collection('companies')
-          .doc(companyId)
-          .collection('vehicles')
-          .doc(vehicle.id)
-          .set(vehicle, { merge: true });
-      } catch (fbErr) {
-        console.warn('Firestore vehicle update note:', fbErr);
-      }
-    }
+    await runAdminFirestore('Firestore vehicle update note', async (db) => {
+      await db
+        .collection('companies')
+        .doc(companyId)
+        .collection('vehicles')
+        .doc(vehicle.id)
+        .set(vehicle, { merge: true });
+    });
 
     res.json({
       success: true,
@@ -679,13 +671,9 @@ fleetRouter.delete(
         .map((d) => d.id);
       serverFleetStore.documents = serverFleetStore.documents.filter((d) => d.vehicleId !== vehicleId);
 
-      if (adminDb) {
-        try {
-          await adminDb.collection('companies').doc(companyId).collection('vehicles').doc(vehicleId).delete();
-        } catch (fbErr) {
-          console.warn('Firestore vehicle delete note:', fbErr);
-        }
-      }
+      await runAdminFirestore('Firestore vehicle delete note', async (db) => {
+        await db.collection('companies').doc(companyId).collection('vehicles').doc(vehicleId).delete();
+      });
 
       res.json({
         success: true,
@@ -913,13 +901,9 @@ fleetRouter.post('/drivers', requireAuth, async (req: AuthenticatedRequest, res:
 
     serverFleetStore.drivers.unshift(newDriver);
 
-    if (adminDb) {
-      try {
-        await adminDb.collection('companies').doc(companyId).collection('drivers').doc(newDriver.id).set(newDriver);
-      } catch (fbErr) {
-        console.warn('Firestore driver sync note:', fbErr);
-      }
-    }
+    await runAdminFirestore('Firestore driver sync note', async (db) => {
+      await db.collection('companies').doc(companyId).collection('drivers').doc(newDriver.id).set(newDriver);
+    });
 
     res.status(201).json({
       success: true,
@@ -1023,13 +1007,9 @@ fleetRouter.put('/drivers/:id', requireAuth, async (req: AuthenticatedRequest, r
 
     driver.updatedAt = new Date().toISOString();
 
-    if (adminDb) {
-      try {
-        await adminDb.collection('companies').doc(companyId).collection('drivers').doc(driver.id).set(driver, { merge: true });
-      } catch (fbErr) {
-        console.warn('Firestore driver update note:', fbErr);
-      }
-    }
+    await runAdminFirestore('Firestore driver update note', async (db) => {
+      await db.collection('companies').doc(companyId).collection('drivers').doc(driver.id).set(driver, { merge: true });
+    });
 
     res.json({
       success: true,
@@ -1070,13 +1050,9 @@ fleetRouter.delete(
 
       serverFleetStore.drivers = serverFleetStore.drivers.filter((d) => d.id !== driverId);
 
-      if (adminDb) {
-        try {
-          await adminDb.collection('companies').doc(companyId).collection('drivers').doc(driverId).delete();
-        } catch (fbErr) {
-          console.warn('Firestore driver delete note:', fbErr);
-        }
-      }
+      await runAdminFirestore('Firestore driver delete note', async (db) => {
+        await db.collection('companies').doc(companyId).collection('drivers').doc(driverId).delete();
+      });
 
       res.json({
         success: true,
@@ -1338,18 +1314,14 @@ fleetRouter.post('/customers', requireAuth, async (req: AuthenticatedRequest, re
 
     serverFleetStore.customers.unshift(newCustomer);
 
-    if (adminDb) {
-      try {
-        await adminDb
-          .collection('companies')
-          .doc(companyId)
-          .collection('customers')
-          .doc(newCustomer.id)
-          .set(newCustomer);
-      } catch (fbErr) {
-        console.warn('Firestore customer sync note:', fbErr);
-      }
-    }
+    await runAdminFirestore('Firestore customer sync note', async (db) => {
+      await db
+        .collection('companies')
+        .doc(companyId)
+        .collection('customers')
+        .doc(newCustomer.id)
+        .set(newCustomer);
+    });
 
     res.status(201).json({
       success: true,
@@ -1444,13 +1416,9 @@ fleetRouter.put('/customers/:id', requireAuth, async (req: AuthenticatedRequest,
 
     customer.updatedAt = new Date().toISOString();
 
-    if (adminDb) {
-      try {
-        await adminDb.collection('companies').doc(companyId).collection('customers').doc(customer.id).set(customer, { merge: true });
-      } catch (fbErr) {
-        console.warn('Firestore customer update note:', fbErr);
-      }
-    }
+    await runAdminFirestore('Firestore customer update note', async (db) => {
+      await db.collection('companies').doc(companyId).collection('customers').doc(customer.id).set(customer, { merge: true });
+    });
 
     res.json({
       success: true,
@@ -1506,13 +1474,9 @@ fleetRouter.delete(
 
       serverFleetStore.customers = serverFleetStore.customers.filter((c) => c.id !== customerId);
 
-      if (adminDb) {
-        try {
-          await adminDb.collection('companies').doc(companyId).collection('customers').doc(customerId).delete();
-        } catch (fbErr) {
-          console.warn('Firestore customer delete note:', fbErr);
-        }
-      }
+      await runAdminFirestore('Firestore customer delete note', async (db) => {
+        await db.collection('companies').doc(companyId).collection('customers').doc(customerId).delete();
+      });
 
       res.json({
         success: true,

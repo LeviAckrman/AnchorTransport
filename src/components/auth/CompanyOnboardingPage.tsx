@@ -85,13 +85,13 @@ export const CompanyOnboardingPage: React.FC = () => {
         </div>
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-semibold mb-2">
           <ShieldCheck className="w-3.5 h-3.5" />
-          <span>Step 2 of 2: Trusted Company Onboarding</span>
+          <span>Welcome to AnchorTransport TMS &bull; First-Time Setup</span>
         </div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-          Setup Your Fleet Transport Company
+          Welcome! Setup Your Fleet Transport Company
         </h1>
         <p className="mt-2 text-xs sm:text-sm text-slate-400 max-w-lg mx-auto">
-          Welcome <span className="text-white font-medium">{user?.name || user?.email}</span>. Establishing this company record will configure your isolated tenant database and assign you as verified <span className="text-emerald-400 font-semibold">OWNER</span>.
+          Welcome <span className="text-white font-medium">{user?.name || user?.email}</span>. Completing this one-time onboarding configures your isolated tenant database and assigns you as verified <span className="text-emerald-400 font-semibold">OWNER</span>.
         </p>
       </div>
 

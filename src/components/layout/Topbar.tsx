@@ -41,31 +41,48 @@ export const Topbar: React.FC<TopbarProps> = ({
     { id: 'OPERATIONS', label: 'Operations Staff', desc: 'Daily log & driver advance entry' },
   ];
 
+  const closeMenus = () => {
+    setRoleMenuOpen(false);
+    setCompanyMenuOpen(false);
+  };
+
   return (
-    <header className="h-16 bg-white border-b border-slate-200/90 px-4 sm:px-6 flex items-center justify-between shrink-0 select-none z-20">
+    <header className="relative h-16 bg-white border-b border-slate-200/90 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-4 shrink-0 select-none z-20">
+      {(roleMenuOpen || companyMenuOpen) && (
+        <div
+          className="fixed inset-0 z-30"
+          onClick={closeMenus}
+          aria-hidden="true"
+        />
+      )}
+
       {/* Left: Company Profile & Multi-Company Switcher */}
-      <div className="flex items-center gap-3">
-        <div className="relative">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+        <div className="relative min-w-0 max-w-full">
           <button
-            onClick={() => setCompanyMenuOpen(!companyMenuOpen)}
-            className="flex items-center gap-2.5 text-left p-1.5 rounded-xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-200"
+            type="button"
+            onClick={() => {
+              setRoleMenuOpen(false);
+              setCompanyMenuOpen(!companyMenuOpen);
+            }}
+            className="flex items-center gap-2.5 text-left p-1.5 rounded-xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-200 max-w-full min-w-0 cursor-pointer"
           >
-            <div className="p-2 rounded-lg bg-indigo-50 text-indigo-700 hidden sm:block">
+            <div className="p-2 rounded-lg bg-indigo-50 text-indigo-700 hidden sm:block shrink-0">
               <Building2 className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-tight">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-tight truncate">
                   {company.name}
                 </h2>
                 {accessibleCompanies.length > 1 && (
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 )}
               </div>
-              <p className="text-xs text-slate-500 flex items-center gap-1.5">
-                <span>{company.city}, {company.state} (Zone {company.stateCode})</span>
-                <span className="text-slate-300">•</span>
-                <span className="text-emerald-700 font-medium">GSTIN: {company.gstin}</span>
+              <p className="text-[11px] sm:text-xs text-slate-500 flex items-center gap-1.5 truncate">
+                <span className="truncate">{company.city}, {company.state} (Zone {company.stateCode})</span>
+                <span className="text-slate-300 hidden md:inline">•</span>
+                <span className="text-emerald-700 font-medium hidden md:inline shrink-0">GSTIN: {company.gstin}</span>
               </p>
             </div>
           </button>
@@ -80,12 +97,13 @@ export const Topbar: React.FC<TopbarProps> = ({
               <div className="py-1">
                 {accessibleCompanies.map((c) => (
                   <button
+                    type="button"
                     key={c.companyId}
                     onClick={() => {
                       switchCompany(c.companyId);
                       setCompanyMenuOpen(false);
                     }}
-                    className={`w-full text-left px-3 py-2 text-xs flex flex-col transition-colors ${
+                    className={`w-full text-left px-3 py-2 text-xs flex flex-col transition-colors cursor-pointer ${
                       company.id === c.companyId
                         ? 'bg-indigo-50 text-indigo-900 font-semibold'
                         : 'text-slate-700 hover:bg-slate-50'
@@ -107,17 +125,21 @@ export const Topbar: React.FC<TopbarProps> = ({
       </div>
 
       {/* Right Controls: Role Switcher, Quick Actions, User Profile */}
-      <div className="flex items-center gap-2 sm:gap-3">
+      <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
         {/* Role Switcher Pill */}
         <div className="relative">
           <button
-            onClick={() => setRoleMenuOpen(!roleMenuOpen)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200/80 text-slate-700 border border-slate-200 transition-colors"
+            type="button"
+            onClick={() => {
+              setCompanyMenuOpen(false);
+              setRoleMenuOpen(!roleMenuOpen);
+            }}
+            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200/80 text-slate-700 border border-slate-200 transition-colors cursor-pointer"
           >
-            <ShieldCheck className="w-4 h-4 text-indigo-600" />
+            <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
             <span className="hidden sm:inline">Role:</span>
             <span className="text-indigo-700 font-bold">{currentRole}</span>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
           </button>
 
           {roleMenuOpen && (
@@ -129,12 +151,13 @@ export const Topbar: React.FC<TopbarProps> = ({
               <div className="py-1">
                 {roles.map((r) => (
                   <button
+                    type="button"
                     key={r.id}
                     onClick={() => {
                       onRoleChange(r.id);
                       setRoleMenuOpen(false);
                     }}
-                    className={`w-full text-left px-3 py-2 text-xs flex flex-col transition-colors ${
+                    className={`w-full text-left px-3 py-2 text-xs flex flex-col transition-colors cursor-pointer ${
                       currentRole === r.id
                         ? 'bg-indigo-50 text-indigo-900 font-semibold'
                         : 'text-slate-700 hover:bg-slate-50'
@@ -156,9 +179,13 @@ export const Topbar: React.FC<TopbarProps> = ({
 
         {/* Reset Store Button */}
         <button
-          onClick={onResetData}
-          title="Reset to default seed data"
-          className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors border border-transparent hover:border-slate-200 hidden sm:flex items-center gap-1 text-xs"
+          type="button"
+          onClick={() => {
+            closeMenus();
+            onResetData();
+          }}
+          title="Clear operational company data"
+          className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors border border-transparent hover:border-slate-200 hidden sm:flex items-center gap-1 text-xs cursor-pointer"
         >
           <RefreshCw className="w-3.5 h-3.5" />
           <span className="hidden lg:inline">Reset Data</span>
@@ -166,24 +193,33 @@ export const Topbar: React.FC<TopbarProps> = ({
 
         {/* Quick Dispatch CTA Button */}
         <button
-          onClick={onQuickDispatch}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
+          type="button"
+          onClick={() => {
+            closeMenus();
+            onQuickDispatch();
+          }}
+          className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer"
         >
-          <Plus className="w-4 h-4" />
-          <span>New Trip</span>
+          <Plus className="w-4 h-4 shrink-0" />
+          <span className="hidden xs:inline sm:inline">New Trip</span>
         </button>
 
-        {/* User Profile Avatar Button */}
+        {/* User Profile & Security Session Button */}
         <button
-          onClick={onOpenProfile}
+          type="button"
+          onClick={() => {
+            closeMenus();
+            onOpenProfile();
+          }}
           title="User profile & security session"
-          className="flex items-center gap-2 p-1.5 pl-2 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors"
+          aria-label="User profile and security session"
+          className="relative z-40 flex items-center gap-2 p-1.5 sm:pl-2 sm:pr-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 active:bg-slate-100 transition-colors cursor-pointer shrink-0"
         >
-          <div className="w-7 h-7 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center">
-            {user?.name ? user.name[0] : 'U'}
+          <div className="w-7 h-7 rounded-full bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shrink-0">
+            {user?.name ? user.name.trim()[0]?.toUpperCase() || 'U' : 'U'}
           </div>
           <span className="text-xs font-semibold text-slate-800 hidden md:inline">
-            {user?.name ? user.name.split(' ')[0] : 'User'}
+            {user?.name ? user.name.trim().split(/\s+/)[0] : 'Profile'}
           </span>
         </button>
       </div>

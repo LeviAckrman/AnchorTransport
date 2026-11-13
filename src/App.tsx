@@ -96,6 +96,7 @@ function AppContent() {
     role: authRole,
     isAuthenticated,
     needsOnboarding,
+    onboardingCompleted,
     isLoading,
     isEmailVerified,
     isFirebaseUser,
@@ -140,6 +141,9 @@ function AppContent() {
   useEffect(() => {
     if (!isAuthenticated) {
       setStore(clearStoreForNewCustomer());
+      setActiveTab('dashboard');
+      setAuthScreen('login');
+      setIsProfileModalOpen(false);
       return;
     }
     if (authCompany) {
@@ -180,8 +184,11 @@ function AppContent() {
     const fetchLiveCustomers = async () => {
       try {
         const activeToken = localStorage.getItem('token') || '';
+        if (!activeToken || !isAuthenticated || !authCompany?.id || (needsOnboarding && !onboardingCompleted)) {
+          return;
+        }
         const res = await fetch('/api/customers?limit=100', {
-          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+          headers: { Authorization: `Bearer ${activeToken}` },
         });
         const data = await parseResponseJson<any>(res);
         if (res.ok && data?.success && Array.isArray(data.data)) {
@@ -200,15 +207,18 @@ function AppContent() {
     const onCustomerUpdated = () => fetchLiveCustomers();
     window.addEventListener('tms:customer-updated', onCustomerUpdated);
     return () => window.removeEventListener('tms:customer-updated', onCustomerUpdated);
-  }, [authCompany?.id]);
+  }, [isAuthenticated, authCompany?.id, needsOnboarding, onboardingCompleted]);
 
   // Dynamically synchronize vehicles from API so trucks only show after user adds them
   useEffect(() => {
     const fetchLiveVehicles = async () => {
       try {
         const activeToken = localStorage.getItem('token') || '';
+        if (!activeToken || !isAuthenticated || !authCompany?.id || (needsOnboarding && !onboardingCompleted)) {
+          return;
+        }
         const res = await fetch('/api/vehicles?limit=100', {
-          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+          headers: { Authorization: `Bearer ${activeToken}` },
         });
         const data = await parseResponseJson<any>(res);
         if (res.ok && data?.success && Array.isArray(data.data)) {
@@ -227,15 +237,18 @@ function AppContent() {
     const onVehicleUpdated = () => fetchLiveVehicles();
     window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
     return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-  }, [authCompany?.id]);
+  }, [isAuthenticated, authCompany?.id, needsOnboarding, onboardingCompleted]);
 
   // Dynamically synchronize drivers from API so drivers only show after user adds them
   useEffect(() => {
     const fetchLiveDrivers = async () => {
       try {
         const activeToken = localStorage.getItem('token') || '';
+        if (!activeToken || !isAuthenticated || !authCompany?.id || (needsOnboarding && !onboardingCompleted)) {
+          return;
+        }
         const res = await fetch('/api/drivers?limit=100', {
-          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+          headers: { Authorization: `Bearer ${activeToken}` },
         });
         const data = await parseResponseJson<any>(res);
         if (res.ok && data?.success && Array.isArray(data.data)) {
@@ -254,7 +267,7 @@ function AppContent() {
     const onDriverUpdated = () => fetchLiveDrivers();
     window.addEventListener('tms:driver-updated', onDriverUpdated);
     return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
-  }, [authCompany?.id]);
+  }, [isAuthenticated, authCompany?.id, needsOnboarding, onboardingCompleted]);
 
   // Synchronize trips, expenses, advances, settlements, invoices, documents updates
   useEffect(() => {
@@ -657,8 +670,8 @@ function AppContent() {
     return <LoginPage onSwitchToRegister={() => setAuthScreen('register')} />;
   }
 
-  // If authenticated but company setup pending: render Onboarding Wizard
-  if (needsOnboarding) {
+  // If authenticated and onboarding not permanently completed: render Welcome/Onboarding Wizard
+  if (needsOnboarding && !onboardingCompleted) {
     return <CompanyOnboardingPage />;
   }
 
@@ -865,6 +878,7 @@ function AppContent() {
       <UserProfileModal
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
+        fallbackCompany={store.company}
       />
 
       {/* Quick Dispatch Modal */}

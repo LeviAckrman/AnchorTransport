@@ -61,6 +61,8 @@ export interface FirestoreUserProfile {
   activeCompanyId?: string;
   role?: UserRole;
   photoUrl?: string;
+  onboardingCompleted?: boolean;
+  onboardingCompletedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -83,6 +85,10 @@ export interface FirestoreCompanyMember {
  */
 export function isVerifiedEmailUser(): boolean {
   return Boolean(auth.currentUser && auth.currentUser.emailVerified);
+}
+
+function isValidDocSegment(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && !value.includes('/');
 }
 
 /**
@@ -611,10 +617,11 @@ function sanitizeSubcollectionPayload(
  * Fetches /users/{uid} profile directly from Firestore
  */
 export async function fetchUserDocFromFirestore(uid: string): Promise<FirestoreUserProfile | null> {
-  if (!auth.currentUser || !uid) return null;
-  const userPath = `users/${uid}`;
+  if (!auth.currentUser || !isValidDocSegment(uid)) return null;
+  const safeUid = uid.trim();
+  const userPath = `users/${safeUid}`;
   try {
-    const snap = await getDoc(doc(db, 'users', uid));
+    const snap = await getDoc(doc(db, 'users', safeUid));
     if (!snap.exists()) return null;
     return normalizeTimestamps<FirestoreUserProfile>(snap.data());
   } catch (err) {
@@ -628,14 +635,34 @@ export async function fetchUserDocFromFirestore(uid: string): Promise<FirestoreU
 export async function ensureFirestoreUserProfile(
   fbUser: FirebaseUser
 ): Promise<FirestoreUserProfile | null> {
-  if (!auth.currentUser) return null;
+  if (!auth.currentUser || !isValidDocSegment(fbUser?.uid)) return null;
   const userPath = `users/${fbUser.uid}`;
   const userRef = doc(db, 'users', fbUser.uid);
 
   try {
     const snap = await getDoc(userRef);
     if (snap.exists()) {
-      return normalizeTimestamps<FirestoreUserProfile>(snap.data());
+      const existingProfile = normalizeTimestamps<FirestoreUserProfile>(snap.data());
+      // Legacy backfill: if user already has a company linked in Firestore, ensure onboardingCompleted is permanently true
+      if (
+        existingProfile.onboardingCompleted !== true &&
+        (existingProfile.activeCompanyId || existingProfile.defaultCompanyId) &&
+        isVerifiedEmailUser()
+      ) {
+        const completedAt = existingProfile.onboardingCompletedAt || new Date().toISOString();
+        await setDoc(userRef, {
+          ...snap.data(),
+          onboardingCompleted: true,
+          onboardingCompletedAt: completedAt,
+          updatedAt: serverTimestamp(),
+        });
+        return {
+          ...existingProfile,
+          onboardingCompleted: true,
+          onboardingCompletedAt: completedAt,
+        };
+      }
+      return existingProfile;
     }
 
     if (!isVerifiedEmailUser()) {
@@ -645,6 +672,7 @@ export async function ensureFirestoreUserProfile(
         email: (fbUser.email || '').toLowerCase(),
         name: (fbUser.displayName || fbUser.email?.split('@')[0] || 'Fleet User').slice(0, 100),
         phone: fbUser.phoneNumber || '',
+        onboardingCompleted: false,
       };
     }
 
@@ -653,6 +681,7 @@ export async function ensureFirestoreUserProfile(
       email: (fbUser.email || '').toLowerCase().slice(0, 200),
       name: (fbUser.displayName || fbUser.email?.split('@')[0] || 'Fleet User').slice(0, 100),
       phone: clipStr(fbUser.phoneNumber, 20) || '',
+      onboardingCompleted: false,
       ...(clipStr(fbUser.photoURL, 500) ? { photoUrl: clipStr(fbUser.photoURL, 500) } : {}),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -665,6 +694,7 @@ export async function ensureFirestoreUserProfile(
       name: newUserDoc.name,
       phone: newUserDoc.phone,
       photoUrl: fbUser.photoURL || undefined,
+      onboardingCompleted: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -674,13 +704,21 @@ export async function ensureFirestoreUserProfile(
 }
 
 /**
- * Updates the current user's /users/{uid} profile in Firestore
+ * Updates the current user's /users/{uid} profile in Firestore.
+ * Enforces monotonic permanence: onboardingCompleted can never be reverted from true to false.
  */
 export async function updateFirestoreUserProfile(
   uid: string,
-  updates: { name?: string; phone?: string; defaultCompanyId?: string; activeCompanyId?: string }
+  updates: {
+    name?: string;
+    phone?: string;
+    defaultCompanyId?: string;
+    activeCompanyId?: string;
+    onboardingCompleted?: boolean;
+    onboardingCompletedAt?: string;
+  }
 ): Promise<void> {
-  if (!auth.currentUser || auth.currentUser.uid !== uid) return;
+  if (!auth.currentUser || !isValidDocSegment(uid) || auth.currentUser.uid !== uid) return;
   if (!isVerifiedEmailUser()) return;
 
   const userPath = `users/${uid}`;
@@ -694,6 +732,19 @@ export async function updateFirestoreUserProfile(
     const latestSnap = await getDoc(userRef);
     const existingData = latestSnap.data() || {};
 
+    const alreadyCompleted = existingData.onboardingCompleted === true;
+    const nextOnboardingCompleted = alreadyCompleted
+      ? true
+      : updates.onboardingCompleted !== undefined
+      ? Boolean(updates.onboardingCompleted)
+      : existingData.onboardingCompleted;
+
+    const nextOnboardingCompletedAt = existingData.onboardingCompletedAt
+      ? clipStr(existingData.onboardingCompletedAt, 40)
+      : nextOnboardingCompleted === true
+      ? clipStr(updates.onboardingCompletedAt, 40) || new Date().toISOString()
+      : undefined;
+
     const payload = stripUndefined({
       id: uid,
       email: clipStr(existingData.email || auth.currentUser.email, 200)?.toLowerCase() || '',
@@ -703,6 +754,8 @@ export async function updateFirestoreUserProfile(
       activeCompanyId: clipStr(updates.activeCompanyId ?? existingData.activeCompanyId, 128),
       role: existingData.role,
       photoUrl: clipStr(existingData.photoUrl, 500),
+      onboardingCompleted: nextOnboardingCompleted,
+      onboardingCompletedAt: nextOnboardingCompletedAt,
       createdAt: existingData.createdAt instanceof Timestamp ? existingData.createdAt : serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -717,7 +770,7 @@ export async function updateFirestoreUserProfile(
  * Resolves companies owned by a UID via Firestore query (used if user doc lacks company reference)
  */
 export async function listOwnedCompaniesFromFirestore(uid: string): Promise<Company[]> {
-  if (!auth.currentUser || !uid) return [];
+  if (!auth.currentUser || !isValidDocSegment(uid)) return [];
   const path = 'companies';
   try {
     const q = query(collection(db, 'companies'), where('ownerId', '==', uid));
@@ -735,13 +788,15 @@ export async function fetchUserCompanyFromFirestore(
   companyId: string,
   uid: string
 ): Promise<{ company: Company; role: UserRole } | null> {
-  if (!auth.currentUser || !companyId) return null;
-  const companyPath = `companies/${companyId}`;
+  if (!auth.currentUser || !isValidDocSegment(companyId) || !isValidDocSegment(uid)) return null;
+  const safeCompanyId = companyId.trim();
+  const safeUid = uid.trim();
+  const companyPath = `companies/${safeCompanyId}`;
 
   try {
     const [companySnap, memberSnap] = await Promise.all([
-      getDoc(doc(db, 'companies', companyId)),
-      getDoc(doc(db, 'companies', companyId, 'members', uid)),
+      getDoc(doc(db, 'companies', safeCompanyId)),
+      getDoc(doc(db, 'companies', safeCompanyId, 'members', safeUid)),
     ]);
 
     if (!companySnap.exists()) return null;
@@ -761,10 +816,11 @@ export async function fetchUserCompanyFromFirestore(
 export async function fetchCompanyMembersFromFirestore(
   companyId: string
 ): Promise<FirestoreCompanyMember[]> {
-  if (!auth.currentUser || !companyId) return [];
-  const path = `companies/${companyId}/members`;
+  if (!auth.currentUser || !isValidDocSegment(companyId)) return [];
+  const safeCompanyId = companyId.trim();
+  const path = `companies/${safeCompanyId}/members`;
   try {
-    const snap = await getDocs(collection(db, 'companies', companyId, 'members'));
+    const snap = await getDocs(collection(db, 'companies', safeCompanyId, 'members'));
     return snap.docs.map((d) =>
       normalizeTimestamps<FirestoreCompanyMember>({ id: d.id, ...d.data() })
     );
@@ -780,7 +836,14 @@ export async function createCompanyInFirestoreAtomic(
   company: Company & { fleetSize?: string },
   fbUser: FirebaseUser
 ): Promise<void> {
-  if (!auth.currentUser || !isVerifiedEmailUser()) return;
+  if (
+    !auth.currentUser ||
+    !isVerifiedEmailUser() ||
+    !isValidDocSegment(company?.id) ||
+    !isValidDocSegment(fbUser?.uid)
+  ) {
+    return;
+  }
   const companyPath = `companies/${company.id}`;
 
   try {
@@ -835,11 +898,16 @@ export async function createCompanyInFirestoreAtomic(
     batch.set(memberRef, memberPayload);
 
     const userRef = doc(db, 'users', fbUser.uid);
-    batch.update(userRef, {
+    const userUpdates: Record<string, any> = {
       defaultCompanyId: company.id,
       activeCompanyId: company.id,
+      onboardingCompleted: true,
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (!userExisting.onboardingCompletedAt) {
+      userUpdates.onboardingCompletedAt = new Date().toISOString();
+    }
+    batch.update(userRef, userUpdates);
 
     await batch.commit();
   } catch (err) {
@@ -853,7 +921,7 @@ export async function createCompanyInFirestoreAtomic(
 export async function updateCompanyInFirestore(
   company: Company & { ownerId?: string; fleetSize?: string }
 ): Promise<void> {
-  if (!auth.currentUser || !company.id || !isVerifiedEmailUser()) return;
+  if (!auth.currentUser || !isValidDocSegment(company?.id) || !isVerifiedEmailUser()) return;
   const companyPath = `companies/${company.id}`;
   const companyRef = doc(db, 'companies', company.id);
 
@@ -912,22 +980,25 @@ export class FirestoreTMSClient {
   private companyId: string;
 
   constructor(companyId: string) {
-    if (!companyId) throw new Error('Company ID is required to instantiate FirestoreTMSClient');
-    this.companyId = companyId;
+    if (!isValidDocSegment(companyId)) {
+      throw new Error('Valid Company ID is required to instantiate FirestoreTMSClient');
+    }
+    this.companyId = companyId.trim();
   }
 
   private async upsertDoc<T extends { id: string }>(
     subcollection: CompanySubcollection,
     item: T
   ): Promise<void> {
-    if (!auth.currentUser) return;
+    if (!auth.currentUser || !isValidDocSegment(item?.id)) return;
     if (!isVerifiedEmailUser()) {
       console.warn(`Skipped Firestore write (${subcollection}/${item.id}) until email is verified.`);
       return;
     }
 
-    const path = `companies/${this.companyId}/${subcollection}/${item.id}`;
-    const ref = doc(db, 'companies', this.companyId, subcollection, item.id);
+    const safeDocId = item.id.trim();
+    const path = `companies/${this.companyId}/${subcollection}/${safeDocId}`;
+    const ref = doc(db, 'companies', this.companyId, subcollection, safeDocId);
 
     try {
       const existingSnap = await getDoc(ref);
@@ -948,14 +1019,15 @@ export class FirestoreTMSClient {
   }
 
   private async removeDoc(subcollection: CompanySubcollection, docId: string): Promise<void> {
-    if (!auth.currentUser) return;
+    if (!auth.currentUser || !isValidDocSegment(docId)) return;
     if (!isVerifiedEmailUser()) {
       console.warn(`Skipped Firestore delete (${subcollection}/${docId}) until email is verified.`);
       return;
     }
-    const path = `companies/${this.companyId}/${subcollection}/${docId}`;
+    const safeDocId = docId.trim();
+    const path = `companies/${this.companyId}/${subcollection}/${safeDocId}`;
     try {
-      await deleteDoc(doc(db, 'companies', this.companyId, subcollection, docId));
+      await deleteDoc(doc(db, 'companies', this.companyId, subcollection, safeDocId));
     } catch (err) {
       handleFirestoreError(err, OperationType.DELETE, path);
     }
@@ -1029,11 +1101,12 @@ export class FirestoreTMSClient {
 
   // Immutable Audit Logs
   async createAuditLog(log: Omit<AuditLog, 'companyId'>): Promise<void> {
-    if (!auth.currentUser || !isVerifiedEmailUser()) return;
-    const path = `companies/${this.companyId}/auditLogs/${log.id}`;
+    if (!auth.currentUser || !isVerifiedEmailUser() || !isValidDocSegment(log?.id)) return;
+    const safeLogId = log.id.trim();
+    const path = `companies/${this.companyId}/auditLogs/${safeLogId}`;
     try {
       const payload = stripUndefined({
-        id: log.id,
+        id: safeLogId,
         companyId: this.companyId,
         userId: auth.currentUser.uid,
         userName: clipStr((log as any).userName, 100),
@@ -1043,7 +1116,7 @@ export class FirestoreTMSClient {
         summary: clipStr(log.summary, 500) || 'Action logged',
         timestamp: serverTimestamp(),
       });
-      await setDoc(doc(db, 'companies', this.companyId, 'auditLogs', log.id), payload);
+      await setDoc(doc(db, 'companies', this.companyId, 'auditLogs', safeLogId), payload);
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, path);
     }
@@ -1099,7 +1172,7 @@ async function deleteSubcollectionsInChunks(
   companyId: string,
   subcollections: CompanySubcollection[]
 ): Promise<void> {
-  if (!auth.currentUser || !isVerifiedEmailUser() || !companyId) return;
+  if (!auth.currentUser || !isVerifiedEmailUser() || !isValidDocSegment(companyId)) return;
 
   const refsToDelete = [];
   for (const sub of subcollections) {
