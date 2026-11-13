@@ -14,6 +14,7 @@ import { Invoice, Payment } from '../../types/tms';
 import { formatINR, paiseToRupees, rupeesToPaise } from '../../lib/financialEngine';
 import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -28,12 +29,15 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   invoice,
   onSuccess,
 }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
+  const defaultBankAccount = company?.bankName
+    ? `${company.bankName}${company.accountNumber ? ` (A/C ...${company.accountNumber.slice(-4)})` : ''}`
+    : '';
   const [amountRupees, setAmountRupees] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [paymentMode, setPaymentMode] = useState<'NEFT_RTGS' | 'CHEQUE' | 'UPI' | 'CASH' | 'BANK_TRANSFER'>('NEFT_RTGS');
   const [referenceNumber, setReferenceNumber] = useState('');
-  const [bankAccount, setBankAccount] = useState('HDFC Bank Ltd. (A/C ...1234)');
+  const [bankAccount, setBankAccount] = useState('');
   const [tdsRupees, setTdsRupees] = useState('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
@@ -41,14 +45,18 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
   // Initialize amount to full remaining balance due
   useEffect(() => {
-    if (invoice) {
+    if (invoice && isOpen) {
       const remainingRupees = paiseToRupees(invoice.balanceDuePaise);
       setAmountRupees(remainingRupees.toString());
+      setPaymentDate(new Date().toISOString().split('T')[0]);
+      setPaymentMode('NEFT_RTGS');
       setReferenceNumber('');
+      setBankAccount(defaultBankAccount);
+      setTdsRupees('');
       setNotes('');
       setError(null);
     }
-  }, [invoice, isOpen]);
+  }, [invoice, isOpen, defaultBankAccount]);
 
   if (!invoice) return null;
 
@@ -104,6 +112,17 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Failed to record payment');
       }
+
+      const activeCompanyId = company?.id || data.payment?.companyId;
+      if (activeCompanyId) {
+        if (data.payment) await syncEntityToFirestore(activeCompanyId, 'payments', data.payment);
+        if (data.invoice) await syncEntityToFirestore(activeCompanyId, 'invoices', data.invoice);
+        if (data.customer) await syncEntityToFirestore(activeCompanyId, 'customers', data.customer);
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:payment-updated'));
+      window.dispatchEvent(new CustomEvent('tms:invoice-updated'));
+      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
 
       onSuccess(data.payment);
       onClose();
@@ -270,7 +289,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 type="text"
                 value={bankAccount}
                 onChange={(e) => setBankAccount(e.target.value)}
-                placeholder="e.g. HDFC Bank Current A/C"
+                placeholder="Bank name & account reference"
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
               />
             </div>

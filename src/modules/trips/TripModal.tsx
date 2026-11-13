@@ -19,6 +19,7 @@ import { Modal } from '../../components/ui/Modal';
 import { formatINR, rupeesToPaise, paiseToRupees } from '../../lib/currency';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface TripModalProps {
   isOpen: boolean;
@@ -39,7 +40,7 @@ export const TripModal: React.FC<TripModalProps> = ({
   localDrivers = [],
   localCustomers = [],
 }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
   const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
 
   const [customerId, setCustomerId] = useState('');
@@ -279,6 +280,21 @@ export const TripModal: React.FC<TripModalProps> = ({
         throw new Error(data?.error || 'Failed to save trip booking.');
       }
 
+      await Promise.all([
+        syncEntityToFirestore(company?.id, 'trips', data.trip),
+        syncEntityToFirestore(company?.id, 'vehicles', data.vehicle),
+        syncEntityToFirestore(company?.id, 'vehicles', data.oldVehicle),
+        syncEntityToFirestore(company?.id, 'vehicles', data.newVehicle),
+        syncEntityToFirestore(company?.id, 'drivers', data.driver),
+        syncEntityToFirestore(company?.id, 'advances', data.advance),
+      ]);
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
+      if (data.advance) {
+        window.dispatchEvent(new CustomEvent('tms:advance-updated'));
+      }
+
       onSuccess(data.trip, Boolean(tripToEdit));
       resetForm();
       onClose();
@@ -369,11 +385,14 @@ export const TripModal: React.FC<TripModalProps> = ({
                   ? '-- No Customer Parties Registered --'
                   : '-- Choose Consignor / Client --'}
               </option>
-              {effectiveCustomers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} (GSTIN: {c.gstin} - {c.city}, {c.state})
-                </option>
-              ))}
+              {effectiveCustomers.map((c) => {
+                const loc = [c.city, c.state].filter(Boolean).join(', ');
+                return (
+                  <option key={c.id} value={c.id}>
+                    {c.name} (GSTIN: {c.gstin}{loc ? ` - ${loc}` : ''})
+                  </option>
+                );
+              })}
             </select>
             {effectiveCustomers.length === 0 && (
               <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2">

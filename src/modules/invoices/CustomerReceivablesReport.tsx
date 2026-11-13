@@ -55,7 +55,7 @@ interface CustomerReceivablesReportProps {
 export const CustomerReceivablesReport: React.FC<CustomerReceivablesReportProps> = ({
   onSelectCustomer,
 }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ReceivablesSummary | null>(null);
@@ -65,7 +65,21 @@ export const CustomerReceivablesReport: React.FC<CustomerReceivablesReportProps>
 
   useEffect(() => {
     fetchReport();
-  }, [token]);
+  }, [token, company?.id]);
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      fetchReport();
+    };
+    window.addEventListener('tms:firestore-hydrated', handleRefresh);
+    window.addEventListener('tms:invoice-updated', handleRefresh);
+    window.addEventListener('tms:payment-updated', handleRefresh);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
+      window.removeEventListener('tms:invoice-updated', handleRefresh);
+      window.removeEventListener('tms:payment-updated', handleRefresh);
+    };
+  }, [token, company?.id]);
 
   const fetchReport = async () => {
     setLoading(true);

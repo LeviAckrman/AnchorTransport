@@ -482,6 +482,7 @@ tripsRouter.post('/trips', requireAuth, async (req: AuthenticatedRequest, res: R
 
     serverFleetStore.trips.unshift(newTrip);
 
+    let createdAdvance: DriverAdvance | null = null;
     // 7. Side effects on vehicle and driver state
     if (initialStatus === 'DISPATCHED') {
       vehicle.status = 'IN_TRANSIT';
@@ -497,7 +498,7 @@ tripsRouter.post('/trips', requireAuth, async (req: AuthenticatedRequest, res: R
 
       // Record advance if given
       if (initialAdvance > 0) {
-        const adv: DriverAdvance = {
+        createdAdvance = {
           id: `adv_${companyId}_${Date.now()}`,
           companyId,
           tripId: newTrip.id,
@@ -509,9 +510,9 @@ tripsRouter.post('/trips', requireAuth, async (req: AuthenticatedRequest, res: R
           disbursedBy: req.user?.name || 'Owner',
           isSettled: false,
         };
-        serverFleetStore.advances.push(adv);
+        serverFleetStore.advances.push(createdAdvance);
         driver.currentAdvanceBalancePaise += initialAdvance;
-        await serverFleetStore.persistToFirestore(companyId, 'advances', adv.id, adv);
+        await serverFleetStore.persistToFirestore(companyId, 'advances', createdAdvance.id, createdAdvance);
         await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
       }
     }
@@ -526,6 +527,9 @@ tripsRouter.post('/trips', requireAuth, async (req: AuthenticatedRequest, res: R
       success: true,
       message: `Trip ${newTrip.tripNumber} (LR: ${newTrip.lrNumber}) successfully booked.`,
       trip: newTrip,
+      vehicle: vehicle || null,
+      driver: driver || null,
+      advance: createdAdvance,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to create trip' });
@@ -551,6 +555,7 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
       if (req.body.notes !== undefined) {
         trip.notes = req.body.notes;
         trip.updatedAt = new Date().toISOString();
+        await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
         res.json({ success: true, message: 'Trip notes updated.', trip });
         return;
       }
@@ -577,6 +582,10 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
       notes,
     } = req.body;
 
+    let releasedOldVehicle: any = null;
+    let assignedNewVehicle: any = null;
+    let updatedDriver: any = null;
+
     // If changing vehicle on active trip, enforce conflict check
     if (vehicleId && vehicleId !== trip.vehicleId && ['DISPATCHED', 'IN_TRANSIT'].includes(trip.status)) {
       const newVeh = serverFleetStore.vehicles.find((v) => v.id === vehicleId && v.companyId === companyId);
@@ -599,10 +608,16 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
       if (oldVeh) {
         oldVeh.status = 'AVAILABLE';
         oldVeh.activeTripId = undefined;
+        oldVeh.updatedAt = new Date().toISOString();
+        releasedOldVehicle = oldVeh;
+        await serverFleetStore.persistToFirestore(companyId, 'vehicles', oldVeh.id, oldVeh);
       }
       // Assign new vehicle
       newVeh.status = 'IN_TRANSIT';
       newVeh.activeTripId = trip.id;
+      newVeh.updatedAt = new Date().toISOString();
+      assignedNewVehicle = newVeh;
+      await serverFleetStore.persistToFirestore(companyId, 'vehicles', newVeh.id, newVeh);
       trip.vehicleId = newVeh.id;
       trip.vehicleReg = newVeh.registrationNumber;
     }
@@ -622,6 +637,7 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
         trip.driverId = drv.id;
         trip.driverName = drv.fullName;
         trip.driverPhone = drv.phone;
+        updatedDriver = drv;
       }
     }
 
@@ -654,6 +670,9 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
       success: true,
       message: `Trip ${trip.tripNumber} updated successfully.`,
       trip,
+      oldVehicle: releasedOldVehicle,
+      newVehicle: assignedNewVehicle,
+      driver: updatedDriver,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to update trip' });
@@ -816,6 +835,8 @@ async function handleStatusTransition(req: AuthenticatedRequest, res: Response) 
       success: true,
       message: `Trip ${trip.tripNumber} status updated to ${targetStatus}.`,
       trip,
+      vehicle: vehicle || null,
+      driver: driver || null,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to update status' });
@@ -893,9 +914,11 @@ tripsRouter.post('/trips/:id/expenses', requireAuth, async (req: AuthenticatedRe
 
     await serverFleetStore.persistToFirestore(companyId, 'expenses', newExpense.id, newExpense);
     await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
+    let updatedVehicle: any = null;
     if (paymentMode === 'FASTAG') {
       const veh = serverFleetStore.vehicles.find((v) => v.id === trip.vehicleId && v.companyId === companyId);
       if (veh) {
+        updatedVehicle = veh;
         await serverFleetStore.persistToFirestore(companyId, 'vehicles', veh.id, veh);
       }
     }
@@ -905,6 +928,7 @@ tripsRouter.post('/trips/:id/expenses', requireAuth, async (req: AuthenticatedRe
       message: `Recorded ${newExpense.category} expense of ₹${(amount / 100).toFixed(0)} for trip ${trip.tripNumber}.`,
       expense: newExpense,
       trip,
+      vehicle: updatedVehicle,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to record expense' });
@@ -966,6 +990,7 @@ tripsRouter.post('/trips/:id/advances', requireAuth, async (req: AuthenticatedRe
       message: `Disbursed advance of ₹${(amount / 100).toFixed(0)} to ${trip.driverName}.`,
       advance: newAdvance,
       trip,
+      driver: driver || null,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to record advance' });
@@ -1090,10 +1115,15 @@ const handleResetCompanyTrips = async (req: AuthenticatedRequest, res: Response)
       return d;
     });
 
+    const resetVehicles = serverFleetStore.vehicles.filter((v) => v.companyId === companyId);
+    const resetDrivers = serverFleetStore.drivers.filter((d) => d.companyId === companyId);
+
     res.json({
       success: true,
       message: 'All commercial trips have been reset. Fleet is clear and ready for new dispatches.',
       resetTripsCount: companyTrips.length,
+      vehicles: resetVehicles,
+      drivers: resetDrivers,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to reset trips' });

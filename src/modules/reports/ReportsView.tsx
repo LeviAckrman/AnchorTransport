@@ -71,37 +71,38 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
   const [drivers, setDrivers] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
 
-  // Load filter options once
-  useEffect(() => {
-    async function loadOptions() {
-      try {
-        const headers: Record<string, string> = {};
-        if (token) headers['Authorization'] = `Bearer ${token}`;
+  // Load filter options on mount & hydration
+  const loadOptions = async () => {
+    try {
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
 
-        const [vRes, dRes, cRes] = await Promise.all([
-          fetch('/api/fleet/vehicles', { credentials: 'include', headers }),
-          fetch('/api/fleet/drivers', { credentials: 'include', headers }),
-          fetch('/api/fleet/customers', { credentials: 'include', headers }),
-        ]);
+      const [vRes, dRes, cRes] = await Promise.all([
+        fetch('/api/vehicles?limit=100', { credentials: 'include', headers }),
+        fetch('/api/drivers?limit=100', { credentials: 'include', headers }),
+        fetch('/api/customers?limit=100', { credentials: 'include', headers }),
+      ]);
 
-        if (vRes.ok) {
-          const vd = await vRes.json();
-          if (vd.vehicles) setVehicles(vd.vehicles);
-        }
-        if (dRes.ok) {
-          const dd = await dRes.json();
-          if (dd.drivers) setDrivers(dd.drivers);
-        }
-        if (cRes.ok) {
-          const cd = await cRes.json();
-          if (cd.customers) setCustomers(cd.customers);
-        }
-      } catch (e) {
-        console.warn('Failed to load filter options:', e);
+      if (vRes.ok) {
+        const vd = await vRes.json();
+        setVehicles(vd.data || vd.vehicles || []);
       }
+      if (dRes.ok) {
+        const dd = await dRes.json();
+        setDrivers(dd.data || dd.drivers || []);
+      }
+      if (cRes.ok) {
+        const cd = await cRes.json();
+        setCustomers(cd.data || cd.customers || []);
+      }
+    } catch (e) {
+      console.warn('Failed to load filter options:', e);
     }
+  };
+
+  useEffect(() => {
     loadOptions();
-  }, [token]);
+  }, [token, company?.id]);
 
   // Load report data
   const fetchReport = async () => {
@@ -150,7 +151,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
     selectedTripStatus,
     selectedCategory,
     selectedPaymentMethod,
+    token,
+    company?.id,
   ]);
+
+  useEffect(() => {
+    const handleHydration = () => {
+      loadOptions();
+      fetchReport();
+    };
+    window.addEventListener('tms:firestore-hydrated', handleHydration);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', handleHydration);
+    };
+  }, [token, company?.id, activeReport]);
 
   // Handle CSV export download
   const handleExportCsv = () => {
@@ -350,7 +364,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                 <option value="">All Drivers</option>
                 {drivers.map((d) => (
                   <option key={d.id} value={d.id}>
-                    {d.name}
+                    {d.fullName || d.name}
                   </option>
                 ))}
               </select>

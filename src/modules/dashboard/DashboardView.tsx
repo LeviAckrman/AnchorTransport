@@ -42,7 +42,10 @@ import { Trip, Vehicle, UserRole, CompanyDashboardMetrics, VehicleAttentionItem 
 import { formatINR } from '../../lib/currency';
 import { useAuth } from '../../context/AuthContext';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { clearCompanyOperationalDataInFirestore } from '../../lib/firebase/firestoreService';
+import { clearStoreForNewCustomer } from '../../lib/storage';
 
 export type DatePeriod = 'all' | 'today' | 'week' | 'month' | 'quarter' | 'custom';
 
@@ -65,7 +68,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const getActiveToken = () => {
     return contextToken || (typeof window !== 'undefined' ? (localStorage.getItem('token') || localStorage.getItem('onboarding_token') || '') : '');
   };
-  const companyId = company?.id || 'comp_wb_royal_001';
+  const companyId = company?.id || '';
 
   // Filter State
   const [period, setPeriod] = useState<DatePeriod>('all');
@@ -79,9 +82,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [metrics, setMetrics] = useState<CompanyDashboardMetrics | null>(null);
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
+  const [isClearDialogOpen, setIsClearDialogOpen] = useState<boolean>(false);
 
   // Fetch metrics from company-scoped server API
   const fetchMetrics = async (targetPeriod = period, start = customStart, end = customEnd) => {
+    if (!companyId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
 
@@ -92,36 +100,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         if (end) url += `&endDate=${encodeURIComponent(end)}`;
       }
 
-      let activeToken = getActiveToken();
-      const getHeaders = (tok: string) => {
-        const h: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (tok) h['Authorization'] = `Bearer ${tok}`;
-        return h;
-      };
+      const activeToken = getActiveToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
 
-      let res = await fetch(url, { headers: getHeaders(activeToken) });
-
-      // If unauthorized, attempt one-time auto-authentication for demo session and retry
-      if (res.status === 401) {
-        try {
-          const authRes = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: 'anupam@royalbengal.com', password: 'Password@123' }),
-          });
-          const authData = await parseResponseJson<any>(authRes);
-          if (authData && authData.success && authData.token) {
-            activeToken = authData.token;
-            if (typeof window !== 'undefined') {
-              localStorage.setItem('token', activeToken);
-            }
-            res = await fetch(url, { headers: getHeaders(activeToken) });
-          }
-        } catch {
-          // ignore auto-auth failure
-        }
-      }
-
+      const res = await fetch(url, { headers });
       const data = await parseResponseJson<any>(res);
 
       if (!res.ok || !data || !data.success) {
@@ -169,6 +152,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     fetchMetrics();
   }, [companyId, period]);
 
+  useEffect(() => {
+    const refreshHandler = () => fetchMetrics();
+    window.addEventListener('tms:firestore-hydrated', refreshHandler);
+    window.addEventListener('tms:trip-updated', refreshHandler);
+    window.addEventListener('tms:vehicle-updated', refreshHandler);
+    window.addEventListener('tms:expense-updated', refreshHandler);
+    window.addEventListener('tms:invoice-updated', refreshHandler);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', refreshHandler);
+      window.removeEventListener('tms:trip-updated', refreshHandler);
+      window.removeEventListener('tms:vehicle-updated', refreshHandler);
+      window.removeEventListener('tms:expense-updated', refreshHandler);
+      window.removeEventListener('tms:invoice-updated', refreshHandler);
+    };
+  }, [companyId, period]);
+
   const handlePeriodChange = (newPeriod: DatePeriod) => {
     setPeriod(newPeriod);
     if (newPeriod === 'custom') {
@@ -184,36 +183,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     fetchMetrics('custom', customStart, customEnd);
   };
 
-  // Seed demo data for testing
-  const handleSeedData = async () => {
-    setActionLoading(true);
-    try {
-      const activeToken = getActiveToken();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch('/api/dashboard/seed-demo-data', {
-        method: 'POST',
-        headers,
-      });
-      const data = await parseResponseJson<any>(res);
-      if (data && data.success) {
-        setMetrics(data.metrics);
-        setActionSuccessMsg('Loaded realistic West Bengal fleet seed records.');
-        setTimeout(() => setActionSuccessMsg(null), 3500);
-      }
-    } catch (e: any) {
-      setError(e.message || 'Failed to seed data.');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  // Clear data to test empty state
-  const handleClearData = async () => {
-    if (!window.confirm('Clear all trips and records for this company to test Empty State?')) {
-      return;
-    }
+  // Clear data for clean slate
+  const confirmClearData = async () => {
     setActionLoading(true);
     try {
       const activeToken = getActiveToken();
@@ -225,15 +196,37 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         headers,
       });
       const data = await parseResponseJson<any>(res);
+      await clearCompanyOperationalDataInFirestore(companyId);
+      clearStoreForNewCustomer();
+      window.dispatchEvent(
+        new CustomEvent('tms:firestore-hydrated', {
+          detail: {
+            companyId,
+            bundle: {
+              vehicles: [],
+              drivers: [],
+              customers: [],
+              trips: [],
+              expenses: [],
+              advances: [],
+              settlements: [],
+              invoices: [],
+              payments: [],
+              documents: [],
+            },
+          },
+        })
+      );
       if (data && data.success) {
         setMetrics(data.metrics);
-        setActionSuccessMsg('Fleet records cleared. Viewing Empty State.');
+        setActionSuccessMsg('Fleet records cleared. Viewing empty workspace.');
         setTimeout(() => setActionSuccessMsg(null), 3500);
       }
     } catch (e: any) {
       setError(e.message || 'Failed to clear data.');
     } finally {
       setActionLoading(false);
+      setIsClearDialogOpen(false);
     }
   };
 
@@ -289,32 +282,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </p>
           </div>
 
-          {/* Quick Actions & Seed/Clear Testing Controls */}
+          {/* Quick Actions */}
           <div className="flex flex-wrap items-center gap-2">
-            {/* Seed / Clean Slate Toggle for Reviewers */}
-            <div className="flex items-center rounded-lg border border-slate-200 bg-slate-50 p-1 text-xs">
-              <button
-                onClick={handleSeedData}
-                disabled={actionLoading}
-                className="px-2.5 py-1 text-slate-700 hover:text-indigo-700 font-medium rounded transition-colors flex items-center gap-1 disabled:opacity-50"
-                title="Populate with realistic sample trips & trucks"
-              >
-                <Database className="w-3.5 h-3.5 text-indigo-600" />
-                <span className="hidden sm:inline">Load Sample Fleet</span>
-                <span className="sm:hidden">Seed</span>
-              </button>
-              <div className="w-[1px] h-3.5 bg-slate-300 mx-1" />
-              <button
-                onClick={handleClearData}
-                disabled={actionLoading}
-                className="px-2.5 py-1 text-slate-600 hover:text-rose-700 font-medium rounded transition-colors flex items-center gap-1 disabled:opacity-50"
-                title="Clear all records to test Empty State"
-              >
-                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                <span className="hidden sm:inline">Test Empty State</span>
-                <span className="sm:hidden">Clear</span>
-              </button>
-            </div>
+            <button
+              onClick={() => setIsClearDialogOpen(true)}
+              disabled={actionLoading}
+              className="px-3 py-2 border border-slate-200 bg-slate-50 text-slate-600 hover:text-rose-700 hover:border-rose-200 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              title="Clear all operational records for this company"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+              <span className="hidden sm:inline">Clear Fleet Data</span>
+              <span className="sm:hidden">Clear</span>
+            </button>
 
             <button
               onClick={() => fetchMetrics()}
@@ -477,15 +456,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 >
                   <Plus className="w-4 h-4" />
                   <span>Dispatch First Consignment</span>
-                </button>
-
-                <button
-                  onClick={handleSeedData}
-                  disabled={actionLoading}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5"
-                >
-                  <Database className="w-4 h-4 text-indigo-600" />
-                  <span>Load Sample Fleet Data</span>
                 </button>
               </div>
             </div>
@@ -955,6 +925,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           )}
         </>
       )}
+
+      <ConfirmDialog
+        isOpen={isClearDialogOpen}
+        title="Clear All Operational Records?"
+        message="This will remove all vehicles, drivers, customers, trips, expenses, advances, settlements, and invoices for this company from Firestore and local storage."
+        confirmLabel="Yes, Clear All Data"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={actionLoading}
+        onConfirm={confirmClearData}
+        onClose={() => setIsClearDialogOpen(false)}
+      />
     </div>
   );
 };

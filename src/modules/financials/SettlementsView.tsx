@@ -101,6 +101,18 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
   }, [statusFilter, token, company?.id]);
 
   useEffect(() => {
+    const handleRefresh = () => {
+      fetchSettlements(page);
+    };
+    window.addEventListener('tms:firestore-hydrated', handleRefresh);
+    window.addEventListener('tms:settlement-updated', handleRefresh);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
+      window.removeEventListener('tms:settlement-updated', handleRefresh);
+    };
+  }, [page, statusFilter, searchQuery, token, company?.id]);
+
+  useEffect(() => {
     const timer = setTimeout(() => {
       fetchSettlements(1);
     }, 350);

@@ -23,6 +23,7 @@ import { invoicesRouter } from './routes/invoices.routes';
 import { reportsRouter } from './routes/reports.routes';
 import { logAuditEvent, getCompanyAuditLogs } from './audit';
 import { requireAuth, AuthenticatedRequest } from './auth';
+import { serverFleetStore } from './store';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -120,6 +121,17 @@ app.use('/api/reports', reportsRouter);
 app.use('/api', invoicesRouter);
 app.use('/api', fleetRouter);
 app.use('/api', authRouter);
+
+// Hydrate server in-memory company store from authenticated client Firestore bundle
+app.post('/api/sync/hydrate', requireAuth, (req: AuthenticatedRequest, res) => {
+  const companyId = req.companyId;
+  if (!companyId) {
+    res.status(400).json({ success: false, error: 'Active company context is required to hydrate.' });
+    return;
+  }
+  const counts = serverFleetStore.hydrateFromClientBundle(companyId, req.body || {});
+  res.json({ success: true, companyId, counts });
+});
 
 // Audit Logging & Security Trail API Endpoints
 app.get('/api/audit-logs', requireAuth, (req: AuthenticatedRequest, res) => {

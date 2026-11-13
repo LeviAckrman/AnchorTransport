@@ -35,8 +35,13 @@ import {
   TmsStore,
   loadStore,
   saveStore,
-  resetStore,
+  clearStoreForNewCustomer,
 } from './lib/storage';
+import {
+  clearCompanyOperationalDataInFirestore,
+  syncEntityToFirestore,
+  type HydratedCompanyBundle,
+} from './lib/firebase/firestoreService';
 import { parseResponseJson } from './lib/safeFetch';
 import {
   UserRole,
@@ -85,13 +90,27 @@ import { UserManagementPage } from './components/auth/UserManagementPage';
 import { UserProfileModal } from './components/auth/UserProfileModal';
 
 function AppContent() {
-  const { user, company: authCompany, role: authRole, isAuthenticated, needsOnboarding, isLoading } = useAuth();
+  const {
+    user,
+    company: authCompany,
+    role: authRole,
+    isAuthenticated,
+    needsOnboarding,
+    isLoading,
+    isEmailVerified,
+    isFirebaseUser,
+    resendVerification,
+    refreshVerificationStatus,
+  } = useAuth();
   const [authScreen, setAuthScreen] = useState<'login' | 'register'>('login');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const [store, setStore] = useState<TmsStore>(() => loadStore());
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [verificationBusy, setVerificationBusy] = useState(false);
 
   // Quick Dispatch Modal State
   const [isQuickTripOpen, setIsQuickTripOpen] = useState(false);
@@ -117,8 +136,12 @@ function AppContent() {
     setNewTripGoods('');
   };
 
-  // Synchronize company context when changed via AuthContext (multi-tenant switching)
+  // Synchronize company context and clear store if unauthenticated
   useEffect(() => {
+    if (!isAuthenticated) {
+      setStore(clearStoreForNewCustomer());
+      return;
+    }
     if (authCompany) {
       setStore((prev) => ({
         ...prev,
@@ -126,7 +149,31 @@ function AppContent() {
         currentRole: authRole || prev.currentRole,
       }));
     }
-  }, [authCompany, authRole]);
+  }, [authCompany, authRole, isAuthenticated]);
+
+  // Listen to full Firestore company hydration bundle
+  useEffect(() => {
+    const onHydrated = (e: Event) => {
+      const custom = e as CustomEvent<{ companyId: string; bundle: HydratedCompanyBundle }>;
+      const bundle = custom.detail?.bundle;
+      if (!bundle) return;
+      setStore((prev) => ({
+        ...prev,
+        vehicles: bundle.vehicles || [],
+        drivers: bundle.drivers || [],
+        customers: bundle.customers || [],
+        trips: bundle.trips || [],
+        expenses: bundle.expenses || [],
+        advances: bundle.advances || [],
+        settlements: bundle.settlements || [],
+        invoices: bundle.invoices || [],
+        payments: bundle.payments || [],
+        documents: bundle.documents || [],
+      }));
+    };
+    window.addEventListener('tms:firestore-hydrated', onHydrated);
+    return () => window.removeEventListener('tms:firestore-hydrated', onHydrated);
+  }, []);
 
   // Dynamically synchronize customers from API so customers only show after user adds them
   useEffect(() => {
@@ -209,6 +256,40 @@ function AppContent() {
     return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
   }, [authCompany?.id]);
 
+  // Synchronize trips, expenses, advances, settlements, invoices, documents updates
+  useEffect(() => {
+    const fetchLiveOperations = async () => {
+      try {
+        const activeToken = localStorage.getItem('token') || '';
+        if (!activeToken || !authCompany?.id) return;
+        const headers = { Authorization: `Bearer ${activeToken}` };
+        const [tRes, dRes] = await Promise.all([
+          fetch('/api/trips?limit=100', { headers }),
+          fetch('/api/fleet/documents?limit=100', { headers }),
+        ]);
+        const [tData, dData] = await Promise.all([
+          parseResponseJson<any>(tRes),
+          parseResponseJson<any>(dRes),
+        ]);
+        setStore((prev) => ({
+          ...prev,
+          trips: tRes.ok && tData?.success && Array.isArray(tData.data) ? tData.data : prev.trips,
+          documents: dRes.ok && dData?.success && Array.isArray(dData.data) ? dData.data : prev.documents,
+        }));
+      } catch {
+        // ignore
+      }
+    };
+
+    const onOpsUpdated = () => fetchLiveOperations();
+    window.addEventListener('tms:trip-updated', onOpsUpdated);
+    window.addEventListener('tms:document-updated', onOpsUpdated);
+    return () => {
+      window.removeEventListener('tms:trip-updated', onOpsUpdated);
+      window.removeEventListener('tms:document-updated', onOpsUpdated);
+    };
+  }, [authCompany?.id]);
+
   // Sync state to localStorage whenever store changes
   useEffect(() => {
     saveStore(store);
@@ -225,10 +306,51 @@ function AppContent() {
   };
 
   const handleResetData = () => {
-    if (window.confirm('Reset all demo fleet data to defaults?')) {
-      const fresh = resetStore();
+    setIsResetDialogOpen(true);
+  };
+
+  const confirmResetAllData = async () => {
+    setIsResetting(true);
+    try {
+      const activeToken = localStorage.getItem('token') || '';
+      await fetch('/api/fleet/reset-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+        },
+        body: JSON.stringify({ scope: 'current_company' }),
+      });
+      await clearCompanyOperationalDataInFirestore(authCompany?.id);
+      const fresh = clearStoreForNewCustomer();
       setStore(fresh);
-      showToast('Database reset to default West Bengal fleet seed records');
+      if (authCompany?.id) {
+        window.dispatchEvent(
+          new CustomEvent('tms:firestore-hydrated', {
+            detail: {
+              companyId: authCompany.id,
+              bundle: {
+                vehicles: [],
+                drivers: [],
+                customers: [],
+                trips: [],
+                expenses: [],
+                advances: [],
+                settlements: [],
+                invoices: [],
+                payments: [],
+                documents: [],
+              },
+            },
+          })
+        );
+      }
+      showToast('All operational company data cleared.');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to clear operational data.');
+    } finally {
+      setIsResetting(false);
+      setIsResetDialogOpen(false);
     }
   };
 
@@ -260,8 +382,8 @@ function AppContent() {
     };
   }, [store]);
 
-  // Handle Quick Trip Submission
-  const handleCreateTrip = (e: React.FormEvent) => {
+  // Handle Quick Trip Submission via Backend API + Firestore Sync
+  const handleCreateTrip = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTripCustomer || !newTripVehicle || !newTripDriver) {
       showToast('Please select customer, vehicle, and driver.');
@@ -296,92 +418,69 @@ function AppContent() {
       return;
     }
 
-    const freightAmountPaise = Math.round(weight * rateRupees * 100);
-    const advancePaise = Math.round((parseFloat(newTripAdvance) || 0) * 100);
+    const advanceRupees = parseFloat(newTripAdvance) || 0;
+    const activeToken = localStorage.getItem('token') || '';
 
-    const tripSeq = store.trips.length + 39;
-    const newTripId = `trip_${Date.now()}`;
-    const tripNum = `TR-2026-00${tripSeq}`;
-    const lrNum = `${store.company.lrPrefix}01${tripSeq}`;
-
-    const newTrip: Trip = {
-      id: newTripId,
-      companyId: store.company.id,
-      tripNumber: tripNum,
-      lrNumber: lrNum,
-      customerId: customerObj.id,
-      customerName: customerObj.name,
-      customerGstin: customerObj.gstin,
-      vehicleId: vehicleObj.id,
-      vehicleReg: vehicleObj.registrationNumber,
-      driverId: driverObj.id,
-      driverName: driverObj.fullName,
-      driverPhone: driverObj.phone,
-      originCity: newTripOrigin.trim(),
-      destinationCity: newTripDestination.trim(),
-      goodsType: newTripGoods.trim(),
-      weightTonnes: weight,
-      ratePerTonnePaise: rateRupees * 100,
-      freightAmountPaise,
-      otherChargesPaise: 0,
-      totalRevenuePaise: freightAmountPaise,
-      dispatchDate: new Date().toISOString(),
-      expectedDeliveryDate: new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString(),
-      status: 'DISPATCHED',
-      startOdometerKm: vehicleObj.currentOdometerKm,
-      podReceived: false,
-      totalExpensesPaise: 0,
-      totalAdvancesPaise: advancePaise,
-      tripContributionPaise: freightAmountPaise,
-      isSettled: false,
-      isInvoiced: false,
-      createdAt: new Date().toISOString(),
-    };
-
-    // Update vehicle & driver status
-    const updatedVehicles = store.vehicles.map((v) =>
-      v.id === vehicleObj.id ? { ...v, status: 'IN_TRANSIT' as const, activeTripId: newTripId } : v
-    );
-
-    const updatedDrivers = store.drivers.map((d) =>
-      d.id === driverObj.id
-        ? {
-            ...d,
-            status: 'ON_TRIP' as const,
-            currentAdvanceBalancePaise: d.currentAdvanceBalancePaise + advancePaise,
-            assignedVehicleReg: vehicleObj.registrationNumber,
-          }
-        : d
-    );
-
-    // Record advance if given
-    const newAdvances = [...store.advances];
-    if (advancePaise > 0) {
-      newAdvances.push({
-        id: `adv_${Date.now()}`,
-        companyId: store.company.id,
-        tripId: newTripId,
-        driverId: driverObj.id,
-        amountPaise: advancePaise,
-        advanceType: 'CASH_DISPATCH',
-        date: new Date().toISOString().split('T')[0],
-        referenceNotes: `Dispatched on trip ${tripNum} (${newTripOrigin.trim()} -> ${newTripDestination.trim()})`,
-        disbursedBy: user?.name || 'Owner',
-        isSettled: false,
+    try {
+      const res = await fetch('/api/trips', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+        },
+        body: JSON.stringify({
+          customerId: customerObj.id,
+          vehicleId: vehicleObj.id,
+          driverId: driverObj.id,
+          originCity: newTripOrigin.trim(),
+          destinationCity: newTripDestination.trim(),
+          goodsType: newTripGoods.trim(),
+          weightTonnes: weight,
+          ratePerTonnePaise: Math.round(rateRupees * 100),
+          initialAdvanceRupees: advanceRupees,
+          status: 'DISPATCHED',
+          startOdometerKm: vehicleObj.currentOdometerKm,
+        }),
       });
+
+      const data = await parseResponseJson<any>(res);
+      if (!res.ok || !data || !data.success || !data.trip) {
+        showToast(data?.error || 'Failed to dispatch trip.');
+        return;
+      }
+
+      const activeCompanyId = authCompany?.id || store.company.id;
+      await Promise.all([
+        syncEntityToFirestore(activeCompanyId, 'trips', data.trip),
+        data.vehicle ? syncEntityToFirestore(activeCompanyId, 'vehicles', data.vehicle) : Promise.resolve(),
+        data.driver ? syncEntityToFirestore(activeCompanyId, 'drivers', data.driver) : Promise.resolve(),
+        data.advance ? syncEntityToFirestore(activeCompanyId, 'advances', data.advance) : Promise.resolve(),
+      ]);
+
+      setStore((prev) => ({
+        ...prev,
+        trips: [data.trip, ...prev.trips.filter((t) => t.id !== data.trip.id)],
+        vehicles: data.vehicle
+          ? prev.vehicles.map((v) => (v.id === data.vehicle.id ? data.vehicle : v))
+          : prev.vehicles,
+        drivers: data.driver
+          ? prev.drivers.map((d) => (d.id === data.driver.id ? data.driver : d))
+          : prev.drivers,
+        advances: data.advance
+          ? [data.advance, ...prev.advances]
+          : prev.advances,
+      }));
+
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
+
+      resetQuickTripForm();
+      setIsQuickTripOpen(false);
+      showToast(`Trip ${data.trip.tripNumber} (${vehicleObj.registrationNumber}) dispatched successfully!`);
+    } catch (err: any) {
+      showToast(err?.message || 'Network error dispatching trip.');
     }
-
-    setStore((prev) => ({
-      ...prev,
-      trips: [newTrip, ...prev.trips],
-      vehicles: updatedVehicles,
-      drivers: updatedDrivers,
-      advances: newAdvances,
-    }));
-
-    resetQuickTripForm();
-    setIsQuickTripOpen(false);
-    showToast(`Trip ${tripNum} (${vehicleObj.registrationNumber}) dispatched successfully!`);
   };
 
   // Status badge mappings
@@ -594,13 +693,55 @@ function AppContent() {
           onRoleChange={handleRoleChange}
           onResetData={handleResetData}
           onQuickDispatch={() => {
-            if (store.customers[0]) setNewTripCustomer(store.customers[0].id);
-            if (store.vehicles[0]) setNewTripVehicle(store.vehicles[0].id);
-            if (store.drivers[0]) setNewTripDriver(store.drivers[0].id);
+            resetQuickTripForm();
             setIsQuickTripOpen(true);
           }}
           onOpenProfile={() => setIsProfileModalOpen(true)}
         />
+
+        {/* Email Verification Reminder Banner for Unverified Firebase Users */}
+        {isFirebaseUser && !isEmailVerified && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-900">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                Verify your email address (<strong>{user?.email}</strong>) to unlock cloud persistence in Firestore.
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={verificationBusy}
+                onClick={async () => {
+                  setVerificationBusy(true);
+                  const res = await resendVerification();
+                  setVerificationBusy(false);
+                  showToast(res.sent ? 'Verification email sent. Check your inbox.' : res.error || 'Could not send email.');
+                }}
+                className="px-2.5 py-1 rounded border border-amber-300 bg-white hover:bg-amber-100 font-semibold text-amber-900 cursor-pointer disabled:opacity-50"
+              >
+                Resend Email
+              </button>
+              <button
+                type="button"
+                disabled={verificationBusy}
+                onClick={async () => {
+                  setVerificationBusy(true);
+                  const res = await refreshVerificationStatus();
+                  setVerificationBusy(false);
+                  showToast(
+                    res.verified
+                      ? 'Email verified! Syncing your data to Firebase Firestore...'
+                      : res.error || 'Email is not verified yet. Please click the link in your inbox.'
+                  );
+                }}
+                className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-semibold cursor-pointer disabled:opacity-50"
+              >
+                I&apos;ve Verified &mdash; Sync Now
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Scrollable Viewport Content */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 pb-20 md:pb-6">
@@ -608,9 +749,7 @@ function AppContent() {
           {activeTab === 'dashboard' && (
             <DashboardView
               onQuickDispatch={() => {
-                if (store.customers[0]) setNewTripCustomer(store.customers[0].id);
-                if (store.vehicles[0]) setNewTripVehicle(store.vehicles[0].id);
-                if (store.drivers[0]) setNewTripDriver(store.drivers[0].id);
+                resetQuickTripForm();
                 setIsQuickTripOpen(true);
               }}
               onNavigateTab={setActiveTab}
@@ -1003,6 +1142,19 @@ function AppContent() {
           </div>
         </form>
       </Modal>
+
+      {/* Confirm Data Reset Dialog */}
+      <ConfirmDialog
+        isOpen={isResetDialogOpen}
+        title="Clear All Operational Data?"
+        message="This will remove all customers, trucks, drivers, trips, expenses, advances, settlements, and invoices for this company so you can start with an empty workspace. Your company profile and account remain intact."
+        confirmLabel="Yes, Clear All Data"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={isResetting}
+        onConfirm={confirmResetAllData}
+        onClose={() => setIsResetDialogOpen(false)}
+      />
 
       {/* Mobile Bottom Navigation & Slide-out Drawer */}
       <MobileNav

@@ -21,6 +21,7 @@ import { Invoice, Payment, Trip, Customer, GTA_GST_DISCLAIMER } from '../../type
 import { formatINR, paiseToRupees } from '../../lib/financialEngine';
 import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface InvoiceDetailModalProps {
   isOpen: boolean;
@@ -39,7 +40,7 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
   onOpenPaymentModal,
   onInvoiceCancelled,
 }) => {
-  const { token, user } = useAuth();
+  const { token, company } = useAuth();
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
@@ -74,6 +75,17 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Failed to cancel invoice');
       }
+
+      const activeCompanyId = company?.id || data.invoice?.companyId;
+      if (activeCompanyId) {
+        if (data.invoice) await syncEntityToFirestore(activeCompanyId, 'invoices', data.invoice);
+        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
+        if (data.customer) await syncEntityToFirestore(activeCompanyId, 'customers', data.customer);
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:invoice-updated'));
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
 
       onInvoiceCancelled(data.invoice);
       setShowCancelPrompt(false);
@@ -124,15 +136,17 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
                 </span>
               </div>
               <h2 className="text-xl font-bold text-slate-900 tracking-tight">
-                AnchorTransport Logistics Ltd.
+                {company?.tradeName || company?.name || 'Transport Company'}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Regd. Office: Dankuni Commercial Complex, NH-2, Hooghly, West Bengal - 712311
+                {[company?.address, company?.city, company?.state, company?.pincode].filter(Boolean).join(', ') || 'Registered Office Address Not Set'}
               </p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 mt-1 font-mono">
-                <span>GSTIN: <strong>19AAACT9812A1Z4</strong></span>
-                <span>PAN: <strong>AAACT9812A</strong></span>
-                <span>State Code: <strong>19 (West Bengal)</strong></span>
+                <span>GSTIN: <strong>{company?.gstin || 'Not Provided'}</strong></span>
+                <span>PAN: <strong>{company?.pan || 'Not Provided'}</strong></span>
+                <span>
+                  State Code: <strong>{company?.stateCode ? `${company.stateCode}${company.state ? ` (${company.state})` : ''}` : company?.state || 'Not Provided'}</strong>
+                </span>
               </div>
             </div>
 
@@ -158,11 +172,20 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
               </span>
               <h4 className="text-sm font-bold text-slate-900">{invoice.customerName}</h4>
               <p className="text-slate-600 mt-1 leading-relaxed">
-                {invoice.billingAddress || 'Commercial Freight Customer Yard'}
+                {invoice.billingAddress || 'Billing address not provided'}
               </p>
               <div className="mt-2 font-mono text-slate-700 space-y-0.5">
                 <p>GSTIN: <strong>{invoice.customerGstin || 'Unregistered'}</strong></p>
-                <p>Place of Supply: <strong>West Bengal (19)</strong></p>
+                <p>
+                  Place of Supply:{' '}
+                  <strong>
+                    {invoice.customerGstin
+                      ? `State Code ${invoice.customerGstin.substring(0, 2)}`
+                      : company?.stateCode
+                      ? `${company.state ? `${company.state} ` : ''}(${company.stateCode})`
+                      : company?.state || 'Not Specified'}
+                  </strong>
+                </p>
               </div>
             </div>
 
@@ -190,7 +213,7 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
                 <div className="col-span-2">
                   <span className="text-slate-600 block">Route:</span>
                   <span className="font-semibold text-slate-800">
-                    {invoice.originCity || 'Kolkata'} ➔ {invoice.destinationCity || 'Destination'}
+                    {invoice.originCity || 'Origin'} ➔ {invoice.destinationCity || 'Destination'}
                   </span>
                 </div>
                 {invoice.goodsType && (

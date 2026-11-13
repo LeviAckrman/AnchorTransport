@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Building2, ShieldCheck, AlertCircle, FileText, CheckCircle2, Phone, Mail, MapPin } from 'lucide-react';
 import { Customer } from '../../types/tms';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface CustomerModalProps {
   isOpen: boolean;
@@ -39,6 +41,7 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
   customerToEdit,
   token,
 }) => {
+  const { company } = useAuth();
   const isEdit = Boolean(customerToEdit);
 
   const [name, setName] = useState('');
@@ -50,11 +53,11 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
   const [email, setEmail] = useState('');
   const [billingAddress, setBillingAddress] = useState('');
   const [city, setCity] = useState('');
-  const [state, setState] = useState('West Bengal');
-  const [stateCode, setStateCode] = useState('19');
+  const [state, setState] = useState('');
+  const [stateCode, setStateCode] = useState('');
   const [pincode, setPincode] = useState('');
   const [creditPeriodDays, setCreditPeriodDays] = useState('30');
-  const [creditLimit, setCreditLimit] = useState('500000'); // in Rupees (e.g. ₹5,00,000)
+  const [creditLimit, setCreditLimit] = useState('');
   const [notes, setNotes] = useState('');
 
   const [loading, setLoading] = useState(false);
@@ -71,11 +74,11 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
       setEmail(customerToEdit.email || '');
       setBillingAddress(customerToEdit.billingAddress || '');
       setCity(customerToEdit.city || '');
-      setState(customerToEdit.state || 'West Bengal');
-      setStateCode(customerToEdit.stateCode || '19');
+      setState(customerToEdit.state || '');
+      setStateCode(customerToEdit.stateCode || '');
       setPincode(customerToEdit.pincode || '');
       setCreditPeriodDays(customerToEdit.creditPeriodDays?.toString() || '30');
-      setCreditLimit(((customerToEdit.creditLimitPaise || 0) / 100).toString());
+      setCreditLimit(customerToEdit.creditLimitPaise ? (customerToEdit.creditLimitPaise / 100).toString() : '');
       setNotes(customerToEdit.notes || '');
     } else {
       setName('');
@@ -86,12 +89,12 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
       setPhone('');
       setEmail('');
       setBillingAddress('');
-      setCity('Kolkata');
-      setState('West Bengal');
-      setStateCode('19');
-      setPincode('700001');
+      setCity('');
+      setState('');
+      setStateCode('');
+      setPincode('');
       setCreditPeriodDays('30');
-      setCreditLimit('500000');
+      setCreditLimit('');
       setNotes('');
     }
     setError(null);
@@ -142,10 +145,10 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
 
       const payload = {
         name: name.trim(),
-        tradeName: tradeName.trim() || name.trim(),
+        tradeName: tradeName.trim() || undefined,
         gstin: cleanGstin,
         pan: pan.trim().toUpperCase() || cleanGstin.substring(2, 12),
-        contactPerson: contactPerson.trim() || 'Billing Coordinator',
+        contactPerson: contactPerson.trim() || undefined,
         phone: cleanPhone,
         email: email.trim().toLowerCase() || undefined,
         billingAddress: billingAddress.trim() || undefined,
@@ -154,7 +157,7 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
         stateCode: stateCode.trim() || undefined,
         pincode: pincode.trim() || undefined,
         creditPeriodDays: parseInt(creditPeriodDays, 10) || 30,
-        creditLimitPaise: parseFloat(creditLimit) || 0,
+        creditLimitPaise: Math.round((parseFloat(creditLimit) || 0) * 100),
         notes: notes.trim() || undefined,
       };
 
@@ -175,6 +178,7 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
         throw new Error(data?.error || 'Failed to save customer record.');
       }
 
+      await syncEntityToFirestore(company?.id, 'customers', data.customer);
       onSuccess(data.customer, isEdit);
       onClose();
     } catch (err: any) {
@@ -391,10 +395,11 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
                     const code = e.target.value;
                     setStateCode(code);
                     const matched = INDIAN_STATES.find((s) => s.code === code);
-                    if (matched) setState(matched.name);
+                    setState(matched ? matched.name : '');
                   }}
                   className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900"
                 >
+                  <option value="">-- Select State --</option>
                   {INDIAN_STATES.map((s) => (
                     <option key={s.code} value={s.code}>
                       {s.name} ({s.code})

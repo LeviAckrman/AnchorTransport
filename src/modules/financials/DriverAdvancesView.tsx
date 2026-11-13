@@ -96,6 +96,20 @@ export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({ userRole
   }, [statusFilter, token, company?.id]);
 
   useEffect(() => {
+    const handleRefresh = () => {
+      fetchAdvances(page);
+    };
+    window.addEventListener('tms:firestore-hydrated', handleRefresh);
+    window.addEventListener('tms:advance-updated', handleRefresh);
+    window.addEventListener('tms:trip-updated', handleRefresh);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
+      window.removeEventListener('tms:advance-updated', handleRefresh);
+      window.removeEventListener('tms:trip-updated', handleRefresh);
+    };
+  }, [page, statusFilter, searchQuery, token, company?.id]);
+
+  useEffect(() => {
     const timer = setTimeout(() => {
       fetchAdvances(1);
     }, 350);

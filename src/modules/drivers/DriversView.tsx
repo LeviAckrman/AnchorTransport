@@ -27,6 +27,7 @@ import { DriverModal } from './DriverModal';
 import { DriverDetailModal } from './DriverDetailModal';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
 
 interface DriversViewProps {
   userRole: UserRole;
@@ -112,13 +113,21 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
   useEffect(() => {
     fetchDrivers(1);
     fetchVehicles();
-  }, [searchQuery, statusFilter, licenseFilter, limit, company?.id]);
+  }, [searchQuery, statusFilter, licenseFilter, limit, company?.id, activeToken]);
 
   useEffect(() => {
     const onVehicleUpdated = () => fetchVehicles();
+    const onHydrated = () => {
+      fetchDrivers(1);
+      fetchVehicles();
+    };
     window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-  }, []);
+    window.addEventListener('tms:firestore-hydrated', onHydrated);
+    return () => {
+      window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+      window.removeEventListener('tms:firestore-hydrated', onHydrated);
+    };
+  }, [company?.id, activeToken]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
@@ -157,6 +166,7 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
         throw new Error(data?.error || 'Failed to delete driver.');
       }
 
+      await deleteEntityFromFirestore(company?.id, 'drivers', driverToDelete.id);
       showNotification(`Driver ${driverToDelete.fullName} removed from company directory.`);
       setDriverToDelete(null);
       fetchDrivers(page);

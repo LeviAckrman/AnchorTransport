@@ -16,6 +16,7 @@ import { TripExpense, ExpenseCategory, PaymentMode, Trip } from '../../types/tms
 import { Modal } from '../../components/ui/Modal';
 import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface ExpenseModalProps {
   isOpen: boolean;
@@ -52,7 +53,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   expenseToEdit,
   defaultTripId,
 }) => {
-  const { token, role } = useAuth();
+  const { token, role, company } = useAuth();
   const isEdit = Boolean(expenseToEdit);
 
   // Trips list for selection
@@ -66,7 +67,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split('T')[0]);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('CASH');
   const [litres, setLitres] = useState('');
-  const [ratePerLitreRupees, setRatePerLitreRupees] = useState('94.50');
+  const [ratePerLitreRupees, setRatePerLitreRupees] = useState('');
   const [petrolPumpName, setPetrolPumpName] = useState('');
   const [location, setLocation] = useState('');
   const [odometerReading, setOdometerReading] = useState('');
@@ -94,20 +95,16 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         .then((data) => {
           if (data && data.success) {
             setTrips(data.data || []);
-            if (!tripId && defaultTripId) {
-              setTripId(defaultTripId);
-            } else if (!tripId && data.data?.length > 0) {
-              setTripId(data.data[0].id);
-            }
           }
         })
         .catch((err) => console.warn('Failed to load trips for expense modal:', err))
         .finally(() => setLoadingTrips(false));
     }
-  }, [isOpen, defaultTripId, token]);
+  }, [isOpen, token, company?.id]);
 
   // Populate form if editing
   useEffect(() => {
+    if (!isOpen) return;
     if (expenseToEdit) {
       setTripId(expenseToEdit.tripId);
       setCategory(expenseToEdit.category);
@@ -115,7 +112,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setExpenseDate((expenseToEdit.expenseDate || expenseToEdit.date || '').split('T')[0] || new Date().toISOString().split('T')[0]);
       setPaymentMode(expenseToEdit.paymentMode);
       setLitres(expenseToEdit.litres ? expenseToEdit.litres.toString() : '');
-      setRatePerLitreRupees(expenseToEdit.ratePerLitrePaise ? (expenseToEdit.ratePerLitrePaise / 100).toString() : '94.50');
+      setRatePerLitreRupees(expenseToEdit.ratePerLitrePaise ? (expenseToEdit.ratePerLitrePaise / 100).toString() : '');
       setPetrolPumpName(expenseToEdit.petrolPumpName || '');
       setLocation(expenseToEdit.location || '');
       setOdometerReading(expenseToEdit.odometerReading ? expenseToEdit.odometerReading.toString() : '');
@@ -125,24 +122,26 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setNotes(expenseToEdit.notes || '');
       setIsDriverDisbursed(expenseToEdit.isDriverDisbursed ?? (expenseToEdit.paymentMode === 'CASH'));
     } else {
-      // Default reset
+      setTripId(defaultTripId || '');
       setCategory('FUEL');
       setAmountRupees('');
       setExpenseDate(new Date().toISOString().split('T')[0]);
       setPaymentMode('CASH');
       setLitres('');
-      setRatePerLitreRupees('94.50');
+      setRatePerLitreRupees('');
       setPetrolPumpName('');
       setLocation('');
       setOdometerReading('');
-      setVoucherNumber(`VCH-${Date.now().toString().slice(-5)}`);
+      setVoucherNumber('');
       setReceiptNumber('');
       setReceiptUrl('');
       setNotes('');
       setIsDriverDisbursed(true);
+      setIsAuthorizedCorrection(false);
+      setCorrectionReason('');
       setError(null);
     }
-  }, [expenseToEdit, isOpen]);
+  }, [expenseToEdit, defaultTripId, isOpen]);
 
   // Auto-compute fuel amount when litres & rate change
   const handleLitresChange = (val: string) => {
@@ -225,6 +224,19 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         throw new Error(data?.error || 'Failed to save expense record.');
       }
 
+      const activeCompanyId = company?.id || data.expense?.companyId;
+      if (activeCompanyId) {
+        if (data.expense) await syncEntityToFirestore(activeCompanyId, 'expenses', data.expense);
+        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
+        if (data.vehicle) await syncEntityToFirestore(activeCompanyId, 'vehicles', data.vehicle);
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      if (data.vehicle) {
+        window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+      }
+
       onSuccess(data.expense, isEdit);
       onClose();
     } catch (err: any) {
@@ -303,11 +315,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               ) : trips.length === 0 ? (
                 <option value="">No trips available</option>
               ) : (
-                trips.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.tripNumber} — {t.vehicleReg} ({t.originCity} → {t.destinationCity}) [{t.driverName}]
-                  </option>
-                ))
+                <>
+                  <option value="">-- Choose Associated Trip --</option>
+                  {trips.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.tripNumber} — {t.vehicleReg} ({t.originCity} → {t.destinationCity}) [{t.driverName}]
+                    </option>
+                  ))}
+                </>
               )}
             </select>
           </div>
@@ -512,30 +527,18 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           </div>
         </div>
 
-        {/* Receipt Attachment URL / Simulation */}
+        {/* Receipt Attachment URL */}
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1">
-            Receipt Attachment Document
+            Receipt Attachment Document URL
           </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              placeholder="Receipt document URL or reference identifier (e.g. https://storage.../receipt.jpg)"
-              value={receiptUrl}
-              onChange={(e) => setReceiptUrl(e.target.value)}
-              className="flex-1 px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                const sampleUrl = `https://storage.googleapis.com/anchor-transport-receipts/rec_${Date.now()}.pdf`;
-                setReceiptUrl(sampleUrl);
-              }}
-              className="px-3 py-2 text-xs font-medium bg-slate-100 hover:bg-slate-200 rounded-xl border border-slate-300 text-slate-700 shrink-0"
-            >
-              Attach Sample
-            </button>
-          </div>
+          <input
+            type="text"
+            placeholder="Receipt document URL or reference identifier (optional)"
+            value={receiptUrl}
+            onChange={(e) => setReceiptUrl(e.target.value)}
+            className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
+          />
         </div>
 
         {/* Notes */}

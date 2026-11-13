@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Receipt,
   Truck,
@@ -17,6 +17,7 @@ import {
 import { TripExpense, UserRole } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { formatINR } from '../../lib/currency';
 
 interface ExpenseDetailModalProps {
@@ -36,6 +37,14 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
   onDelete,
   userRole,
 }) => {
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setConfirmDeleteOpen(false);
+    }
+  }, [isOpen]);
+
   if (!expense) return null;
 
   const canEdit = userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'ACCOUNTANT';
@@ -216,12 +225,7 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
             {canEdit && onDelete && !expense.isSettled && (
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm('Delete this expense voucher? This will recompute trip contribution.')) {
-                    onDelete(expense);
-                    onClose();
-                  }
-                }}
+                onClick={() => setConfirmDeleteOpen(true)}
                 className="px-3 py-2 text-xs font-semibold rounded-xl text-rose-700 hover:bg-rose-50 border border-rose-200 flex items-center gap-1.5 transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -254,6 +258,20 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={confirmDeleteOpen}
+        onClose={() => setConfirmDeleteOpen(false)}
+        onConfirm={() => {
+          setConfirmDeleteOpen(false);
+          if (onDelete) onDelete(expense);
+          onClose();
+        }}
+        title="Delete Expense Voucher"
+        message="Delete this expense voucher? This will recompute trip contribution."
+        confirmLabel="Delete Voucher"
+        variant="danger"
+      />
     </Modal>
   );
 };

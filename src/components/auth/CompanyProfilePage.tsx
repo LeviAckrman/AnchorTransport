@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Building2, Save, CheckCircle2, AlertCircle, ShieldAlert, CreditCard, Hash, RotateCcw, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { PageHeader } from '../layout/PageHeader';
 import { clearStoreForNewCustomer } from '../../lib/storage';
+import { clearCompanyOperationalDataInFirestore } from '../../lib/firebase/firestoreService';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 
 export const CompanyProfilePage: React.FC = () => {
@@ -17,7 +18,7 @@ export const CompanyProfilePage: React.FC = () => {
   const [address, setAddress] = useState(company?.address || '');
   const [city, setCity] = useState(company?.city || '');
   const [state, setState] = useState(company?.state || '');
-  const [stateCode, setStateCode] = useState(company?.stateCode || '19');
+  const [stateCode, setStateCode] = useState(company?.stateCode || '');
   const [pincode, setPincode] = useState(company?.pincode || '');
 
   // Banking
@@ -40,6 +41,28 @@ export const CompanyProfilePage: React.FC = () => {
   const { token } = useAuth();
   const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
 
+  useEffect(() => {
+    setName(company?.name || '');
+    setTradeName(company?.tradeName || '');
+    setGstin(company?.gstin || '');
+    setPan(company?.pan || '');
+    setPhone(company?.phone || '');
+    setEmail(company?.email || '');
+    setAddress(company?.address || '');
+    setCity(company?.city || '');
+    setState(company?.state || '');
+    setStateCode(company?.stateCode || '');
+    setPincode(company?.pincode || '');
+    setBankName(company?.bankName || '');
+    setAccountNumber(company?.accountNumber || '');
+    setIfscCode(company?.ifscCode || '');
+    setBranch(company?.branch || '');
+    setLrPrefix(company?.lrPrefix || 'AT/25-26/');
+    setInvoicePrefix(company?.invoicePrefix || 'INV/25-26/');
+    setTripPrefix(company?.tripPrefix || 'TR-');
+    setLogoUrl(company?.logoUrl || '');
+  }, [company?.id, company?.name, company?.gstin]);
+
   const handleResetData = async () => {
     setResetting(true);
     try {
@@ -52,6 +75,7 @@ export const CompanyProfilePage: React.FC = () => {
         body: JSON.stringify({ scope: 'current_company' }),
       });
 
+      await clearCompanyOperationalDataInFirestore(company?.id);
       clearStoreForNewCustomer();
 
       setFeedback({
@@ -77,7 +101,7 @@ export const CompanyProfilePage: React.FC = () => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canEdit) return;
+    if (!canEdit || !company?.id) return;
 
     setSaving(true);
     setFeedback(null);

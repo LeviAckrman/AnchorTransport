@@ -13,6 +13,7 @@ import { DriverAdvance, Trip, Driver, AdvanceType } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface DriverAdvanceModalProps {
   isOpen: boolean;
@@ -35,13 +36,13 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
   onSuccess,
   defaultTripId,
 }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
 
   const [trips, setTrips] = useState<Trip[]>([]);
   const [loadingTrips, setLoadingTrips] = useState(false);
 
   const [tripId, setTripId] = useState(defaultTripId || '');
-  const [amountRupees, setAmountRupees] = useState('15000');
+  const [amountRupees, setAmountRupees] = useState('');
   const [advanceType, setAdvanceType] = useState<AdvanceType>('CASH_DISPATCH');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [reference, setReference] = useState('');
@@ -52,6 +53,14 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setTripId(defaultTripId || '');
+      setAmountRupees('');
+      setAdvanceType('CASH_DISPATCH');
+      setDate(new Date().toISOString().split('T')[0]);
+      setReference('');
+      setNotes('');
+      setError(null);
+
       setLoadingTrips(true);
       fetch('/api/trips?limit=100', {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -60,17 +69,12 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
         .then((data) => {
           if (data && data.success) {
             setTrips(data.data || []);
-            if (!tripId && defaultTripId) {
-              setTripId(defaultTripId);
-            } else if (!tripId && data.data?.length > 0) {
-              setTripId(data.data[0].id);
-            }
           }
         })
         .catch((err) => console.warn('Failed to load trips for advance modal:', err))
         .finally(() => setLoadingTrips(false));
     }
-  }, [isOpen, defaultTripId, token]);
+  }, [isOpen, defaultTripId, token, company?.id]);
 
   const selectedTrip = trips.find((t) => t.id === tripId);
 
@@ -115,6 +119,17 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
       if (!res.ok || !data || !data.success) {
         throw new Error(data?.error || 'Failed to record driver cash advance.');
       }
+
+      const activeCompanyId = company?.id || data.advance?.companyId;
+      if (activeCompanyId) {
+        if (data.advance) await syncEntityToFirestore(activeCompanyId, 'advances', data.advance);
+        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
+        if (data.driver) await syncEntityToFirestore(activeCompanyId, 'drivers', data.driver);
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:advance-updated'));
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
 
       onSuccess(data.advance);
       onClose();
@@ -165,11 +180,14 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
             ) : trips.length === 0 ? (
               <option value="">No trips available</option>
             ) : (
-              trips.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.originCity} → {t.destinationCity}]
-                </option>
-              ))
+              <>
+                <option value="">-- Choose Associated Trip --</option>
+                {trips.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.originCity} → {t.destinationCity}]
+                  </option>
+                ))}
+              </>
             )}
           </select>
           {selectedTrip && (

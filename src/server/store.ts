@@ -165,6 +165,75 @@ class ServerFleetStore {
   }
 
   /**
+   * Hydrates company records from a client-fetched Firestore bundle
+   * (Used when browser Firestore SDK has authenticated user access and server lacks GCP SA credentials)
+   */
+  hydrateFromClientBundle(
+    companyId: string,
+    bundle: Partial<{
+      vehicles: Vehicle[];
+      drivers: Driver[];
+      customers: Customer[];
+      trips: Trip[];
+      expenses: TripExpense[];
+      advances: DriverAdvance[];
+      settlements: TripSettlement[];
+      invoices: Invoice[];
+      payments: Payment[];
+      documents: VehicleDocument[];
+    }>
+  ): { [key: string]: number } {
+    const scopeList = <T extends { companyId?: string }>(arr?: T[]): T[] =>
+      Array.isArray(arr) ? arr.map((item) => ({ ...item, companyId })) : [];
+
+    if (Array.isArray(bundle.vehicles)) {
+      this.vehicles = this.vehicles.filter((v) => v.companyId !== companyId).concat(scopeList(bundle.vehicles));
+    }
+    if (Array.isArray(bundle.drivers)) {
+      this.drivers = this.drivers.filter((d) => d.companyId !== companyId).concat(scopeList(bundle.drivers));
+    }
+    if (Array.isArray(bundle.customers)) {
+      this.customers = this.customers.filter((c) => c.companyId !== companyId).concat(scopeList(bundle.customers));
+    }
+    if (Array.isArray(bundle.trips)) {
+      this.trips = this.trips.filter((t) => t.companyId !== companyId).concat(scopeList(bundle.trips));
+    }
+    if (Array.isArray(bundle.expenses)) {
+      this.expenses = this.expenses.filter((e) => e.companyId !== companyId).concat(scopeList(bundle.expenses));
+    }
+    if (Array.isArray(bundle.advances)) {
+      this.advances = this.advances.filter((a) => a.companyId !== companyId).concat(scopeList(bundle.advances));
+    }
+    if (Array.isArray(bundle.settlements)) {
+      this.settlements = this.settlements.filter((s) => s.companyId !== companyId).concat(scopeList(bundle.settlements));
+    }
+    if (Array.isArray(bundle.invoices)) {
+      this.invoices = this.invoices.filter((i) => i.companyId !== companyId).concat(scopeList(bundle.invoices));
+    }
+    if (Array.isArray(bundle.payments)) {
+      this.payments = this.payments.filter((p) => p.companyId !== companyId).concat(scopeList(bundle.payments));
+    }
+    if (Array.isArray(bundle.documents)) {
+      this.documents = this.documents.filter((d) => d.companyId !== companyId).concat(scopeList(bundle.documents));
+    }
+
+    this.hydratedCompanies.add(companyId);
+
+    return {
+      vehicles: this.vehicles.filter((v) => v.companyId === companyId).length,
+      drivers: this.drivers.filter((d) => d.companyId === companyId).length,
+      customers: this.customers.filter((c) => c.companyId === companyId).length,
+      trips: this.trips.filter((t) => t.companyId === companyId).length,
+      expenses: this.expenses.filter((e) => e.companyId === companyId).length,
+      advances: this.advances.filter((a) => a.companyId === companyId).length,
+      settlements: this.settlements.filter((s) => s.companyId === companyId).length,
+      invoices: this.invoices.filter((i) => i.companyId === companyId).length,
+      payments: this.payments.filter((p) => p.companyId === companyId).length,
+      documents: this.documents.filter((d) => d.companyId === companyId).length,
+    };
+  }
+
+  /**
    * Persist a user entity mutation into Firestore
    */
   async persistToFirestore(companyId: string, subcollection: string, docId: string, data: any): Promise<void> {

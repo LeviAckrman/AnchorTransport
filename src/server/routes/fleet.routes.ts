@@ -81,7 +81,14 @@ export function getStateFromGstin(gstin: string): { code: string; name: string }
 /**
  * Synchronizes compliance document records for a vehicle into serverFleetStore.documents
  */
-export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void {
+export function syncVehicleDocuments(
+  vehicle: Vehicle,
+  companyId: string
+): { documents: VehicleDocument[]; deletedIds: string[] } {
+  const removedIds = serverFleetStore.documents
+    .filter((d) => d.companyId === companyId && d.vehicleId === vehicle.id)
+    .map((d) => d.id);
+
   // Clear any previously existing documents for this vehicle in company
   serverFleetStore.documents = serverFleetStore.documents.filter(
     (d) => !(d.companyId === companyId && d.vehicleId === vehicle.id)
@@ -89,6 +96,7 @@ export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void 
 
   const now = Date.now();
   const todayStr = new Date().toISOString().split('T')[0];
+  const createdDocs: VehicleDocument[] = [];
 
   const pushDoc = (
     docType: any,
@@ -98,7 +106,7 @@ export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void 
   ) => {
     if (!expiryDate) return;
     const daysUntil = Math.ceil((new Date(expiryDate).getTime() - now) / (1000 * 60 * 60 * 24));
-    serverFleetStore.documents.push({
+    const docObj: VehicleDocument = {
       id: `doc_${companyId}_${vehicle.id}_${docType.toLowerCase()}`,
       companyId,
       vehicleId: vehicle.id,
@@ -110,7 +118,9 @@ export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void 
       expiryDate,
       daysUntilExpiry: daysUntil,
       status: daysUntil < 0 ? 'EXPIRED' : daysUntil <= 30 ? 'EXPIRING_SOON' : 'VALID',
-    });
+    };
+    serverFleetStore.documents.push(docObj);
+    createdDocs.push(docObj);
   };
 
   if (vehicle.insuranceExpiry) {
@@ -129,13 +139,16 @@ export function syncVehicleDocuments(vehicle: Vehicle, companyId: string): void 
 
   // Also persist generated compliance documents to Firestore if available
   if (adminDb) {
-    const vehicleDocs = serverFleetStore.documents.filter(
-      (d) => d.companyId === companyId && d.vehicleId === vehicle.id
-    );
-    for (const d of vehicleDocs) {
+    for (const d of createdDocs) {
       serverFleetStore.persistToFirestore(companyId, 'documents', d.id, d).catch(() => {});
     }
   }
+
+  const createdIdSet = new Set(createdDocs.map((d) => d.id));
+  return {
+    documents: createdDocs,
+    deletedIds: removedIds.filter((id) => !createdIdSet.has(id)),
+  };
 }
 
 /**
@@ -454,7 +467,7 @@ fleetRouter.post('/vehicles', requireAuth, async (req: AuthenticatedRequest, res
     serverFleetStore.vehicles.unshift(newVehicle);
 
     // Sync all compliance documents for vehicle
-    syncVehicleDocuments(newVehicle, companyId);
+    const { documents: syncedDocs, deletedIds: deletedDocumentIds } = syncVehicleDocuments(newVehicle, companyId);
 
     // Also persist to Firestore if available
     if (adminDb) {
@@ -474,6 +487,8 @@ fleetRouter.post('/vehicles', requireAuth, async (req: AuthenticatedRequest, res
       success: true,
       message: `Vehicle ${formattedReg} added successfully to company fleet.`,
       vehicle: newVehicle,
+      documents: syncedDocs,
+      deletedDocumentIds,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to add vehicle' });
@@ -562,8 +577,10 @@ fleetRouter.put('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, 
     if (currentOdometerKm !== undefined) {
       vehicle.currentOdometerKm = Math.max(0, parseInt(currentOdometerKm, 10) || 0);
     }
-    if (fastagBalancePaise !== undefined) {
-      vehicle.fastagBalancePaise = Math.max(0, Math.round(parseFloat(fastagBalancePaise) * 100));
+    if (req.body.fastagBalanceRupees !== undefined) {
+      vehicle.fastagBalancePaise = Math.max(0, Math.round(parseFloat(req.body.fastagBalanceRupees) * 100) || 0);
+    } else if (fastagBalancePaise !== undefined) {
+      vehicle.fastagBalancePaise = Math.max(0, parseInt(fastagBalancePaise, 10) || 0);
     }
 
     if (assignedDriverId !== undefined) {
@@ -590,7 +607,7 @@ fleetRouter.put('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, 
     vehicle.updatedAt = new Date().toISOString();
 
     // Re-sync compliance documents
-    syncVehicleDocuments(vehicle, companyId);
+    const { documents: syncedDocs, deletedIds: deletedDocumentIds } = syncVehicleDocuments(vehicle, companyId);
 
     // Persist to Firestore if available
     if (adminDb) {
@@ -610,6 +627,8 @@ fleetRouter.put('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, 
       success: true,
       message: `Vehicle ${vehicle.registrationNumber} updated successfully.`,
       vehicle,
+      documents: syncedDocs,
+      deletedDocumentIds,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to update vehicle' });
@@ -655,6 +674,9 @@ fleetRouter.delete(
       serverFleetStore.vehicles = serverFleetStore.vehicles.filter((v) => v.id !== vehicleId);
 
       // Clean up linked documents
+      const deletedDocumentIds = serverFleetStore.documents
+        .filter((d) => d.companyId === companyId && d.vehicleId === vehicleId)
+        .map((d) => d.id);
       serverFleetStore.documents = serverFleetStore.documents.filter((d) => d.vehicleId !== vehicleId);
 
       if (adminDb) {
@@ -668,6 +690,7 @@ fleetRouter.delete(
       res.json({
         success: true,
         message: `Vehicle ${vehicle.registrationNumber} deleted successfully.`,
+        deletedDocumentIds,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message || 'Failed to delete vehicle' });
@@ -859,9 +882,11 @@ fleetRouter.post('/drivers', requireAuth, async (req: AuthenticatedRequest, res:
       licenseNumber: licenseNumber.trim().toUpperCase(),
       licenseExpiry,
       badgeNumber: badgeNumber?.trim() || undefined,
-      address: address?.trim() || 'Transport Nagar, West Bengal',
-      emergencyContact: emergencyContact?.trim() || 'Family Member',
-      emergencyPhone: emergencyPhone ? `+91 ${emergencyPhone.replace(/[^0-9]/g, '').slice(-10)}` : `+91 ${clean10DigitPhone}`,
+      address: address?.trim() || '',
+      emergencyContact: emergencyContact?.trim() || '',
+      emergencyPhone: emergencyPhone?.trim()
+        ? `+91 ${emergencyPhone.replace(/[^0-9]/g, '').slice(-10)}`
+        : '',
       status,
       currentAdvanceBalancePaise: 0,
       totalTripsCompleted: 0,
@@ -974,15 +999,19 @@ fleetRouter.put('/drivers/:id', requireAuth, async (req: AuthenticatedRequest, r
     if (emergencyContact !== undefined) driver.emergencyContact = emergencyContact;
     if (emergencyPhone !== undefined) driver.emergencyPhone = emergencyPhone;
     if (status) driver.status = status;
-    if (perDayBataPaise !== undefined) {
-      driver.perDayBataPaise = Math.max(0, Math.round(parseFloat(perDayBataPaise) * 100));
+    if (req.body.perDayBataRupees !== undefined) {
+      driver.perDayBataPaise = Math.max(0, Math.round(parseFloat(req.body.perDayBataRupees) * 100) || 0);
+    } else if (perDayBataPaise !== undefined) {
+      driver.perDayBataPaise = Math.max(0, parseInt(perDayBataPaise, 10) || 0);
     }
     if (assignedVehicleReg !== undefined) driver.assignedVehicleReg = assignedVehicleReg;
 
     // Sensitive fields only editable if privileged
     if (isPrivileged) {
-      if (monthlySalaryPaise !== undefined) {
-        driver.monthlySalaryPaise = Math.max(0, Math.round(parseFloat(monthlySalaryPaise) * 100));
+      if (req.body.monthlySalaryRupees !== undefined) {
+        driver.monthlySalaryPaise = Math.max(0, Math.round(parseFloat(req.body.monthlySalaryRupees) * 100) || 0);
+      } else if (monthlySalaryPaise !== undefined) {
+        driver.monthlySalaryPaise = Math.max(0, parseInt(monthlySalaryPaise, 10) || 0);
       }
       if (aadharNumber !== undefined) driver.aadharNumber = aadharNumber.replace(/\s+/g, '');
       if (panNumber !== undefined) driver.panNumber = panNumber.trim().toUpperCase();
@@ -1271,8 +1300,11 @@ fleetRouter.post('/customers', requireAuth, async (req: AuthenticatedRequest, re
       return;
     }
 
-    const creditLimitNum = parseFloat(creditLimitPaise || 0);
-    if (isNaN(creditLimitNum) || creditLimitNum < 0) {
+    const creditLimitPaiseVal =
+      req.body.creditLimitRupees !== undefined
+        ? Math.round(parseFloat(req.body.creditLimitRupees || '0') * 100)
+        : Math.round(parseFloat(creditLimitPaise || 0));
+    if (isNaN(creditLimitPaiseVal) || creditLimitPaiseVal < 0) {
       res.status(400).json({ success: false, error: 'Credit limit cannot be negative.' });
       return;
     }
@@ -1287,16 +1319,16 @@ fleetRouter.post('/customers', requireAuth, async (req: AuthenticatedRequest, re
       tradeName: tradeName?.trim() || name.trim(),
       gstin: cleanGstin,
       pan: finalPan,
-      contactPerson: contactPerson?.trim() || 'Logistics Coordinator',
+      contactPerson: contactPerson?.trim() || '',
       phone: `+91 ${clean10DigitPhone}`,
-      email: email?.trim().toLowerCase() || `billing@${name.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`,
-      billingAddress: billingAddress?.trim() || 'Industrial Estate, West Bengal',
-      city: city?.trim() || 'Kolkata',
-      state: state?.trim() || 'West Bengal',
+      email: email?.trim().toLowerCase() || '',
+      billingAddress: billingAddress?.trim() || '',
+      city: city?.trim() || '',
+      state: state?.trim() || '',
       stateCode: finalStateCode,
-      pincode: pincode?.trim() || '700001',
+      pincode: pincode?.trim() || '',
       creditPeriodDays: creditPeriodNum,
-      creditLimitPaise: Math.round(creditLimitNum * 100),
+      creditLimitPaise: creditLimitPaiseVal,
       currentOutstandingPaise: 0,
       totalFreightBilledPaise: 0,
       notes: notes?.trim() || undefined,
@@ -1403,8 +1435,10 @@ fleetRouter.put('/customers/:id', requireAuth, async (req: AuthenticatedRequest,
     if (creditPeriodDays !== undefined) {
       customer.creditPeriodDays = Math.max(0, parseInt(creditPeriodDays, 10) || 0);
     }
-    if (creditLimitPaise !== undefined) {
-      customer.creditLimitPaise = Math.max(0, Math.round(parseFloat(creditLimitPaise) * 100));
+    if (req.body.creditLimitRupees !== undefined) {
+      customer.creditLimitPaise = Math.max(0, Math.round(parseFloat(req.body.creditLimitRupees) * 100) || 0);
+    } else if (creditLimitPaise !== undefined) {
+      customer.creditLimitPaise = Math.max(0, parseInt(creditLimitPaise, 10) || 0);
     }
     if (notes !== undefined) customer.notes = notes;
 
@@ -2010,6 +2044,7 @@ async function handleCreateDocument(req: AuthenticatedRequest, res: Response) {
       success: true,
       message: `${docType.replace('_', ' ')} recorded successfully for ${vehicle.registrationNumber}.`,
       document: newDoc,
+      vehicle,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to record document' });
@@ -2069,10 +2104,12 @@ async function handleUpdateDocument(req: AuthenticatedRequest, res: Response) {
 
     await serverFleetStore.persistToFirestore(companyId, 'documents', doc.id, doc);
 
+    const updatedVehicle = serverFleetStore.vehicles.find((v) => v.id === doc.vehicleId && v.companyId === companyId) || null;
     res.json({
       success: true,
       message: `Document ${doc.docType} renewed/updated successfully.`,
       document: doc,
+      vehicle: updatedVehicle,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to update document' });

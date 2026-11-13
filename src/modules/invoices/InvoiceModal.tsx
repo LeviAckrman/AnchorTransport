@@ -17,6 +17,7 @@ import { Trip, Customer, Invoice, GTA_GST_DISCLAIMER } from '../../types/tms';
 import { formatINR, paiseToRupees, rupeesToPaise, calculateGstInvoice } from '../../lib/financialEngine';
 import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface InvoiceModalProps {
   isOpen: boolean;
@@ -31,7 +32,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   onSuccess,
   preselectedTripId,
 }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(false);
@@ -57,31 +58,33 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
   // Fetch candidate trips and customers
   useEffect(() => {
     if (isOpen) {
-      setLoadingInitial(true);
+      setSelectedTripId(preselectedTripId || '');
+      setSelectedCustomerId('');
+      setIssueDate(new Date().toISOString().split('T')[0]);
+      setDueDate('');
+      setFreightRupees('');
+      setLoadingRupees('0');
+      setUnloadingRupees('0');
+      setDetentionRupees('0');
+      setOtherRupees('0');
+      setNotes('');
       setError(null);
+      setLoadingInitial(true);
 
       Promise.all([
         fetch('/api/trips?limit=100', {
           headers: { Authorization: `Bearer ${token || ''}` },
         }).then((r) => parseResponseJson(r)),
-        fetch('/api/fleet/customers', {
+        fetch('/api/customers?limit=100', {
           headers: { Authorization: `Bearer ${token || ''}` },
         }).then((r) => parseResponseJson(r)),
       ])
         .then(([tripData, custData]) => {
-          if (tripData.success) {
-            // Filter to uninvoiced or delivered trips first, but allow all completed trips
+          if (tripData && tripData.success) {
             const allTrips: Trip[] = tripData.data || [];
             setTrips(allTrips);
-
-            if (preselectedTripId) {
-              setSelectedTripId(preselectedTripId);
-            } else if (allTrips.length > 0) {
-              const eligible = allTrips.find((t) => !t.isInvoiced && (t.status === 'DELIVERED' || t.status === 'COMPLETED'));
-              if (eligible) setSelectedTripId(eligible.id);
-            }
           }
-          if (custData.success) {
+          if (custData && custData.success) {
             setCustomers(custData.data || []);
           }
         })
@@ -92,7 +95,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
           setLoadingInitial(false);
         });
     }
-  }, [isOpen, token, preselectedTripId]);
+  }, [isOpen, token, company?.id, preselectedTripId]);
 
   // Selected trip memo
   const selectedTrip = useMemo(() => {
@@ -114,7 +117,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
       d.setDate(d.getDate() + termsDays);
       setDueDate(d.toISOString().split('T')[0]);
 
-      setNotes(`Freight billing for ${selectedTrip.goodsType} consignment from ${selectedTrip.originCity} to ${selectedTrip.destinationCity}. LR #${selectedTrip.lrNumber || selectedTrip.tripNumber}.`);
+      setNotes(`Freight billing for ${selectedTrip.goodsType || 'consignment'} from ${selectedTrip.originCity} to ${selectedTrip.destinationCity}. LR #${selectedTrip.lrNumber || selectedTrip.tripNumber}.`);
     }
   }, [selectedTrip, customers, issueDate]);
 
@@ -130,8 +133,8 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
     const taxablePaise = rupeesToPaise(taxableRupees);
 
     const cust = customers.find((c) => c.id === selectedCustomerId);
-    const customerState = cust?.stateCode || (cust?.gstin ? cust.gstin.substring(0, 2) : '19');
-    const companyState = '19'; // West Bengal Transporter
+    const customerState = cust?.stateCode || (cust?.gstin ? cust.gstin.substring(0, 2) : '');
+    const companyState = company?.stateCode || (company?.gstin ? company.gstin.substring(0, 2) : '');
 
     const tax = calculateGstInvoice(
       taxablePaise,
@@ -146,7 +149,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
       taxablePaise,
       tax,
     };
-  }, [freightRupees, loadingRupees, unloadingRupees, detentionRupees, otherRupees, isRcmApplicable, gstRatePercent, selectedCustomerId, customers]);
+  }, [freightRupees, loadingRupees, unloadingRupees, detentionRupees, otherRupees, isRcmApplicable, gstRatePercent, selectedCustomerId, customers, company]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -197,6 +200,17 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
       if (!res.ok || !data.success) {
         throw new Error(data.error || 'Failed to create invoice');
       }
+
+      const activeCompanyId = company?.id || data.invoice?.companyId;
+      if (activeCompanyId) {
+        if (data.invoice) await syncEntityToFirestore(activeCompanyId, 'invoices', data.invoice);
+        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
+        if (data.customer) await syncEntityToFirestore(activeCompanyId, 'customers', data.customer);
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:invoice-updated'));
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
 
       onSuccess(data.invoice);
       onClose();

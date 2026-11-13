@@ -302,9 +302,11 @@ financialsRouter.post('/expenses', requireAuth, async (req: AuthenticatedRequest
 
     await serverFleetStore.persistToFirestore(companyId, 'expenses', newExpense.id, newExpense);
     await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
+    let updatedVehicle: any = null;
     if (newExpense.paymentMode === 'FASTAG') {
       const veh = serverFleetStore.vehicles.find((v) => v.id === trip.vehicleId && v.companyId === companyId);
       if (veh) {
+        updatedVehicle = veh;
         await serverFleetStore.persistToFirestore(companyId, 'vehicles', veh.id, veh);
       }
     }
@@ -314,6 +316,7 @@ financialsRouter.post('/expenses', requireAuth, async (req: AuthenticatedRequest
       message: `Recorded ${newExpense.category} expense of ₹${(amount / 100).toFixed(0)} for trip ${trip.tripNumber}.`,
       expense: newExpense,
       trip,
+      vehicle: updatedVehicle,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to record expense' });
@@ -610,6 +613,7 @@ financialsRouter.post('/advances', requireAuth, async (req: AuthenticatedRequest
       message: `Disbursed advance of ₹${(amount / 100).toFixed(0)} to ${driverName}.`,
       advance: newAdvance,
       trip,
+      driver: driver || null,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to record advance' });
@@ -840,6 +844,15 @@ financialsRouter.post('/settlements', requireAuth, async (req: AuthenticatedRequ
     if (driver) {
       await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
     }
+    const settledExpenses = expenses.filter((e) => e.isSettled && e.settlementId === newSettlement.id);
+    if (isFinalized) {
+      for (const adv of advances) {
+        await serverFleetStore.persistToFirestore(companyId, 'advances', adv.id, adv);
+      }
+      for (const exp of settledExpenses) {
+        await serverFleetStore.persistToFirestore(companyId, 'expenses', exp.id, exp);
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -848,6 +861,9 @@ financialsRouter.post('/settlements', requireAuth, async (req: AuthenticatedRequ
         : `Created draft settlement ${settlementNumber} for review.`,
       settlement: newSettlement,
       trip,
+      driver: driver || null,
+      updatedAdvances: isFinalized ? advances : [],
+      updatedExpenses: isFinalized ? settledExpenses : [],
       calculation: calc,
     });
   } catch (err: any) {
@@ -950,12 +966,26 @@ financialsRouter.put('/settlements/:id', requireAuth, async (req: AuthenticatedR
     if (trip) {
       await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
     }
+    if (driver) {
+      await serverFleetStore.persistToFirestore(companyId, 'drivers', driver.id, driver);
+    }
+    for (const adv of advances) {
+      await serverFleetStore.persistToFirestore(companyId, 'advances', adv.id, adv);
+    }
+    for (const exp of expenses) {
+      if (exp.isSettled) {
+        await serverFleetStore.persistToFirestore(companyId, 'expenses', exp.id, exp);
+      }
+    }
 
     res.json({
       success: true,
       message: 'Settlement record updated successfully.',
       settlement,
       trip: trip || null,
+      driver: driver || null,
+      updatedAdvances: advances,
+      updatedExpenses: expenses.filter((e) => e.isSettled),
       calculation: calc,
     });
   } catch (err: any) {

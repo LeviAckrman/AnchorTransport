@@ -39,8 +39,9 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
   isLoading = false,
 }) => {
   const [cancellationReason, setCancellationReason] = useState('');
+  const startOdo = trip.startOdometerKm || 0;
   const [endOdometerKm, setEndOdometerKm] = useState(
-    trip.endOdometerKm ? trip.endOdometerKm.toString() : (trip.startOdometerKm + 350).toString()
+    trip.endOdometerKm ? trip.endOdometerKm.toString() : startOdo > 0 ? startOdo.toString() : ''
   );
   const [actualDeliveryDate, setActualDeliveryDate] = useState(
     new Date().toISOString().split('T')[0]
@@ -79,8 +80,8 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
 
     if (targetStatus === 'DELIVERED') {
       const odo = parseInt(endOdometerKm, 10);
-      if (isNaN(odo) || odo < trip.startOdometerKm) {
-        setError(`Ending odometer reading cannot be less than trip start odometer (${trip.startOdometerKm} KM).`);
+      if (isNaN(odo) || odo < startOdo) {
+        setError(`Ending odometer reading cannot be less than trip start odometer (${startOdo} KM).`);
         return;
       }
     }
@@ -191,12 +192,13 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
                   type="number"
                   value={endOdometerKm}
                   onChange={(e) => setEndOdometerKm(e.target.value)}
-                  min={trip.startOdometerKm}
+                  min={startOdo}
+                  placeholder="Enter ending odometer KM"
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-medium font-mono focus:ring-2 focus:ring-indigo-500"
                   required
                 />
                 <span className="text-[10px] text-slate-400 mt-0.5 block">
-                  Trip started at {trip.startOdometerKm.toLocaleString()} KM
+                  Trip started at {startOdo.toLocaleString()} KM
                 </span>
               </div>
             </div>

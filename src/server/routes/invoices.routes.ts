@@ -15,6 +15,7 @@
 import { Router, Response } from 'express';
 import { AuthenticatedRequest, requireAuth } from '../auth';
 import { serverFleetStore } from '../store';
+import { serverCompanies } from './auth.routes';
 import {
   Invoice,
   Payment,
@@ -338,7 +339,8 @@ invoicesRouter.post('/invoices', requireAuth, async (req: AuthenticatedRequest, 
     }
 
     // Calculate GTA GST based on consignor state vs customer state
-    const companyStateCode = '19'; // West Bengal default transporter base
+    const activeCompany = serverCompanies.find((c) => c.id === companyId);
+    const companyStateCode = activeCompany?.stateCode || '19';
     const customerStateCode = customer.stateCode || (customer.gstin ? customer.gstin.substring(0, 2) : '19');
 
     const taxCalc = calculateGstInvoice(
@@ -420,6 +422,7 @@ invoicesRouter.post('/invoices', requireAuth, async (req: AuthenticatedRequest, 
 
       // Update customer outstanding ledger
       syncCustomerOutstanding(customer.id, companyId);
+      await serverFleetStore.persistToFirestore(companyId, 'customers', customer.id, customer);
     }
 
     res.status(201).json({
@@ -429,6 +432,7 @@ invoicesRouter.post('/invoices', requireAuth, async (req: AuthenticatedRequest, 
         : `Invoice ${invoiceNumber} issued for ₹${(newInvoice.totalAmountPaise / 100).toLocaleString('en-IN')}.`,
       invoice: newInvoice,
       trip,
+      customer: customer || null,
       taxCalculation: taxCalc,
       disclaimer: GTA_GST_DISCLAIMER,
     });
@@ -470,6 +474,7 @@ invoicesRouter.put('/invoices/:id', requireAuth, async (req: AuthenticatedReques
     if (notes !== undefined) invoice.notes = notes.trim();
 
     // If still a DRAFT being finalized to ISSUED
+    let updatedTrip: any = null;
     if (invoice.status === 'DRAFT' && status === 'ISSUED') {
       invoice.status = 'ISSUED';
       const trip = serverFleetStore.trips.find((t) => t.id === invoice.tripId && t.companyId === companyId);
@@ -477,6 +482,8 @@ invoicesRouter.put('/invoices/:id', requireAuth, async (req: AuthenticatedReques
         trip.isInvoiced = true;
         trip.invoiceId = invoice.id;
         trip.invoiceNumber = invoice.invoiceNumber;
+        updatedTrip = trip;
+        await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
       }
       syncCustomerOutstanding(invoice.customerId, companyId);
     }
@@ -497,10 +504,12 @@ invoicesRouter.put('/invoices/:id', requireAuth, async (req: AuthenticatedReques
         (invoice.otherChargesPaise || 0);
 
       const customer = serverFleetStore.customers.find((c) => c.id === invoice.customerId && c.companyId === companyId);
+      const activeCompany = serverCompanies.find((c) => c.id === companyId);
+      const companyState = activeCompany?.stateCode || '19';
       const customerState = customer?.stateCode || (customer?.gstin ? customer.gstin.substring(0, 2) : '19');
       const taxCalc = calculateGstInvoice(
         invoice.taxableAmountPaise,
-        '19',
+        companyState,
         customerState,
         invoice.isRcmApplicable,
         invoice.gstRatePercent || 5
@@ -518,11 +527,18 @@ invoicesRouter.put('/invoices/:id', requireAuth, async (req: AuthenticatedReques
     invoice.updatedAt = new Date().toISOString();
 
     syncCustomerOutstanding(invoice.customerId, companyId);
+    const updatedCustomer = serverFleetStore.customers.find((c) => c.id === invoice.customerId && c.companyId === companyId) || null;
+    await serverFleetStore.persistToFirestore(companyId, 'invoices', invoice.id, invoice);
+    if (updatedCustomer) {
+      await serverFleetStore.persistToFirestore(companyId, 'customers', updatedCustomer.id, updatedCustomer);
+    }
 
     res.json({
       success: true,
       message: `Invoice ${invoice.invoiceNumber} updated successfully.`,
       invoice,
+      trip: updatedTrip,
+      customer: updatedCustomer,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to update invoice' });
@@ -581,12 +597,18 @@ invoicesRouter.post('/invoices/:id/cancel', requireAuth, async (req: Authenticat
 
     // Sync customer outstanding
     syncCustomerOutstanding(invoice.customerId, companyId);
+    const updatedCustomer = serverFleetStore.customers.find((c) => c.id === invoice.customerId && c.companyId === companyId) || null;
     await serverFleetStore.persistToFirestore(companyId, 'invoices', invoice.id, invoice);
+    if (updatedCustomer) {
+      await serverFleetStore.persistToFirestore(companyId, 'customers', updatedCustomer.id, updatedCustomer);
+    }
 
     res.json({
       success: true,
       message: `Invoice ${invoice.invoiceNumber} has been cancelled. Trip ${invoice.tripNumber} is liberated for re-billing.`,
       invoice,
+      trip: trip || null,
+      customer: updatedCustomer,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to cancel invoice' });
@@ -773,14 +795,19 @@ async function handlePaymentRecording(req: AuthenticatedRequest, res: Response) 
 
     // Sync customer outstanding
     syncCustomerOutstanding(invoice.customerId, companyId);
+    const updatedCustomer = serverFleetStore.customers.find((c) => c.id === invoice.customerId && c.companyId === companyId) || null;
     await serverFleetStore.persistToFirestore(companyId, 'payments', newPayment.id, newPayment);
     await serverFleetStore.persistToFirestore(companyId, 'invoices', invoice.id, invoice);
+    if (updatedCustomer) {
+      await serverFleetStore.persistToFirestore(companyId, 'customers', updatedCustomer.id, updatedCustomer);
+    }
 
     res.status(201).json({
       success: true,
       message: `Recorded payment of ₹${(amount / 100).toLocaleString('en-IN')} for Invoice ${invoice.invoiceNumber}. Balance remaining: ₹${(invoice.balanceDuePaise / 100).toLocaleString('en-IN')}.`,
       payment: newPayment,
       invoice,
+      customer: updatedCustomer,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Failed to record payment' });

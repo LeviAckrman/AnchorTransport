@@ -26,6 +26,7 @@ import { CustomerModal } from './CustomerModal';
 import { CustomerDetailModal } from './CustomerDetailModal';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
 
 interface CustomersViewProps {
   userRole: UserRole;
@@ -92,7 +93,13 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
 
   useEffect(() => {
     fetchCustomers(1);
-  }, [searchQuery, balanceFilter, limit, company?.id]);
+  }, [searchQuery, balanceFilter, limit, company?.id, activeToken]);
+
+  useEffect(() => {
+    const onHydrated = () => fetchCustomers(1);
+    window.addEventListener('tms:firestore-hydrated', onHydrated);
+    return () => window.removeEventListener('tms:firestore-hydrated', onHydrated);
+  }, [company?.id, activeToken]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
@@ -130,6 +137,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
         throw new Error(data?.error || 'Failed to delete customer.');
       }
 
+      await deleteEntityFromFirestore(company?.id, 'customers', customerToDelete.id);
       showNotification(`Customer ${customerToDelete.name} deleted.`);
       setCustomerToDelete(null);
       window.dispatchEvent(new CustomEvent('tms:customer-updated'));
@@ -312,12 +320,13 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                     <td className="py-3.5 px-4 font-mono">
                       <span className="font-bold text-slate-800 block tracking-wide">{c.gstin}</span>
                       <span className="text-[10px] text-slate-500 font-sans">
-                        {c.city}, {c.state} ({c.stateCode})
+                        {[c.city, c.state].filter(Boolean).join(', ') || '—'}
+                        {c.stateCode ? ` (${c.stateCode})` : ''}
                       </span>
                     </td>
 
                     <td className="py-3.5 px-4">
-                      <span className="font-semibold text-slate-900 block">{c.contactPerson}</span>
+                      <span className="font-semibold text-slate-900 block">{c.contactPerson || '—'}</span>
                       <span className="text-[11px] font-mono text-slate-500">{c.phone}</span>
                     </td>
 
@@ -392,7 +401,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                     </button>
                     <span className="text-xs font-mono text-slate-500 block">{c.gstin}</span>
                     <span className="text-[11px] text-slate-400 block">
-                      {c.city}, {c.state}
+                      {[c.city, c.state].filter(Boolean).join(', ') || '—'}
                     </span>
                   </div>
                   <div className="text-right">
@@ -410,7 +419,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                 <div className="flex items-center justify-between text-xs text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
                   <div>
                     <span className="text-slate-400 text-[10px] uppercase block">Contact Person</span>
-                    <span className="font-medium text-slate-800">{c.contactPerson}</span>
+                    <span className="font-medium text-slate-800">{c.contactPerson || '—'}</span>
                   </div>
                   <div className="text-right">
                     <span className="text-slate-400 text-[10px] uppercase block">Credit Limit</span>

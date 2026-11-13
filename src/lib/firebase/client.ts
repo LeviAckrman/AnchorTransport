@@ -35,11 +35,14 @@ export const app: FirebaseApp = getApps().length
   ? getApp()
   : initializeApp(firebaseClientConfig);
 
+export const FIRESTORE_DATABASE_ID =
+  import.meta.env.VITE_FIRESTORE_DATABASE_ID ||
+  fallbackConfig.firestoreDatabaseId ||
+  'ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d';
+
 // Initialize Services
 export const auth: Auth = getAuth(app);
-export const db: Firestore = fallbackConfig.firestoreDatabaseId
-  ? getFirestore(app, fallbackConfig.firestoreDatabaseId)
-  : getFirestore(app);
+export const db: Firestore = getFirestore(app, FIRESTORE_DATABASE_ID);
 export const storage: FirebaseStorage = getStorage(app);
 
 // Connect Local Emulators if configured

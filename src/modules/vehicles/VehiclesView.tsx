@@ -26,6 +26,7 @@ import { VehicleModal } from './VehicleModal';
 import { VehicleDetailModal } from './VehicleDetailModal';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
 
 interface VehiclesViewProps {
   userRole: UserRole;
@@ -113,13 +114,21 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
   useEffect(() => {
     fetchVehicles(1);
     fetchDrivers();
-  }, [searchQuery, statusFilter, typeFilter, docFilter, limit, company?.id]);
+  }, [searchQuery, statusFilter, typeFilter, docFilter, limit, company?.id, activeToken]);
 
   useEffect(() => {
     const onDriverUpdated = () => fetchDrivers();
+    const onHydrated = () => {
+      fetchVehicles(1);
+      fetchDrivers();
+    };
     window.addEventListener('tms:driver-updated', onDriverUpdated);
-    return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
-  }, []);
+    window.addEventListener('tms:firestore-hydrated', onHydrated);
+    return () => {
+      window.removeEventListener('tms:driver-updated', onDriverUpdated);
+      window.removeEventListener('tms:firestore-hydrated', onHydrated);
+    };
+  }, [company?.id, activeToken]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
@@ -156,6 +165,14 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
       const data = await parseResponseJson<any>(res);
       if (!res.ok || !data || !data.success) {
         throw new Error(data?.error || 'Failed to delete vehicle.');
+      }
+
+      await deleteEntityFromFirestore(company?.id, 'vehicles', vehicleToDelete.id);
+      if (Array.isArray(data.deletedDocumentIds) && data.deletedDocumentIds.length > 0) {
+        await Promise.all(
+          data.deletedDocumentIds.map((docId: string) => deleteEntityFromFirestore(company?.id, 'documents', docId))
+        );
+        window.dispatchEvent(new CustomEvent('tms:document-updated'));
       }
 
       showNotification(`Vehicle ${vehicleToDelete.registrationNumber} removed from company fleet.`);

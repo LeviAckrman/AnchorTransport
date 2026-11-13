@@ -14,12 +14,13 @@ import {
   ArrowRight,
   Info,
 } from 'lucide-react';
-import { TripSettlement, Trip, DriverAdvance, TripExpense, SettlementStatus, UserRole } from '../../types/tms';
+import { TripSettlement, Trip, Driver, DriverAdvance, TripExpense, SettlementStatus, UserRole } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { formatINR, paiseToRupees } from '../../lib/currency';
 import { calculateDriverSettlement, DriverSettlementCalculation } from '../../lib/financialEngine';
 import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface SettlementModalProps {
   isOpen: boolean;
@@ -36,7 +37,7 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
   settlementToEdit,
   defaultTripId,
 }) => {
-  const { token, role } = useAuth();
+  const { token, role, company } = useAuth();
   const isEdit = Boolean(settlementToEdit);
   const isAlreadyFinalized = settlementToEdit?.status === 'FINALIZED' || settlementToEdit?.status === 'APPROVED_SETTLED';
 
@@ -45,7 +46,7 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
 
   // Form inputs
   const [tripId, setTripId] = useState(defaultTripId || '');
-  const [driverBataDays, setDriverBataDays] = useState('2');
+  const [driverBataDays, setDriverBataDays] = useState('1');
   const [deductionsRupees, setDeductionsRupees] = useState('0');
   const [deductionReason, setDeductionReason] = useState('');
   const [settlementNotes, setSettlementNotes] = useState('');
@@ -58,6 +59,7 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
   // Trip dossier data
   const [advances, setAdvances] = useState<DriverAdvance[]>([]);
   const [expenses, setExpenses] = useState<TripExpense[]>([]);
+  const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
   const [loadingDossier, setLoadingDossier] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -74,51 +76,52 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
         .then((data) => {
           if (data && data.success) {
             setTrips(data.data || []);
-            if (!tripId && defaultTripId) {
-              setTripId(defaultTripId);
-            } else if (!tripId && data.data?.length > 0) {
-              // Prefer trips in DELIVERED or IN_TRANSIT that are unsettled
-              const delivered = data.data.find((t: Trip) => t.status === 'DELIVERED' && !t.isSettled);
-              setTripId(delivered ? delivered.id : data.data[0].id);
-            }
           }
         })
         .catch((err) => console.warn('Failed to load trips for settlement modal:', err))
         .finally(() => setLoadingTrips(false));
     }
-  }, [isOpen, defaultTripId, token]);
+  }, [isOpen, token, company?.id]);
 
-  // Load trip-specific advances and expenses when tripId changes
+  // Load trip-specific advances, expenses, and driver when tripId changes
   useEffect(() => {
-    if (tripId && isOpen) {
-      setLoadingDossier(true);
-      fetch(`/api/trips/${tripId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success) {
-            setAdvances(data.advances || []);
-            setExpenses(data.expenses || []);
+    if (!isOpen) return;
+    if (!tripId) {
+      setAdvances([]);
+      setExpenses([]);
+      setSelectedDriver(null);
+      return;
+    }
 
-            // Auto-compute trip days if dispatchDate and actualDeliveryDate exist
-            if (data.trip) {
-              const start = new Date(data.trip.dispatchDate).getTime();
-              const end = data.trip.actualDeliveryDate ? new Date(data.trip.actualDeliveryDate).getTime() : Date.now();
-              const diffDays = Math.max(1, Math.ceil((end - start) / (1000 * 3600 * 24)));
-              if (!settlementToEdit) {
-                setDriverBataDays(diffDays.toString());
-              }
+    setLoadingDossier(true);
+    fetch(`/api/trips/${tripId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((res) => parseResponseJson<any>(res))
+      .then((data) => {
+        if (data && data.success) {
+          setAdvances(data.advances || []);
+          setExpenses(data.expenses || []);
+          setSelectedDriver(data.driver || null);
+
+          // Auto-compute trip days if dispatchDate and actualDeliveryDate exist
+          if (data.trip) {
+            const start = new Date(data.trip.dispatchDate).getTime();
+            const end = data.trip.actualDeliveryDate ? new Date(data.trip.actualDeliveryDate).getTime() : Date.now();
+            const diffDays = Math.max(1, Math.ceil((end - start) / (1000 * 3600 * 24)));
+            if (!settlementToEdit && !Number.isNaN(diffDays)) {
+              setDriverBataDays(diffDays.toString());
             }
           }
-        })
-        .catch((err) => console.warn('Failed to load trip dossier:', err))
-        .finally(() => setLoadingDossier(false));
-    }
+        }
+      })
+      .catch((err) => console.warn('Failed to load trip dossier:', err))
+      .finally(() => setLoadingDossier(false));
   }, [tripId, isOpen, settlementToEdit, token]);
 
   // Populate from settlementToEdit if editing
   useEffect(() => {
+    if (!isOpen) return;
     if (settlementToEdit) {
       setTripId(settlementToEdit.tripId);
       setDeductionsRupees(((settlementToEdit.approvedDeductionsPaise || settlementToEdit.otherDeductionsPaise || 0) / 100).toString());
@@ -127,7 +130,10 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
       setTargetStatus(settlementToEdit.status);
       setIsCorrectionAuthorized(Boolean(settlementToEdit.isCorrectionAuthorized));
       setCorrectionReason(settlementToEdit.correctionReason || '');
+      setError(null);
     } else {
+      setTripId(defaultTripId || '');
+      setDriverBataDays('1');
       setDeductionsRupees('0');
       setDeductionReason('');
       setSettlementNotes('');
@@ -136,10 +142,10 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
       setCorrectionReason('');
       setError(null);
     }
-  }, [settlementToEdit, isOpen]);
+  }, [settlementToEdit, defaultTripId, isOpen]);
 
   const selectedTrip = trips.find((t) => t.id === tripId);
-  const perDayBataPaise = 50000; // ₹500 default daily driver bata
+  const perDayBataPaise = selectedDriver?.perDayBataPaise ?? 0;
 
   const parsedDeductionsPaise = Math.round((parseFloat(deductionsRupees) || 0) * 100);
   const parsedDays = parseInt(driverBataDays, 10) || 1;
@@ -198,6 +204,29 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
       if (!res.ok || !data || !data.success) {
         throw new Error(data?.error || 'Failed to complete settlement.');
       }
+
+      const activeCompanyId = company?.id || data.settlement?.companyId;
+      if (activeCompanyId) {
+        if (data.settlement) await syncEntityToFirestore(activeCompanyId, 'settlements', data.settlement);
+        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
+        if (data.driver) await syncEntityToFirestore(activeCompanyId, 'drivers', data.driver);
+        if (Array.isArray(data.updatedAdvances)) {
+          for (const adv of data.updatedAdvances) {
+            await syncEntityToFirestore(activeCompanyId, 'advances', adv);
+          }
+        }
+        if (Array.isArray(data.updatedExpenses)) {
+          for (const exp of data.updatedExpenses) {
+            await syncEntityToFirestore(activeCompanyId, 'expenses', exp);
+          }
+        }
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:settlement-updated'));
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
+      window.dispatchEvent(new CustomEvent('tms:advance-updated'));
+      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
 
       onSuccess(data.settlement, isEdit);
       onClose();
@@ -276,11 +305,14 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
             ) : trips.length === 0 ? (
               <option value="">No trips available</option>
             ) : (
-              trips.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.status}] {t.isSettled ? '✓ ALREADY SETTLED' : ''}
-                </option>
-              ))
+              <>
+                <option value="">-- Choose Trip to Reconcile --</option>
+                {trips.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.status}] {t.isSettled ? '✓ ALREADY SETTLED' : ''}
+                  </option>
+                ))}
+              </>
             )}
           </select>
           {selectedTrip && (

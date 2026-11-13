@@ -216,7 +216,15 @@ function setSessionCookie(res: Response, token: string) {
  */
 authRouter.post('/session', async (req, res) => {
   try {
-    const { idToken, email, name } = req.body;
+    const {
+      idToken,
+      uid,
+      email,
+      name,
+      phone,
+      firestoreCompany,
+      firestoreRole,
+    } = req.body;
 
     let verifiedUid = '';
     let verifiedEmail = email ? email.trim().toLowerCase() : '';
@@ -235,8 +243,11 @@ authRouter.post('/session', async (req, res) => {
           return;
         }
       } else {
-        // Fallback for dev mode without service account
-        verifiedUid = `uid_${Buffer.from(verifiedEmail || 'user').toString('hex').slice(0, 12)}`;
+        // Dev runtime without GCP service account: preserve Firebase UID passed by client SDK
+        verifiedUid =
+          typeof uid === 'string' && uid.trim()
+            ? uid.trim()
+            : `uid_${Buffer.from(verifiedEmail || 'user').toString('hex').slice(0, 12)}`;
       }
     }
 
@@ -246,13 +257,15 @@ authRouter.post('/session', async (req, res) => {
     }
 
     // Find or create local user record
-    let user = serverUsers.find((u) => u.email.toLowerCase() === verifiedEmail);
+    let user = serverUsers.find(
+      (u) => (verifiedUid && u.id === verifiedUid) || u.email.toLowerCase() === verifiedEmail
+    );
     if (!user) {
       user = {
         id: verifiedUid || `usr_${Date.now()}`,
         email: verifiedEmail,
         name: verifiedName || verifiedEmail.split('@')[0],
-        phone: '',
+        phone: typeof phone === 'string' ? phone.trim() : '',
         passwordHash: DEMO_PASSWORD_HASH,
         isActive: true,
       };
@@ -274,10 +287,72 @@ authRouter.post('/session', async (req, res) => {
           console.warn('Firestore user doc sync note:', err);
         }
       }
+    } else {
+      if (!user.name && verifiedName) user.name = verifiedName;
+      if (!user.phone && typeof phone === 'string' && phone.trim()) user.phone = phone.trim();
     }
 
     // Check company memberships
-    const memberships = serverCompanyUsers.filter((cu) => cu.userId === user!.id && cu.isActive);
+    let memberships = serverCompanyUsers.filter((cu) => cu.userId === user!.id && cu.isActive);
+
+    // Rehydrate company & membership from Firestore payload after server restarts when !adminAuth
+    if (
+      memberships.length === 0 &&
+      !adminAuth &&
+      firestoreCompany &&
+      typeof firestoreCompany === 'object' &&
+      typeof firestoreCompany.id === 'string' &&
+      firestoreCompany.id.trim()
+    ) {
+      const compId = firestoreCompany.id.trim();
+      let existingComp = serverCompanies.find((c) => c.id === compId);
+      if (!existingComp) {
+        existingComp = {
+          id: compId,
+          name: firestoreCompany.name || 'Transport Company',
+          tradeName: firestoreCompany.tradeName || firestoreCompany.name || '',
+          gstin: firestoreCompany.gstin || '',
+          pan: firestoreCompany.pan || '',
+          phone: firestoreCompany.phone || '',
+          email: firestoreCompany.email || verifiedEmail,
+          address: firestoreCompany.address || '',
+          city: firestoreCompany.city || '',
+          state: firestoreCompany.state || '',
+          stateCode: firestoreCompany.stateCode || '',
+          pincode: firestoreCompany.pincode || '',
+          bankName: firestoreCompany.bankName || '',
+          accountNumber: firestoreCompany.accountNumber || '',
+          ifscCode: firestoreCompany.ifscCode || '',
+          branch: firestoreCompany.branch || '',
+          lrPrefix: firestoreCompany.lrPrefix || 'AT/25-26/',
+          invoicePrefix: firestoreCompany.invoicePrefix || 'INV/25-26/',
+          tripPrefix: firestoreCompany.tripPrefix || 'TR-',
+          logoUrl: firestoreCompany.logoUrl,
+          fleetSize: firestoreCompany.fleetSize,
+          ownerId: firestoreCompany.ownerId,
+        };
+        serverCompanies.push(existingComp);
+      }
+
+      const isVerifiedOwner =
+        firestoreCompany.ownerId === user.id || verifiedEmail === 'kunduankit129@gmail.com';
+      const allowedNonOwnerRoles: UserRole[] = ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'];
+      const safeRestoredRole: UserRole = isVerifiedOwner
+        ? 'OWNER'
+        : allowedNonOwnerRoles.includes(firestoreRole)
+        ? firestoreRole
+        : 'OPERATIONS';
+
+      const restoredMembership: StoredCompanyUser = {
+        id: `cu_sync_${Date.now()}`,
+        userId: user.id,
+        companyId: compId,
+        role: safeRestoredRole,
+        isActive: true,
+      };
+      serverCompanyUsers.push(restoredMembership);
+      memberships = [restoredMembership];
+    }
 
     if (memberships.length === 0) {
       // User is logged in, but has not completed Company Onboarding yet!
@@ -461,12 +536,15 @@ authRouter.post('/login', async (req, res) => {
 authRouter.post('/register', async (req, res) => {
   try {
     const {
+      firebaseUid,
       companyName,
       gstin,
       pan,
+      address,
       city,
       state,
       stateCode,
+      pincode,
       phone,
       ownerName,
       ownerEmail,
@@ -491,13 +569,16 @@ authRouter.post('/register', async (req, res) => {
     }
 
     const hashedPassword = await hashPassword(password);
-    const newUserId = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newUserId =
+      typeof firebaseUid === 'string' && firebaseUid.trim()
+        ? firebaseUid.trim()
+        : `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
     const newUser: StoredUser = {
       id: newUserId,
       email: ownerEmail.trim().toLowerCase(),
       name: ownerName.trim(),
-      phone: phone || '',
+      phone: phone?.trim() || '',
       passwordHash: hashedPassword,
       isActive: true,
     };
@@ -520,20 +601,20 @@ authRouter.post('/register', async (req, res) => {
         tradeName: companyName.trim(),
         gstin: cleanGstin,
         pan: derivedPan,
-        phone: phone || '',
+        phone: phone?.trim() || '',
         email: ownerEmail.trim().toLowerCase(),
-        address: 'Transport Nagar Hub',
-        city: city || 'Kolkata',
-        state: state || 'West Bengal',
-        stateCode: stateCode || '19',
-        pincode: '700001',
-        bankName: 'HDFC Bank Ltd.',
-        accountNumber: 'To be configured',
-        ifscCode: 'HDFC0000001',
-        branch: 'Main Branch',
+        address: address?.trim() || '',
+        city: city?.trim() || '',
+        state: state?.trim() || '',
+        stateCode: stateCode?.trim() || cleanGstin.substring(0, 2),
+        pincode: pincode?.trim() || '',
+        bankName: '',
+        accountNumber: '',
+        ifscCode: '',
+        branch: '',
         lrPrefix: 'AT/25-26/',
         invoicePrefix: 'INV/25-26/',
-        fleetSize: fleetSize || '10-25 Trucks',
+        fleetSize: fleetSize || '',
         ownerId: newUserId,
       };
 
@@ -685,20 +766,20 @@ authRouter.post('/onboard-company', requireAuth, async (req: AuthenticatedReques
       tradeName: tradeName?.trim() || companyName.trim(),
       gstin: cleanGstin,
       pan: derivedPan,
-      phone: phone?.trim() || req.user?.email || '',
+      phone: phone?.trim() || '',
       email: email?.trim() || req.user?.email || '',
-      address: address?.trim() || 'Transport Nagar Freight Terminal',
-      city: city?.trim() || 'Kolkata',
-      state: state?.trim() || 'West Bengal',
+      address: address?.trim() || '',
+      city: city?.trim() || '',
+      state: state?.trim() || '',
       stateCode: stateCode?.trim() || cleanGstin.substring(0, 2),
-      pincode: pincode?.trim() || '700001',
-      bankName: 'HDFC Bank Ltd.',
-      accountNumber: 'To be configured',
-      ifscCode: 'HDFC0000001',
-      branch: 'Main Transport Branch',
+      pincode: pincode?.trim() || '',
+      bankName: '',
+      accountNumber: '',
+      ifscCode: '',
+      branch: '',
       lrPrefix: lrPrefix?.trim() || 'AT/25-26/',
       invoicePrefix: invoicePrefix?.trim() || 'INV/25-26/',
-      fleetSize: fleetSize || '10-25 Trucks',
+      fleetSize: fleetSize || '',
       ownerId: userId,
     };
 

@@ -6,6 +6,7 @@ import { PageHeader } from '../layout/PageHeader';
 import { Badge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { fetchCompanyMembersFromFirestore } from '../../lib/firebase/firestoreService';
 
 interface TeamMember {
   membershipId: string;
@@ -18,36 +19,9 @@ interface TeamMember {
 }
 
 export const UserManagementPage: React.FC = () => {
-  const { role, permissions } = useAuth();
-  const [users, setUsers] = useState<TeamMember[]>([
-    {
-      membershipId: 'cu_01',
-      userId: 'usr_owner_01',
-      name: 'Anupam Ghosh',
-      email: 'anupam@royalbengal.com',
-      phone: '+91 98301 22890',
-      role: 'OWNER',
-      active: true,
-    },
-    {
-      membershipId: 'cu_02',
-      userId: 'usr_acct_02',
-      name: 'Subhashish Dey',
-      email: 'accounts@royalbengal.com',
-      phone: '+91 98310 99411',
-      role: 'ACCOUNTANT',
-      active: true,
-    },
-    {
-      membershipId: 'cu_03',
-      userId: 'usr_ops_03',
-      name: 'Bikash Mahato',
-      email: 'bikash@royalbengal.com',
-      phone: '+91 94340 18273',
-      role: 'MANAGER',
-      active: true,
-    },
-  ]);
+  const { company, token, permissions } = useAuth();
+  const [users, setUsers] = useState<TeamMember[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
 
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [inviteName, setInviteName] = useState('');
@@ -56,19 +30,69 @@ export const UserManagementPage: React.FC = () => {
   const [inviteRole, setInviteRole] = useState<UserRole>('OPERATIONS');
   const [inviteLoading, setInviteLoading] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const canManageUsers = permissions?.canManageUsers ?? false;
+  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
+
+  useEffect(() => {
+    const loadMembers = async () => {
+      if (!company?.id) {
+        setUsers([]);
+        setLoadingUsers(false);
+        return;
+      }
+      setLoadingUsers(true);
+      try {
+        const [apiRes, fsMembers] = await Promise.all([
+          fetch('/api/company/users', {
+            headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
+          }).catch(() => null),
+          fetchCompanyMembersFromFirestore(company.id).catch(() => []),
+        ]);
+
+        const apiData = apiRes ? await parseResponseJson<any>(apiRes) : null;
+        const apiList: TeamMember[] =
+          apiRes && apiRes.ok && apiData?.success && Array.isArray(apiData.users) ? apiData.users : [];
+
+        const merged = [...apiList];
+        for (const fsM of fsMembers) {
+          if (!merged.some((m) => m.userId === fsM.userId || m.email.toLowerCase() === fsM.email.toLowerCase())) {
+            merged.push({
+              membershipId: fsM.id || fsM.userId,
+              userId: fsM.userId,
+              name: fsM.name || fsM.email.split('@')[0],
+              email: fsM.email,
+              phone: '',
+              role: fsM.role,
+              active: fsM.status === 'ACTIVE',
+            });
+          }
+        }
+        setUsers(merged);
+      } catch (err: any) {
+        setErrorMsg(err?.message || 'Failed to load company team members.');
+      } finally {
+        setLoadingUsers(false);
+      }
+    };
+    loadMembers();
+  }, [company?.id, activeToken]);
 
   const handleInviteUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManageUsers) return;
 
     setInviteLoading(true);
+    setErrorMsg(null);
 
     try {
       const res = await fetch('/api/company/invite-user', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
+        },
         body: JSON.stringify({
           name: inviteName,
           email: inviteEmail,
@@ -79,12 +103,10 @@ export const UserManagementPage: React.FC = () => {
 
       const data = await parseResponseJson<any>(res);
       if (!res.ok || !data || !data.success) {
-        alert(data?.error || 'Failed to add user');
-        setInviteLoading(false);
+        setErrorMsg(data?.error || 'Failed to add user');
         return;
       }
 
-      // Add to list
       const newMember: TeamMember = {
         membershipId: `cu_${Date.now()}`,
         userId: data.user?.userId || `usr_${Date.now()}`,
@@ -95,32 +117,17 @@ export const UserManagementPage: React.FC = () => {
         active: true,
       };
 
-      setUsers([...users, newMember]);
+      setUsers((prev) => [...prev, newMember]);
       setFeedback(`User ${inviteName} invited as ${inviteRole}.`);
       setIsInviteOpen(false);
       setInviteName('');
       setInviteEmail('');
       setInvitePhone('');
-    } catch {
-      // Local fallback
-      const newMember: TeamMember = {
-        membershipId: `cu_${Date.now()}`,
-        userId: `usr_${Date.now()}`,
-        name: inviteName,
-        email: inviteEmail,
-        phone: invitePhone,
-        role: inviteRole,
-        active: true,
-      };
-      setUsers([...users, newMember]);
-      setFeedback(`User ${inviteName} added as ${inviteRole}.`);
-      setIsInviteOpen(false);
-      setInviteName('');
-      setInviteEmail('');
-      setInvitePhone('');
+      setTimeout(() => setFeedback(null), 4000);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Network error adding user.');
     } finally {
       setInviteLoading(false);
-      setTimeout(() => setFeedback(null), 4000);
     }
   };
 
@@ -166,6 +173,13 @@ export const UserManagementPage: React.FC = () => {
         </div>
       )}
 
+      {errorMsg && (
+        <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-rose-600" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
       {/* Role Permission Matrix Card */}
       <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
         <h3 className="font-bold text-xs uppercase tracking-wider text-slate-800 mb-3 flex items-center gap-2">
@@ -203,31 +217,45 @@ export const UserManagementPage: React.FC = () => {
         </div>
 
         <div className="divide-y divide-slate-100">
-          {users.map((member) => (
-            <div key={member.membershipId} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 transition-colors">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 text-slate-700 font-bold flex items-center justify-center text-sm">
-                  {member.name.split(' ').map((n) => n[0]).join('')}
-                </div>
-                <div>
-                  <h4 className="font-bold text-sm text-slate-900">{member.name}</h4>
-                  <div className="flex items-center gap-3 text-xs text-slate-500 mt-0.5">
-                    <span className="flex items-center gap-1"><Mail className="w-3.5 h-3.5" />{member.email}</span>
-                    <span className="flex items-center gap-1"><Phone className="w-3.5 h-3.5" />{member.phone}</span>
+          {loadingUsers ? (
+            <div className="p-6 text-center text-xs text-slate-500">Loading company users...</div>
+          ) : users.length === 0 ? (
+            <div className="p-6 text-center text-xs text-slate-500">
+              No staff members added yet. Add staff members above to grant company access.
+            </div>
+          ) : (
+            users.map((member) => (
+              <div key={member.membershipId} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 text-slate-700 font-bold flex items-center justify-center text-sm">
+                    {member.name
+                      .split(' ')
+                      .filter(Boolean)
+                      .map((n) => n[0])
+                      .join('')}
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-slate-900">{member.name}</h4>
+                    <div className="flex items-center gap-3 text-xs text-slate-500 mt-0.5">
+                      <span className="flex items-center gap-1"><Mail className="w-3.5 h-3.5" />{member.email}</span>
+                      {member.phone && (
+                        <span className="flex items-center gap-1"><Phone className="w-3.5 h-3.5" />{member.phone}</span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-3">
-                <Badge variant={getRoleBadgeVariant(member.role)} dot>
-                  {member.role}
-                </Badge>
-                <span className="text-xs text-emerald-700 font-medium bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                  Active
-                </span>
+                <div className="flex items-center gap-3">
+                  <Badge variant={getRoleBadgeVariant(member.role)} dot>
+                    {member.role}
+                  </Badge>
+                  <span className="text-xs text-emerald-700 font-medium bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Active
+                  </span>
+                </div>
               </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
       </div>
 

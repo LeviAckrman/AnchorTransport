@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { Anchor, Lock, Mail, ArrowRight, ShieldCheck, AlertCircle, Eye, EyeOff, KeyRound } from 'lucide-react';
+import { Anchor, Lock, Mail, ArrowRight, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { UserRole } from '../../types/tms';
 import { ForgotPasswordModal } from './ForgotPasswordModal';
 
 interface LoginPageProps {
@@ -10,8 +9,8 @@ interface LoginPageProps {
 
 export const LoginPage: React.FC<LoginPageProps> = ({ onSwitchToRegister }) => {
   const { login, loginWithGoogleAuth } = useAuth();
-  const [email, setEmail] = useState('anupam@royalbengal.com');
-  const [password, setPassword] = useState('Password@123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,12 +31,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSwitchToRegister }) => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleSelectDemoUser = (demoEmail: string, _demoRole: UserRole) => {
-    setEmail(demoEmail);
-    setPassword('Password@123');
-    setError(null);
   };
 
   return (
@@ -187,62 +180,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onSwitchToRegister }) => {
               <span>Sign in with Google</span>
             </button>
           </form>
-
-          {/* Quick Demo Access Bar */}
-          <div className="mt-6 pt-5 border-t border-slate-700/60">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2.5 text-center">
-              Quick Role Switch (Demo Mode)
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => handleSelectDemoUser('anupam@royalbengal.com', 'OWNER')}
-                className="p-2 rounded-lg bg-slate-900/60 hover:bg-slate-700/70 border border-slate-700/80 text-left transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between text-xs font-bold text-white">
-                  <span>Anupam G.</span>
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono">OWNER</span>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-0.5">Full Authority</p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSelectDemoUser('accounts@royalbengal.com', 'ACCOUNTANT')}
-                className="p-2 rounded-lg bg-slate-900/60 hover:bg-slate-700/70 border border-slate-700/80 text-left transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between text-xs font-bold text-white">
-                  <span>Subhashish D.</span>
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono">ACCT</span>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-0.5">Invoicing & Settle</p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSelectDemoUser('bikash@royalbengal.com', 'MANAGER')}
-                className="p-2 rounded-lg bg-slate-900/60 hover:bg-slate-700/70 border border-slate-700/80 text-left transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between text-xs font-bold text-white">
-                  <span>Bikash M.</span>
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">MGR</span>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-0.5">Trips & Fleet</p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleSelectDemoUser('bikash@royalbengal.com', 'OPERATIONS')}
-                className="p-2 rounded-lg bg-slate-900/60 hover:bg-slate-700/70 border border-slate-700/80 text-left transition-colors cursor-pointer"
-              >
-                <div className="flex items-center justify-between text-xs font-bold text-white">
-                  <span>Ops Desk</span>
-                  <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">OPS</span>
-                </div>
-                <p className="text-[10px] text-slate-400 mt-0.5">Fuel & Advances</p>
-              </button>
-            </div>
-          </div>
 
           {/* Switch to Register */}
           <div className="mt-6 text-center">

@@ -19,14 +19,14 @@ export const CompanyOnboardingPage: React.FC = () => {
 
   const [companyName, setCompanyName] = useState('');
   const [tradeName, setTradeName] = useState('');
-  const [gstin, setGstin] = useState('19AAACA1029E1Z5');
-  const [pan, setPan] = useState('AAACA1029E');
-  const [phone, setPhone] = useState(user?.phone || '+91 98300 12345');
+  const [gstin, setGstin] = useState('');
+  const [pan, setPan] = useState('');
+  const [phone, setPhone] = useState(user?.phone || '');
   const [email, setEmail] = useState(user?.email || '');
-  const [city, setCity] = useState('Kolkata');
-  const [state, setState] = useState('West Bengal');
-  const [stateCode, setStateCode] = useState('19');
-  const [pincode, setPincode] = useState('700001');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [stateCode, setStateCode] = useState('');
+  const [pincode, setPincode] = useState('');
   const [fleetSize, setFleetSize] = useState('10-25 Trucks');
   const [lrPrefix, setLrPrefix] = useState('AT/25-26/');
   const [invoicePrefix, setInvoicePrefix] = useState('INV/25-26/');

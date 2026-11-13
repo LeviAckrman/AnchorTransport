@@ -27,11 +27,11 @@ export const RegisterPage: React.FC<RegisterPageProps> = ({ onSwitchToLogin }) =
   const [ownerEmail, setOwnerEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [phone, setPhone] = useState('+91 98300 12345');
+  const [phone, setPhone] = useState('');
 
   // Full company details
   const [companyName, setCompanyName] = useState('');
-  const [gstin, setGstin] = useState('19AAACA1029E1Z5');
+  const [gstin, setGstin] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

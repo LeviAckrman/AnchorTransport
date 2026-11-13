@@ -11,7 +11,7 @@
  * 7. Large Dataset Performance (Aggregation resilience)
  */
 
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert';
 import http from 'http';
 import { signSessionToken } from '../server/auth';
@@ -148,8 +148,30 @@ async function makeRequest(
 }
 
 describe('PHASE 9: Reports and Company Settings Tests', () => {
-  before(() => {
+  before(async () => {
     serverFleetStore.seedCompanyData(COMPANY_A);
+    const res = await makeRequest('POST', '/api/sync/hydrate', tokenOwnerA, {
+      vehicles: serverFleetStore.vehicles.filter((v) => v.companyId === COMPANY_A),
+      drivers: serverFleetStore.drivers.filter((d) => d.companyId === COMPANY_A),
+      customers: serverFleetStore.customers.filter((c) => c.companyId === COMPANY_A),
+      trips: serverFleetStore.trips.filter((t) => t.companyId === COMPANY_A),
+      expenses: serverFleetStore.expenses.filter((e) => e.companyId === COMPANY_A),
+      invoices: serverFleetStore.invoices.filter((i) => i.companyId === COMPANY_A),
+      documents: serverFleetStore.documents.filter((d) => d.companyId === COMPANY_A),
+    });
+    assert.strictEqual(res.status, 200);
+  });
+
+  after(async () => {
+    await makeRequest('POST', '/api/sync/hydrate', tokenOwnerA, {
+      vehicles: [],
+      drivers: [],
+      customers: [],
+      trips: [],
+      expenses: [],
+      invoices: [],
+      documents: [],
+    });
   });
   // =========================================================================
   // 1. TRIP REPORT

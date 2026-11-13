@@ -34,6 +34,7 @@ import { TripDetailModal } from './TripDetailModal';
 import { TripStatusTransitionModal } from './TripStatusTransitionModal';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { syncEntityToFirestore, clearCompanyTripsDataInFirestore } from '../../lib/firebase/firestoreService';
 
 interface TripsViewProps {
   userRole: UserRole;
@@ -77,8 +78,12 @@ export const TripsView: React.FC<TripsViewProps> = ({
 
     const onCustomerUpdated = () => fetchCustomersList();
     window.addEventListener('tms:customer-updated', onCustomerUpdated);
-    return () => window.removeEventListener('tms:customer-updated', onCustomerUpdated);
-  }, [activeToken]);
+    window.addEventListener('tms:firestore-hydrated', onCustomerUpdated);
+    return () => {
+      window.removeEventListener('tms:customer-updated', onCustomerUpdated);
+      window.removeEventListener('tms:firestore-hydrated', onCustomerUpdated);
+    };
+  }, [activeToken, company?.id]);
 
   // Sync vehicles live from API whenever truck is added/updated in Vehicles tab
   useEffect(() => {
@@ -99,8 +104,12 @@ export const TripsView: React.FC<TripsViewProps> = ({
 
     const onVehicleUpdated = () => fetchVehiclesList();
     window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-  }, [activeToken]);
+    window.addEventListener('tms:firestore-hydrated', onVehicleUpdated);
+    return () => {
+      window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+      window.removeEventListener('tms:firestore-hydrated', onVehicleUpdated);
+    };
+  }, [activeToken, company?.id]);
 
   // Sync drivers live from API whenever driver is added/updated in Drivers tab
   useEffect(() => {
@@ -121,8 +130,12 @@ export const TripsView: React.FC<TripsViewProps> = ({
 
     const onDriverUpdated = () => fetchDriversList();
     window.addEventListener('tms:driver-updated', onDriverUpdated);
-    return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
-  }, [activeToken]);
+    window.addEventListener('tms:firestore-hydrated', onDriverUpdated);
+    return () => {
+      window.removeEventListener('tms:driver-updated', onDriverUpdated);
+      window.removeEventListener('tms:firestore-hydrated', onDriverUpdated);
+    };
+  }, [activeToken, company?.id]);
 
   // Filters and Pagination
   const [searchQuery, setSearchQuery] = useState('');
@@ -168,6 +181,10 @@ export const TripsView: React.FC<TripsViewProps> = ({
       if (!res.ok || !data || !data.success) {
         throw new Error(data?.error || 'Failed to reset trips.');
       }
+      await clearCompanyTripsDataInFirestore(company?.id, data.vehicles || [], data.drivers || []);
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
       showNotification('All trips have been reset. Fleet is clean and ready for user dispatches.');
       setIsResetTripsDialogOpen(false);
       fetchTrips(1);
@@ -222,6 +239,16 @@ export const TripsView: React.FC<TripsViewProps> = ({
   useEffect(() => {
     fetchTrips(1);
   }, [statusFilter, vehicleFilter, driverFilter, customerFilter, dateFilter, activeToken, company?.id]);
+
+  useEffect(() => {
+    const onTripsSync = () => fetchTrips(1);
+    window.addEventListener('tms:firestore-hydrated', onTripsSync);
+    window.addEventListener('tms:trip-updated', onTripsSync);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', onTripsSync);
+      window.removeEventListener('tms:trip-updated', onTripsSync);
+    };
+  }, [activeToken, company?.id]);
 
   // Debounced search
   useEffect(() => {
@@ -296,6 +323,15 @@ export const TripsView: React.FC<TripsViewProps> = ({
       if (!res.ok || !json || !json.success) {
         throw new Error(json?.error || 'Failed to advance trip status.');
       }
+
+      await Promise.all([
+        syncEntityToFirestore(company?.id, 'trips', json.trip),
+        syncEntityToFirestore(company?.id, 'vehicles', json.vehicle),
+        syncEntityToFirestore(company?.id, 'drivers', json.driver),
+      ]);
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
 
       showNotification(`Trip ${tripForStatusChange.trip.tripNumber} is now ${transitionData.targetStatus}.`);
       setTripForStatusChange(null);

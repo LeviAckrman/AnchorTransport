@@ -24,6 +24,7 @@ import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { syncEntityToFirestore, deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
 
 interface VehicleDocumentsViewProps {
   userRole: UserRole;
@@ -41,7 +42,7 @@ const DOCUMENT_TYPES: { type: DocumentType; label: string }[] = [
 ];
 
 export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ userRole }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
   const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
 
   // State
@@ -121,13 +122,10 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
 
-      const res = await fetch('/api/fleet/vehicles', { headers });
+      const res = await fetch('/api/vehicles?limit=100', { headers });
       const data = await parseResponseJson<any>(res);
-      if (res.ok && data?.success && Array.isArray(data.vehicles)) {
-        setVehicles(data.vehicles);
-        if (data.vehicles.length > 0 && !formVehicleId) {
-          setFormVehicleId(data.vehicles[0].id);
-        }
+      if (res.ok && data?.success && Array.isArray(data.data)) {
+        setVehicles(data.data);
       }
     } catch {
       // Fallback
@@ -137,16 +135,26 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
   useEffect(() => {
     fetchDocuments();
     fetchVehicles();
-  }, [vehicleFilter, docTypeFilter, statusFilter, searchQuery]);
+  }, [vehicleFilter, docTypeFilter, statusFilter, searchQuery, company?.id, activeToken]);
 
   useEffect(() => {
     const onVehicleUpdated = () => {
       fetchDocuments();
       fetchVehicles();
     };
+    const onHydrated = () => {
+      fetchDocuments();
+      fetchVehicles();
+    };
     window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-  }, []);
+    window.addEventListener('tms:document-updated', onHydrated);
+    window.addEventListener('tms:firestore-hydrated', onHydrated);
+    return () => {
+      window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
+      window.removeEventListener('tms:document-updated', onHydrated);
+      window.removeEventListener('tms:firestore-hydrated', onHydrated);
+    };
+  }, [company?.id, activeToken]);
 
   const handleCreateDocument = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -179,8 +187,18 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
         throw new Error(data?.error || 'Failed to record document');
       }
 
+      if (data.document) {
+        await syncEntityToFirestore(company?.id, 'documents', data.document);
+      }
+      if (data.vehicle) {
+        await syncEntityToFirestore(company?.id, 'vehicles', data.vehicle);
+      }
+      window.dispatchEvent(new CustomEvent('tms:document-updated'));
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+
       showToast('success', data.message || 'Document recorded successfully.');
       setIsCreateOpen(false);
+      setFormVehicleId('');
       setFormDocNumber('');
       setFormExpiryDate('');
       setFormDocUrl('');
@@ -226,6 +244,15 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
         throw new Error(data?.error || 'Failed to update document');
       }
 
+      if (data.document) {
+        await syncEntityToFirestore(company?.id, 'documents', data.document);
+      }
+      if (data.vehicle) {
+        await syncEntityToFirestore(company?.id, 'vehicles', data.vehicle);
+      }
+      window.dispatchEvent(new CustomEvent('tms:document-updated'));
+      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+
       showToast('success', data.message || 'Document renewed successfully.');
       setIsRenewOpen(false);
       fetchDocuments();
@@ -249,6 +276,9 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
       if (!res.ok || !data?.success) {
         throw new Error(data?.error || 'Failed to delete document');
       }
+
+      await deleteEntityFromFirestore(company?.id, 'documents', deleteTarget.id);
+      window.dispatchEvent(new CustomEvent('tms:document-updated'));
 
       showToast('success', data.message || 'Document removed from vault.');
       fetchDocuments();
@@ -589,15 +619,14 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
                   onChange={(e) => setFormVehicleId(e.target.value)}
                   className="w-full p-2.5 text-xs sm:text-sm border border-slate-300 rounded-xl font-mono"
                 >
-                  {vehicles.length === 0 ? (
-                    <option value="">No vehicles found in fleet</option>
-                  ) : (
-                    vehicles.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.registrationNumber} ({v.makeModel})
-                      </option>
-                    ))
-                  )}
+                  <option value="">
+                    {vehicles.length === 0 ? 'No vehicles found in fleet' : '-- Choose Commercial Truck --'}
+                  </option>
+                  {vehicles.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.registrationNumber} ({v.makeModel})
+                    </option>
+                  ))}
                 </select>
               </div>
 

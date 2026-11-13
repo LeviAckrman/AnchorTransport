@@ -41,7 +41,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   userRole,
   onNavigateTab,
 }) => {
-  const { token } = useAuth();
+  const { token, company } = useAuth();
   const [activeTab, setActiveTab] = useState<'invoices' | 'receivables'>('invoices');
 
   // Invoices list state
@@ -120,12 +120,28 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [token, currentPage, statusFilter, searchQuery]);
+  }, [token, company?.id, currentPage, statusFilter, searchQuery]);
 
   useEffect(() => {
     if (activeTab === 'invoices') {
       fetchInvoices();
     }
+  }, [fetchInvoices, activeTab]);
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      if (activeTab === 'invoices') {
+        fetchInvoices();
+      }
+    };
+    window.addEventListener('tms:firestore-hydrated', handleRefresh);
+    window.addEventListener('tms:invoice-updated', handleRefresh);
+    window.addEventListener('tms:payment-updated', handleRefresh);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
+      window.removeEventListener('tms:invoice-updated', handleRefresh);
+      window.removeEventListener('tms:payment-updated', handleRefresh);
+    };
   }, [fetchInvoices, activeTab]);
 
   const handleOpenDetail = async (inv: Invoice) => {

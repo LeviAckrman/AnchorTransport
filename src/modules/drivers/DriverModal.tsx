@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, User, ShieldCheck, Lock, AlertCircle, FileText, CheckCircle2, Phone, CreditCard } from 'lucide-react';
 import { Driver, DriverStatus, Vehicle, UserRole } from '../../types/tms';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface DriverModalProps {
   isOpen: boolean;
@@ -22,6 +24,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
   token,
   userRole,
 }) => {
+  const { company } = useAuth();
   const isEdit = Boolean(driverToEdit);
   const canAccessSensitive = userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'ACCOUNTANT';
 
@@ -36,7 +39,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
   const [emergencyContact, setEmergencyContact] = useState('');
   const [emergencyPhone, setEmergencyPhone] = useState('');
   const [status, setStatus] = useState<DriverStatus>('AVAILABLE');
-  const [perDayBata, setPerDayBata] = useState('600'); // ₹600/day
+  const [perDayBata, setPerDayBata] = useState('');
   const [assignedVehicleReg, setAssignedVehicleReg] = useState('');
 
   // Sensitive Personal Information (Owner / Admin / Accountant only)
@@ -63,7 +66,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
       setEmergencyContact(driverToEdit.emergencyContact || '');
       setEmergencyPhone(driverToEdit.emergencyPhone?.replace(/[^0-9]/g, '').slice(-10) || '');
       setStatus(driverToEdit.status || 'AVAILABLE');
-      setPerDayBata(((driverToEdit.perDayBataPaise || 50000) / 100).toString());
+      setPerDayBata(driverToEdit.perDayBataPaise ? (driverToEdit.perDayBataPaise / 100).toString() : '');
       setAssignedVehicleReg(driverToEdit.assignedVehicleReg || '');
 
       // Sensitive fields
@@ -87,9 +90,9 @@ export const DriverModal: React.FC<DriverModalProps> = ({
       setEmergencyContact('');
       setEmergencyPhone('');
       setStatus('AVAILABLE');
-      setPerDayBata('600');
+      setPerDayBata('');
       setAssignedVehicleReg('');
-      setMonthlySalary('24000');
+      setMonthlySalary('');
       setAadharNumber('');
       setPanNumber('');
       setBankAccount('');
@@ -133,13 +136,13 @@ export const DriverModal: React.FC<DriverModalProps> = ({
         emergencyContact: emergencyContact.trim() || undefined,
         emergencyPhone: emergencyPhone.trim() || undefined,
         status,
-        perDayBataPaise: parseFloat(perDayBata) || 500,
+        perDayBataPaise: Math.round((parseFloat(perDayBata) || 0) * 100),
         assignedVehicleReg: assignedVehicleReg || undefined,
       };
 
       // Only attach sensitive fields if user is privileged
       if (canAccessSensitive) {
-        payload.monthlySalaryPaise = monthlySalary ? parseFloat(monthlySalary) : undefined;
+        payload.monthlySalaryPaise = monthlySalary ? Math.round(parseFloat(monthlySalary) * 100) : undefined;
         payload.aadharNumber = aadharNumber.trim() || undefined;
         payload.panNumber = panNumber.trim().toUpperCase() || undefined;
         payload.bankAccount = bankAccount.trim() || undefined;
@@ -167,6 +170,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
         throw new Error(data?.error || 'Failed to save driver profile.');
       }
 
+      await syncEntityToFirestore(company?.id, 'drivers', data.driver);
       onSuccess(data.driver, isEdit);
       onClose();
     } catch (err: any) {

@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Truck, ShieldCheck, AlertCircle, FileText, CheckCircle2, Calendar } from 'lucide-react';
 import { Vehicle, VehicleType, VehicleStatus, Driver } from '../../types/tms';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { useAuth } from '../../context/AuthContext';
+import { syncEntityToFirestore, deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
 
 interface VehicleModalProps {
   isOpen: boolean;
@@ -31,6 +33,7 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
   drivers,
   token,
 }) => {
+  const { company } = useAuth();
   const isEdit = Boolean(vehicleToEdit);
 
   // Form states
@@ -43,7 +46,7 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
   const [engineNumber, setEngineNumber] = useState('');
   const [status, setStatus] = useState<VehicleStatus>('AVAILABLE');
   const [currentOdometerKm, setCurrentOdometerKm] = useState('0');
-  const [fastagBalance, setFastagBalance] = useState('5000'); // in Rupees
+  const [fastagBalance, setFastagBalance] = useState(''); // in Rupees
   const [assignedDriverId, setAssignedDriverId] = useState('');
 
   // Compliance Documents
@@ -73,7 +76,7 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
       setEngineNumber(vehicleToEdit.engineNumber || '');
       setStatus(vehicleToEdit.status || 'AVAILABLE');
       setCurrentOdometerKm(vehicleToEdit.currentOdometerKm?.toString() || '0');
-      setFastagBalance(((vehicleToEdit.fastagBalancePaise || 0) / 100).toString());
+      setFastagBalance(vehicleToEdit.fastagBalancePaise ? (vehicleToEdit.fastagBalancePaise / 100).toString() : '');
       setAssignedDriverId(vehicleToEdit.assignedDriverId || '');
       setFitnessExpiry(vehicleToEdit.fitnessExpiry || '');
       setFitnessCertificateNumber(vehicleToEdit.fitnessCertificateNumber || '');
@@ -89,13 +92,13 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
       setRegistrationNumber('');
       setVehicleType('14-Wheeler (28T)');
       setMakeModel('');
-      setCapacityTonnes('28');
-      setUnladenWeightTonnes('10.5');
+      setCapacityTonnes('');
+      setUnladenWeightTonnes('');
       setChassisNumber('');
       setEngineNumber('');
       setStatus('AVAILABLE');
       setCurrentOdometerKm('0');
-      setFastagBalance('5000');
+      setFastagBalance('');
       setAssignedDriverId('');
       setFitnessExpiry('');
       setFitnessCertificateNumber('');
@@ -135,7 +138,7 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
         engineNumber: engineNumber.trim().toUpperCase(),
         status,
         currentOdometerKm: parseInt(currentOdometerKm, 10) || 0,
-        fastagBalancePaise: parseFloat(fastagBalance) || 0,
+        fastagBalancePaise: Math.round((parseFloat(fastagBalance) || 0) * 100),
         assignedDriverId: assignedDriverId || undefined,
         fitnessExpiry: fitnessExpiry || undefined,
         fitnessCertificateNumber: fitnessCertificateNumber?.trim() || undefined,
@@ -168,6 +171,21 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
       const data = await parseResponseJson<any>(res);
       if (!res.ok || !data || !data.success) {
         throw new Error(data?.error || 'Failed to save vehicle.');
+      }
+
+      await syncEntityToFirestore(company?.id, 'vehicles', data.vehicle);
+      if (Array.isArray(data.documents) && data.documents.length > 0) {
+        await Promise.all(
+          data.documents.map((docItem: any) => syncEntityToFirestore(company?.id, 'documents', docItem))
+        );
+      }
+      if (Array.isArray(data.deletedDocumentIds) && data.deletedDocumentIds.length > 0) {
+        await Promise.all(
+          data.deletedDocumentIds.map((docId: string) => deleteEntityFromFirestore(company?.id, 'documents', docId))
+        );
+      }
+      if ((data.documents && data.documents.length > 0) || (data.deletedDocumentIds && data.deletedDocumentIds.length > 0)) {
+        window.dispatchEvent(new CustomEvent('tms:document-updated'));
       }
 
       onSuccess(data.vehicle, isEdit);

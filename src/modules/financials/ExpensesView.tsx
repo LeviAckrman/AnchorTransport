@@ -27,8 +27,10 @@ import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ExpenseModal } from './ExpenseModal';
 import { ExpenseDetailModal } from './ExpenseDetailModal';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useAuth } from '../../context/AuthContext';
 import { parseResponseJson } from '../../lib/safeFetch';
+import { deleteEntityFromFirestore, syncEntityToFirestore } from '../../lib/firebase/firestoreService';
 
 interface ExpensesViewProps {
   userRole: UserRole;
@@ -66,6 +68,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [expenseToEdit, setExpenseToEdit] = useState<TripExpense | null>(null);
   const [selectedExpenseForDetail, setSelectedExpenseForDetail] = useState<TripExpense | null>(null);
+  const [expenseToDelete, setExpenseToDelete] = useState<TripExpense | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   const fetchExpenses = async (targetPage = page) => {
@@ -111,6 +115,19 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
     fetchExpenses(1);
   }, [categoryFilter, paymentModeFilter, startDate, endDate, token, company?.id]);
 
+  // Listen for Firestore hydration & cross-view expense changes
+  useEffect(() => {
+    const handleRefresh = () => {
+      fetchExpenses(page);
+    };
+    window.addEventListener('tms:firestore-hydrated', handleRefresh);
+    window.addEventListener('tms:expense-updated', handleRefresh);
+    return () => {
+      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
+      window.removeEventListener('tms:expense-updated', handleRefresh);
+    };
+  }, [page, categoryFilter, paymentModeFilter, startDate, endDate, searchQuery, token, company?.id]);
+
   // Debounced search
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -135,6 +152,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
   };
 
   const handleDeleteExpense = async (expense: TripExpense) => {
+    setIsDeleting(true);
     try {
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -149,10 +167,24 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
         throw new Error(data?.error || 'Failed to delete expense voucher.');
       }
 
+      const activeCompanyId = company?.id || expense.companyId;
+      if (activeCompanyId) {
+        await deleteEntityFromFirestore(activeCompanyId, 'expenses', expense.id);
+        if (data.trip) {
+          await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
+        }
+      }
+
+      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
+      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+
       showNotification(`Expense voucher #${expense.voucherNumber || expense.id} removed.`);
+      setExpenseToDelete(null);
       fetchExpenses(page);
     } catch (err: any) {
       showNotification(err.message || 'Error removing expense.', 'error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -501,11 +533,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                         </button>
                         {!exp.isSettled && (
                           <button
-                            onClick={() => {
-                              if (window.confirm('Delete this expense record?')) {
-                                handleDeleteExpense(exp);
-                              }
-                            }}
+                            onClick={() => setExpenseToDelete(exp)}
                             className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-lg"
                             title="Delete Voucher"
                           >
@@ -567,6 +595,20 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
           setIsModalOpen(true);
         }}
         onDelete={handleDeleteExpense}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={Boolean(expenseToDelete)}
+        onClose={() => setExpenseToDelete(null)}
+        onConfirm={() => {
+          if (expenseToDelete) handleDeleteExpense(expenseToDelete);
+        }}
+        title="Delete Expense Voucher"
+        message={`Delete expense voucher ${expenseToDelete?.voucherNumber || expenseToDelete?.id || ''} (${expenseToDelete ? formatINR(expenseToDelete.amountPaise) : ''})? This will recompute trip operational contribution.`}
+        confirmLabel="Delete Voucher"
+        variant="danger"
+        isLoading={isDeleting}
       />
     </div>
   );
