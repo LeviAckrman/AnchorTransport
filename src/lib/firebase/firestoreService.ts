@@ -10,6 +10,7 @@ import {
   getDoc,
   getDocs,
   setDoc,
+  updateDoc,
   deleteDoc,
   writeBatch,
   query,
@@ -89,6 +90,36 @@ export function isVerifiedEmailUser(): boolean {
 
 function isValidDocSegment(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && !value.includes('/');
+}
+
+const BOOTSTRAPPED_ADMIN_EMAIL = 'kunduankit129@gmail.com';
+
+function isBootstrappedAdminUser(): boolean {
+  return Boolean(
+    auth.currentUser &&
+      auth.currentUser.emailVerified &&
+      auth.currentUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL
+  );
+}
+
+/**
+ * Checks whether the active signed-in Firebase user holds an ACTIVE member record
+ * at /companies/{companyId}/members/{uid} (or is the verified bootstrapped admin).
+ * Reading one's own member document is always permitted for signed-in users.
+ */
+export async function hasActiveCompanyMembershipInFirestore(companyId: string): Promise<boolean> {
+  if (!auth.currentUser || !isValidDocSegment(companyId) || !isValidDocSegment(auth.currentUser.uid)) {
+    return false;
+  }
+  if (isBootstrappedAdminUser()) return true;
+  try {
+    const memberSnap = await getDoc(
+      doc(db, 'companies', companyId.trim(), 'members', auth.currentUser.uid)
+    );
+    return memberSnap.exists() && memberSnap.data()?.status === 'ACTIVE';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -642,7 +673,8 @@ export async function ensureFirestoreUserProfile(
   try {
     const snap = await getDoc(userRef);
     if (snap.exists()) {
-      const existingProfile = normalizeTimestamps<FirestoreUserProfile>(snap.data());
+      const existingRaw = snap.data();
+      const existingProfile = normalizeTimestamps<FirestoreUserProfile>(existingRaw);
       // Legacy backfill: if user already has a company linked in Firestore, ensure onboardingCompleted is permanently true
       if (
         existingProfile.onboardingCompleted !== true &&
@@ -650,11 +682,12 @@ export async function ensureFirestoreUserProfile(
         isVerifiedEmailUser()
       ) {
         const completedAt = existingProfile.onboardingCompletedAt || new Date().toISOString();
-        await setDoc(userRef, {
-          ...snap.data(),
+        await updateDoc(userRef, {
           onboardingCompleted: true,
-          onboardingCompletedAt: completedAt,
           updatedAt: serverTimestamp(),
+          ...(existingRaw.onboardingCompletedAt === undefined
+            ? { onboardingCompletedAt: completedAt }
+            : {}),
         });
         return {
           ...existingProfile,
@@ -725,12 +758,13 @@ export async function updateFirestoreUserProfile(
   const userRef = doc(db, 'users', uid);
 
   try {
-    const snap = await getDoc(userRef);
+    let snap = await getDoc(userRef);
     if (!snap.exists()) {
       await ensureFirestoreUserProfile(auth.currentUser);
+      snap = await getDoc(userRef);
     }
-    const latestSnap = await getDoc(userRef);
-    const existingData = latestSnap.data() || {};
+    if (!snap.exists()) return;
+    const existingData = snap.data() || {};
 
     const alreadyCompleted = existingData.onboardingCompleted === true;
     const nextOnboardingCompleted = alreadyCompleted
@@ -739,28 +773,37 @@ export async function updateFirestoreUserProfile(
       ? Boolean(updates.onboardingCompleted)
       : existingData.onboardingCompleted;
 
-    const nextOnboardingCompletedAt = existingData.onboardingCompletedAt
-      ? clipStr(existingData.onboardingCompletedAt, 40)
-      : nextOnboardingCompleted === true
-      ? clipStr(updates.onboardingCompletedAt, 40) || new Date().toISOString()
-      : undefined;
-
-    const payload = stripUndefined({
-      id: uid,
-      email: clipStr(existingData.email || auth.currentUser.email, 200)?.toLowerCase() || '',
-      name: clipStr(updates.name ?? existingData.name ?? auth.currentUser.displayName, 100) || 'Fleet User',
-      phone: updates.phone !== undefined ? clipStr(updates.phone, 20) || '' : clipStr(existingData.phone, 20),
-      defaultCompanyId: clipStr(updates.defaultCompanyId ?? existingData.defaultCompanyId, 128),
-      activeCompanyId: clipStr(updates.activeCompanyId ?? existingData.activeCompanyId, 128),
-      role: existingData.role,
-      photoUrl: clipStr(existingData.photoUrl, 500),
-      onboardingCompleted: nextOnboardingCompleted,
-      onboardingCompletedAt: nextOnboardingCompletedAt,
-      createdAt: existingData.createdAt instanceof Timestamp ? existingData.createdAt : serverTimestamp(),
+    const updatePayload: Record<string, any> = {
       updatedAt: serverTimestamp(),
-    });
+    };
 
-    await setDoc(userRef, payload);
+    const nextName = clipStr(updates.name, 100);
+    if (nextName !== undefined) {
+      updatePayload.name = nextName;
+    }
+    if (updates.phone !== undefined) {
+      updatePayload.phone = clipStr(updates.phone, 20) || '';
+    }
+    const nextDefaultCompanyId = clipStr(updates.defaultCompanyId, 128);
+    if (nextDefaultCompanyId !== undefined) {
+      updatePayload.defaultCompanyId = nextDefaultCompanyId;
+    }
+    const nextActiveCompanyId = clipStr(updates.activeCompanyId, 128);
+    if (nextActiveCompanyId !== undefined) {
+      updatePayload.activeCompanyId = nextActiveCompanyId;
+    }
+    if (nextOnboardingCompleted !== undefined) {
+      updatePayload.onboardingCompleted = nextOnboardingCompleted;
+    }
+    if (
+      nextOnboardingCompleted === true &&
+      existingData.onboardingCompletedAt === undefined
+    ) {
+      updatePayload.onboardingCompletedAt =
+        clipStr(updates.onboardingCompletedAt, 40) || new Date().toISOString();
+    }
+
+    await updateDoc(userRef, updatePayload);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, userPath);
   }
@@ -794,12 +837,14 @@ export async function fetchUserCompanyFromFirestore(
   const companyPath = `companies/${safeCompanyId}`;
 
   try {
-    const [companySnap, memberSnap] = await Promise.all([
-      getDoc(doc(db, 'companies', safeCompanyId)),
-      getDoc(doc(db, 'companies', safeCompanyId, 'members', safeUid)),
-    ]);
+    const memberSnap = await getDoc(doc(db, 'companies', safeCompanyId, 'members', safeUid));
+    if (!memberSnap.exists() && !isBootstrappedAdminUser()) {
+      return null;
+    }
 
+    const companySnap = await getDoc(doc(db, 'companies', safeCompanyId));
     if (!companySnap.exists()) return null;
+
     const company = normalizeTimestamps<Company>(companySnap.data());
     const memberData = memberSnap.exists() ? memberSnap.data() : null;
     const role = (memberData?.role as UserRole) || 'OWNER';
@@ -820,6 +865,8 @@ export async function fetchCompanyMembersFromFirestore(
   const safeCompanyId = companyId.trim();
   const path = `companies/${safeCompanyId}/members`;
   try {
+    const hasAccess = await hasActiveCompanyMembershipInFirestore(safeCompanyId);
+    if (!hasAccess) return [];
     const snap = await getDocs(collection(db, 'companies', safeCompanyId, 'members'));
     return snap.docs.map((d) =>
       normalizeTimestamps<FirestoreCompanyMember>({ id: d.id, ...d.data() })
@@ -848,6 +895,16 @@ export async function createCompanyInFirestoreAtomic(
 
   try {
     await ensureFirestoreUserProfile(fbUser);
+
+    const existingMemberSnap = await getDoc(doc(db, 'companies', company.id, 'members', fbUser.uid));
+    if (existingMemberSnap.exists()) {
+      await updateFirestoreUserProfile(fbUser.uid, {
+        defaultCompanyId: company.id,
+        activeCompanyId: company.id,
+        onboardingCompleted: true,
+      });
+      return;
+    }
 
     const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
     const userExisting = userSnap.data() || {};
@@ -904,7 +961,7 @@ export async function createCompanyInFirestoreAtomic(
       onboardingCompleted: true,
       updatedAt: serverTimestamp(),
     };
-    if (!userExisting.onboardingCompletedAt) {
+    if (userExisting.onboardingCompletedAt === undefined) {
       userUpdates.onboardingCompletedAt = new Date().toISOString();
     }
     batch.update(userRef, userUpdates);
@@ -978,12 +1035,23 @@ export type CompanySubcollection =
 
 export class FirestoreTMSClient {
   private companyId: string;
+  private membershipVerified = false;
 
   constructor(companyId: string) {
     if (!isValidDocSegment(companyId)) {
       throw new Error('Valid Company ID is required to instantiate FirestoreTMSClient');
     }
     this.companyId = companyId.trim();
+  }
+
+  private async ensureActiveAccess(): Promise<boolean> {
+    if (!auth.currentUser) return false;
+    if (this.membershipVerified) return true;
+    const allowed = await hasActiveCompanyMembershipInFirestore(this.companyId);
+    if (allowed) {
+      this.membershipVerified = true;
+    }
+    return allowed;
   }
 
   private async upsertDoc<T extends { id: string }>(
@@ -995,6 +1063,7 @@ export class FirestoreTMSClient {
       console.warn(`Skipped Firestore write (${subcollection}/${item.id}) until email is verified.`);
       return;
     }
+    if (!(await this.ensureActiveAccess())) return;
 
     const safeDocId = item.id.trim();
     const path = `companies/${this.companyId}/${subcollection}/${safeDocId}`;
@@ -1024,6 +1093,8 @@ export class FirestoreTMSClient {
       console.warn(`Skipped Firestore delete (${subcollection}/${docId}) until email is verified.`);
       return;
     }
+    if (!(await this.ensureActiveAccess())) return;
+
     const safeDocId = docId.trim();
     const path = `companies/${this.companyId}/${subcollection}/${safeDocId}`;
     try {
@@ -1035,9 +1106,15 @@ export class FirestoreTMSClient {
 
   private async listCollection<T>(subcollection: CompanySubcollection): Promise<T[]> {
     if (!auth.currentUser) return [];
+    if (!(await this.ensureActiveAccess())) return [];
+
     const path = `companies/${this.companyId}/${subcollection}`;
     try {
-      const snap = await getDocs(collection(db, 'companies', this.companyId, subcollection));
+      const q = query(
+        collection(db, 'companies', this.companyId, subcollection),
+        where('companyId', '==', this.companyId)
+      );
+      const snap = await getDocs(q);
       return snap.docs.map((d) => normalizeTimestamps<T>({ id: d.id, ...d.data() }));
     } catch (err) {
       handleFirestoreError(err, OperationType.LIST, path);
@@ -1102,6 +1179,7 @@ export class FirestoreTMSClient {
   // Immutable Audit Logs
   async createAuditLog(log: Omit<AuditLog, 'companyId'>): Promise<void> {
     if (!auth.currentUser || !isVerifiedEmailUser() || !isValidDocSegment(log?.id)) return;
+    if (!(await this.ensureActiveAccess())) return;
     const safeLogId = log.id.trim();
     const path = `companies/${this.companyId}/auditLogs/${safeLogId}`;
     try {
@@ -1173,12 +1251,17 @@ async function deleteSubcollectionsInChunks(
   subcollections: CompanySubcollection[]
 ): Promise<void> {
   if (!auth.currentUser || !isVerifiedEmailUser() || !isValidDocSegment(companyId)) return;
+  if (!(await hasActiveCompanyMembershipInFirestore(companyId))) return;
 
   const refsToDelete = [];
   for (const sub of subcollections) {
     const path = `companies/${companyId}/${sub}`;
     try {
-      const snap = await getDocs(collection(db, 'companies', companyId, sub));
+      const q = query(
+        collection(db, 'companies', companyId, sub),
+        where('companyId', '==', companyId)
+      );
+      const snap = await getDocs(q);
       for (const d of snap.docs) {
         refsToDelete.push(d.ref);
       }

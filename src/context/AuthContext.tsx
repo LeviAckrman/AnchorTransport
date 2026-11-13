@@ -253,12 +253,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? false
         : Boolean(session.needsOnboarding ?? true);
 
-      // Keep Firestore in sync if backend DB already knows user completed onboarding
-      if (firebaseUser.emailVerified && resolvedCompleted && !userDoc?.onboardingCompleted) {
+      // Keep Firestore in sync if backend DB already knows user completed onboarding or owns a company
+      if (firebaseUser.emailVerified && resolvedCompleted) {
         try {
-          if (session.company && !firestoreCompany) {
+          if (
+            session.company &&
+            !firestoreCompany &&
+            (!session.company.ownerId || session.company.ownerId === firebaseUser.uid)
+          ) {
             await createCompanyInFirestoreAtomic(session.company, firebaseUser);
-          } else {
+          } else if (!userDoc?.onboardingCompleted) {
             await updateFirestoreUserProfile(firebaseUser.uid, {
               onboardingCompleted: true,
               onboardingCompletedAt: session.user.onboardingCompletedAt,
@@ -267,8 +271,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 : {}),
             });
           }
-        } catch {
-          // Non-fatal sync error
+        } catch (syncErr) {
+          console.warn('Firestore profile/company sync notice:', syncErr);
         }
       }
 
@@ -557,7 +561,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (auth.currentUser && auth.currentUser.emailVerified && data.company) {
-        await createCompanyInFirestoreAtomic(data.company, auth.currentUser);
+        try {
+          await createCompanyInFirestoreAtomic(data.company, auth.currentUser);
+        } catch (fbErr) {
+          console.warn('Firestore company creation sync notice:', fbErr);
+        }
       }
 
       const activeUser = data.user || user;

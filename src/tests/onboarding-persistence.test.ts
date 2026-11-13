@@ -97,6 +97,20 @@ describe('Permanent Onboarding Status Persistence', () => {
     );
   });
 
+  it('scopes company subcollection list/delete queries with where(companyId) and checks membership before company reads', () => {
+    const fsServicePath = path.resolve(process.cwd(), 'src/lib/firebase/firestoreService.ts');
+    const src = fs.readFileSync(fsServicePath, 'utf8');
+    const whereCompanyMatches = src.match(/where\('companyId',\s*'==',\s*(this\.companyId|companyId)\)/g) || [];
+    assert.ok(
+      whereCompanyMatches.length >= 2,
+      `Expected where('companyId', '==', ...) in listCollection and deleteSubcollectionsInChunks, found ${whereCompanyMatches.length}`
+    );
+    assert.ok(
+      src.includes('hasActiveCompanyMembershipInFirestore'),
+      'Expected membership pre-check helper to prevent unauthorized Firestore queries'
+    );
+  });
+
   it('tracks first-time onboarding -> permanent DB completion -> logout/refresh/re-login skip', async () => {
     const email = `onboard_persist_${Date.now()}@anchorfleet.in`;
     const password = 'TestPassword@123';
