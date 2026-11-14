@@ -1,47 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Truck,
   Plus,
   Search,
-  Filter,
   AlertTriangle,
-  FileText,
-  ShieldCheck,
   CheckCircle2,
-  Clock,
   Eye,
   Edit,
   Trash2,
-  RefreshCw,
   ChevronLeft,
   ChevronRight,
-  Sparkles,
 } from 'lucide-react';
-import { Vehicle, Driver, UserRole, VehicleStatus, VehicleType } from '../../types/tms';
+import { Vehicle, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { VehicleModal } from './VehicleModal';
 import { VehicleDetailModal } from './VehicleDetailModal';
-import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { deleteVehicleWithDocsInFirestore } from '../../lib/firebase/firestoreService';
+import { calculateDocComplianceStatus } from '../../lib/tmsCalculations';
 
 interface VehiclesViewProps {
   userRole: UserRole;
-  localDrivers?: Driver[];
 }
 
-export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrivers = [] }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? (localStorage.getItem('token') || '') : '');
+export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole }) => {
+  const { company, vehicles: allVehicles, drivers, documents, loading, error } = useFirestoreData();
 
-  // Data state
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [drivers, setDrivers] = useState<Driver[]>(localDrivers);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Filter & Search states
@@ -53,8 +40,6 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
   // Pagination states
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(8);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
 
   // Modals state
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -62,78 +47,42 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [vehicleToDelete, setVehicleToDelete] = useState<Vehicle | null>(null);
 
-  const fetchDrivers = async () => {
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-      const res = await fetch('/api/drivers?limit=100', { headers });
-      const data = await parseResponseJson<any>(res);
-      if (data && data.success && data.data) {
-        setDrivers(data.data);
+  const filteredVehicles = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return allVehicles.filter((v) => {
+      if (q) {
+        const hay = `${v.registrationNumber} ${v.makeModel} ${v.vehicleType} ${v.assignedDriverName || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
       }
-    } catch {
-      // ignore
-    }
-  };
-
-  const fetchVehicles = async (targetPage = page) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: limit.toString(),
-        search: searchQuery,
-        status: statusFilter,
-        vehicleType: typeFilter,
-        docStatus: docFilter,
-      });
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/vehicles?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch vehicles.');
+      if (statusFilter !== 'ALL' && v.status !== statusFilter) return false;
+      if (typeFilter !== 'ALL' && v.vehicleType !== typeFilter) return false;
+      if (docFilter !== 'ALL') {
+        const dates = [v.fitnessExpiry, v.insuranceExpiry, v.permitExpiry, v.pucExpiry].filter(Boolean) as string[];
+        const vehDocs = documents.filter((d) => d.vehicleId === v.id).map((d) => d.expiryDate);
+        const allDates = [...dates, ...vehDocs];
+        const statuses = allDates.map((dt) => calculateDocComplianceStatus(dt).status);
+        if (docFilter === 'EXPIRED' && !statuses.includes('EXPIRED')) return false;
+        if (docFilter === 'EXPIRING_SOON' && !statuses.includes('EXPIRING_SOON')) return false;
       }
-
-      setVehicles(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages || 1);
-      setTotalCount(data.pagination.total || 0);
-    } catch (err: any) {
-      console.warn('Vehicles fetch notice:', err);
-      setError(err.message || 'Unable to load company vehicles.');
-    } finally {
-      setLoading(false);
-    }
-  };
+      return true;
+    });
+  }, [allVehicles, documents, searchQuery, statusFilter, typeFilter, docFilter]);
 
   useEffect(() => {
-    fetchVehicles(1);
-    fetchDrivers();
-  }, [searchQuery, statusFilter, typeFilter, docFilter, limit, company?.id, activeToken]);
+    setPage(1);
+  }, [searchQuery, statusFilter, typeFilter, docFilter, limit]);
 
-  useEffect(() => {
-    const onDriverUpdated = () => fetchDrivers();
-    const onHydrated = () => {
-      fetchVehicles(1);
-      fetchDrivers();
-    };
-    window.addEventListener('tms:driver-updated', onDriverUpdated);
-    window.addEventListener('tms:firestore-hydrated', onHydrated);
-    return () => {
-      window.removeEventListener('tms:driver-updated', onDriverUpdated);
-      window.removeEventListener('tms:firestore-hydrated', onHydrated);
-    };
-  }, [company?.id, activeToken]);
+  const totalCount = filteredVehicles.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+  const vehicles = useMemo(
+    () => filteredVehicles.slice((safePage - 1) * limit, safePage * limit),
+    [filteredVehicles, safePage, limit]
+  );
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
     setPage(newPage);
-    fetchVehicles(newPage);
   };
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
@@ -143,43 +92,21 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
 
   const handleModalSuccess = (vehicle: Vehicle, isEdit: boolean) => {
     showNotification(
-      isEdit ? `Vehicle ${vehicle.registrationNumber} updated successfully.` : `Truck ${vehicle.registrationNumber} added to company fleet.`,
+      isEdit ? `Vehicle ${vehicle.registrationNumber} updated in Firestore.` : `Truck ${vehicle.registrationNumber} added to Firestore.`,
       'success'
     );
-    fetchVehicles(isEdit ? page : 1);
-    // Broadcast event across modules
-    window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
   };
 
   const confirmDeleteVehicle = async () => {
-    if (!vehicleToDelete) return;
+    if (!vehicleToDelete || !company?.id) return;
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/vehicles/${vehicleToDelete.id}`, {
-        method: 'DELETE',
-        headers,
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to delete vehicle.');
-      }
-
-      await deleteEntityFromFirestore(company?.id, 'vehicles', vehicleToDelete.id);
-      if (Array.isArray(data.deletedDocumentIds) && data.deletedDocumentIds.length > 0) {
-        await Promise.all(
-          data.deletedDocumentIds.map((docId: string) => deleteEntityFromFirestore(company?.id, 'documents', docId))
-        );
-        window.dispatchEvent(new CustomEvent('tms:document-updated'));
-      }
-
-      showNotification(`Vehicle ${vehicleToDelete.registrationNumber} removed from company fleet.`);
+      await deleteVehicleWithDocsInFirestore(
+        company.id,
+        vehicleToDelete.id,
+        vehicleToDelete.registrationNumber
+      );
+      showNotification(`Vehicle ${vehicleToDelete.registrationNumber} removed from Firestore.`);
       setVehicleToDelete(null);
-      fetchVehicles(page);
-      // Broadcast event across modules
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
     } catch (err: any) {
       showNotification(err.message || 'Error deleting vehicle.', 'error');
     }
@@ -275,15 +202,6 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
               </button>
             )}
           </div>
-
-          {/* Quick Refresh */}
-          <button
-            onClick={() => fetchVehicles(page)}
-            title="Refresh fleet list"
-            className="p-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors shrink-0"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
         </div>
 
         {/* Filter Pills */}
@@ -334,12 +252,6 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
         <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
           <p className="text-sm font-semibold text-slate-800">{error}</p>
-          <button
-            onClick={() => fetchVehicles(1)}
-            className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800"
-          >
-            Retry Connection
-          </button>
         </div>
       ) : vehicles.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4">
@@ -578,18 +490,18 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
 
               <div className="flex items-center gap-1 ml-2">
                 <button
-                  onClick={() => handlePageChange(page - 1)}
-                  disabled={page <= 1}
+                  onClick={() => handlePageChange(safePage - 1)}
+                  disabled={safePage <= 1}
                   className="p-1.5 rounded border border-slate-300 hover:bg-white disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
                 <span className="px-2 font-medium text-slate-700">
-                  Page {page} of {totalPages}
+                  Page {safePage} of {totalPages}
                 </span>
                 <button
-                  onClick={() => handlePageChange(page + 1)}
-                  disabled={page >= totalPages}
+                  onClick={() => handlePageChange(safePage + 1)}
+                  disabled={safePage >= totalPages}
                   className="p-1.5 rounded border border-slate-300 hover:bg-white disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   <ChevronRight className="w-3.5 h-3.5" />
@@ -607,7 +519,6 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
           onClose={() => setIsCreateOpen(false)}
           onSuccess={handleModalSuccess}
           drivers={drivers}
-          token={activeToken}
         />
       )}
 
@@ -618,7 +529,6 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
           onSuccess={handleModalSuccess}
           vehicleToEdit={vehicleToEdit}
           drivers={drivers}
-          token={activeToken}
         />
       )}
 
@@ -628,7 +538,6 @@ export const VehiclesView: React.FC<VehiclesViewProps> = ({ userRole, localDrive
           isOpen={Boolean(selectedVehicleId)}
           onClose={() => setSelectedVehicleId(null)}
           vehicleId={selectedVehicleId}
-          token={activeToken}
           userRole={userRole}
           onEdit={(veh) => {
             setSelectedVehicleId(null);

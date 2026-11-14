@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, Truck, ShieldCheck, AlertCircle, FileText, CheckCircle2, Calendar } from 'lucide-react';
-import { Vehicle, VehicleType, VehicleStatus, Driver } from '../../types/tms';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore, deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
+import { X, Truck, ShieldCheck, AlertCircle, FileText } from 'lucide-react';
+import { Vehicle, VehicleType, VehicleStatus, Driver, VehicleDocument } from '../../types/tms';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { saveVehicleWithDocsInFirestore } from '../../lib/firebase/firestoreService';
 
 interface VehicleModalProps {
   isOpen: boolean;
@@ -11,7 +10,6 @@ interface VehicleModalProps {
   onSuccess: (vehicle: Vehicle, isEdit: boolean) => void;
   vehicleToEdit?: Vehicle | null;
   drivers: Driver[];
-  token: string;
 }
 
 const VEHICLE_TYPES: VehicleType[] = [
@@ -31,9 +29,8 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
   onSuccess,
   vehicleToEdit,
   drivers,
-  token,
 }) => {
-  const { company } = useAuth();
+  const { company, vehicles, documents } = useFirestoreData();
   const isEdit = Boolean(vehicleToEdit);
 
   // Form states
@@ -122,24 +119,41 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
     setLoading(true);
 
     try {
-      // Basic client-side check
+      if (!company?.id) {
+        throw new Error('No active company found.');
+      }
       const trimmedReg = registrationNumber.trim().toUpperCase();
       if (!trimmedReg) {
         throw new Error('Registration number is required (e.g. WB-19-K-4821).');
       }
+      if (
+        vehicles.some(
+          (v) => v.registrationNumber.toUpperCase() === trimmedReg && v.id !== vehicleToEdit?.id
+        )
+      ) {
+        throw new Error(`A truck with registration ${trimmedReg} already exists in this company.`);
+      }
 
-      const payload = {
+      const assignedDriver = drivers.find((d) => d.id === assignedDriverId);
+      const vehicleId =
+        vehicleToEdit?.id || `veh_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+      const savedVehicle: Vehicle = {
+        id: vehicleId,
+        companyId: company.id,
         registrationNumber: trimmedReg,
         vehicleType,
         makeModel: makeModel.trim(),
-        capacityTonnes: parseFloat(capacityTonnes),
+        capacityTonnes: parseFloat(capacityTonnes) || 0,
         unladenWeightTonnes: parseFloat(unladenWeightTonnes) || 0,
         chassisNumber: chassisNumber.trim().toUpperCase(),
         engineNumber: engineNumber.trim().toUpperCase(),
         status,
         currentOdometerKm: parseInt(currentOdometerKm, 10) || 0,
         fastagBalancePaise: Math.round((parseFloat(fastagBalance) || 0) * 100),
-        assignedDriverId: assignedDriverId || undefined,
+        assignedDriverId: assignedDriver?.id || undefined,
+        assignedDriverName: assignedDriver?.fullName || undefined,
+        activeTripId: vehicleToEdit?.activeTripId,
         fitnessExpiry: fitnessExpiry || undefined,
         fitnessCertificateNumber: fitnessCertificateNumber?.trim() || undefined,
         insuranceExpiry: insuranceExpiry || undefined,
@@ -150,45 +164,85 @@ export const VehicleModal: React.FC<VehicleModalProps> = ({
         pucExpiry: pucExpiry || undefined,
         pucNumber: pucNumber?.trim() || undefined,
         notes: notes?.trim() || undefined,
+        createdAt: vehicleToEdit?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
 
-      const url = isEdit ? `/api/vehicles/${vehicleToEdit!.id}` : '/api/vehicles';
-      const method = isEdit ? 'PUT' : 'POST';
+      const docsToUpsert: VehicleDocument[] = [];
+      const findExistingDoc = (types: VehicleDocument['docType'][]) =>
+        documents.find((d) => d.vehicleId === vehicleId && types.includes(d.docType));
+      const todayIso = new Date().toISOString().split('T')[0];
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
+      if (fitnessExpiry) {
+        const existing = findExistingDoc(['FITNESS']);
+        docsToUpsert.push({
+          id: existing?.id || `doc_${vehicleId}_FITNESS`,
+          companyId: company.id,
+          vehicleId,
+          vehicleReg: trimmedReg,
+          docType: 'FITNESS',
+          documentNumber: fitnessCertificateNumber.trim() || `FIT-${trimmedReg}`,
+          issuingAuthority: existing?.issuingAuthority || 'Regional Transport Office',
+          issueDate: existing?.issueDate || todayIso,
+          expiryDate: fitnessExpiry,
+          daysUntilExpiry: 0,
+          status: 'VALID',
+        });
+      }
+      if (insuranceExpiry) {
+        const existing = findExistingDoc(['INSURANCE']);
+        docsToUpsert.push({
+          id: existing?.id || `doc_${vehicleId}_INSURANCE`,
+          companyId: company.id,
+          vehicleId,
+          vehicleReg: trimmedReg,
+          docType: 'INSURANCE',
+          documentNumber: insurancePolicyNumber.trim() || `INS-${trimmedReg}`,
+          issuingAuthority: existing?.issuingAuthority || 'Commercial Motor Insurer',
+          issueDate: existing?.issueDate || todayIso,
+          expiryDate: insuranceExpiry,
+          daysUntilExpiry: 0,
+          status: 'VALID',
+        });
+      }
+      if (permitExpiry) {
+        const permDocType: VehicleDocument['docType'] =
+          permitType === 'STATE' ? 'STATE_PERMIT' : 'NATIONAL_PERMIT';
+        const existing = findExistingDoc(['NATIONAL_PERMIT', 'STATE_PERMIT']);
+        docsToUpsert.push({
+          id: existing?.id || `doc_${vehicleId}_${permDocType}`,
+          companyId: company.id,
+          vehicleId,
+          vehicleReg: trimmedReg,
+          docType: permDocType,
+          documentNumber: permitNumber.trim() || `PRM-${trimmedReg}`,
+          issuingAuthority: existing?.issuingAuthority || 'State Transport Authority',
+          issueDate: existing?.issueDate || todayIso,
+          expiryDate: permitExpiry,
+          daysUntilExpiry: 0,
+          status: 'VALID',
+        });
+      }
+      if (pucExpiry) {
+        const existing = findExistingDoc(['PUC']);
+        docsToUpsert.push({
+          id: existing?.id || `doc_${vehicleId}_PUC`,
+          companyId: company.id,
+          vehicleId,
+          vehicleReg: trimmedReg,
+          docType: 'PUC',
+          documentNumber: pucNumber.trim() || `PUC-${trimmedReg}`,
+          issuingAuthority: existing?.issuingAuthority || 'Authorized Emission Testing Centre',
+          issueDate: existing?.issueDate || todayIso,
+          expiryDate: pucExpiry,
+          daysUntilExpiry: 0,
+          status: 'VALID',
+        });
       }
 
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(payload),
-      });
+      await saveVehicleWithDocsInFirestore(company.id, savedVehicle, docsToUpsert);
 
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to save vehicle.');
-      }
-
-      await syncEntityToFirestore(company?.id, 'vehicles', data.vehicle);
-      if (Array.isArray(data.documents) && data.documents.length > 0) {
-        await Promise.all(
-          data.documents.map((docItem: any) => syncEntityToFirestore(company?.id, 'documents', docItem))
-        );
-      }
-      if (Array.isArray(data.deletedDocumentIds) && data.deletedDocumentIds.length > 0) {
-        await Promise.all(
-          data.deletedDocumentIds.map((docId: string) => deleteEntityFromFirestore(company?.id, 'documents', docId))
-        );
-      }
-      if ((data.documents && data.documents.length > 0) || (data.deletedDocumentIds && data.deletedDocumentIds.length > 0)) {
-        window.dispatchEvent(new CustomEvent('tms:document-updated'));
-      }
-
-      onSuccess(data.vehicle, isEdit);
+      onSuccess(savedVehicle, isEdit);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error occurred while saving vehicle.');

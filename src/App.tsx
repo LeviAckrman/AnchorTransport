@@ -1,71 +1,37 @@
 /**
  * AnchorTransport TMS - Main Application Entry & Layout Architecture
- * Phase 3: Authentication & Multi-Tenant Company Isolation
+ * Authoritative Firebase Auth + Real-Time Firestore Data Architecture
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Truck,
-  Navigation,
-  Users,
-  Building2,
-  Receipt,
-  Wallet,
-  Scale,
-  FileText,
-  CreditCard,
-  FileCheck2,
-  Wrench,
-  BarChart3,
-  Building,
-  ShieldCheck,
-  Plus,
   AlertTriangle,
-  TrendingUp,
-  Fuel,
-  ArrowRight,
   CheckCircle2,
-  Clock,
-  MapPin,
-  Calendar,
-  IndianRupee,
+  X,
 } from 'lucide-react';
 
 import {
-  TmsStore,
-  loadStore,
-  saveStore,
-  clearStoreForNewCustomer,
+  clearClientTmsCaches,
 } from './lib/storage';
 import {
   clearCompanyOperationalDataInFirestore,
-  syncEntityToFirestore,
-  type HydratedCompanyBundle,
+  createOrUpdateTripInFirestore,
 } from './lib/firebase/firestoreService';
-import { parseResponseJson } from './lib/safeFetch';
+import {
+  calculateDocComplianceStatus,
+  getNextLrNumber,
+  getNextTripNumber,
+} from './lib/tmsCalculations';
 import {
   UserRole,
   Trip,
-  Vehicle,
-  Driver,
-  Customer,
-  TripExpense,
   DriverAdvance,
-  TripSettlement,
-  Invoice,
-  Payment,
-  VehicleDocument,
 } from './types/tms';
-import { formatINR } from './lib/currency';
 
 // UI Components
 import { Sidebar, ActiveTab } from './components/layout/Sidebar';
 import { Topbar } from './components/layout/Topbar';
 import { MobileNav } from './components/layout/MobileNav';
-import { PageHeader } from './components/layout/PageHeader';
-import { StatCard } from './components/ui/StatCard';
-import { Badge, BadgeVariant } from './components/ui/Badge';
-import { DataTable, Column } from './components/ui/DataTable';
 import { Modal } from './components/ui/Modal';
 import { ConfirmDialog } from './components/ui/ConfirmDialog';
 import { DashboardView } from './modules/dashboard/DashboardView';
@@ -80,8 +46,9 @@ import { InvoicesView } from './modules/invoices/InvoicesView';
 import { ReportsView } from './modules/reports/ReportsView';
 import { VehicleDocumentsView } from './modules/vehicles/VehicleDocumentsView';
 
-// Auth & Security Components
+// Auth, Firestore Data & Security Components
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { FirestoreDataProvider, useFirestoreData } from './context/FirestoreDataContext';
 import { LoginPage } from './components/auth/LoginPage';
 import { RegisterPage } from './components/auth/RegisterPage';
 import { CompanyOnboardingPage } from './components/auth/CompanyOnboardingPage';
@@ -92,7 +59,6 @@ import { UserProfileModal } from './components/auth/UserProfileModal';
 function AppContent() {
   const {
     user,
-    company: authCompany,
     role: authRole,
     isAuthenticated,
     needsOnboarding,
@@ -102,11 +68,43 @@ function AppContent() {
     isFirebaseUser,
     resendVerification,
     refreshVerificationStatus,
+    permissions,
   } = useAuth();
+
+  const {
+    company,
+    vehicles,
+    drivers,
+    customers,
+    trips,
+    documents,
+    metrics,
+    error: firestoreError,
+    clearError: clearFirestoreError,
+  } = useFirestoreData();
+
+  const pendingSettlementsCount = useMemo(
+    () =>
+      trips.filter(
+        (t) => (t.status === 'DELIVERED' || t.status === 'COMPLETED') && !t.isSettled
+      ).length,
+    [trips]
+  );
+
+  const expiringDocsCount = useMemo(
+    () =>
+      documents.filter((d) => {
+        const comp = calculateDocComplianceStatus(d.expiryDate);
+        return comp.status === 'EXPIRED' || comp.status === 'EXPIRING_SOON';
+      }).length,
+    [documents]
+  );
+
+  const effectiveRole: UserRole = authRole || 'OPERATIONS';
+
   const [authScreen, setAuthScreen] = useState<'login' | 'register'>('login');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
-  const [store, setStore] = useState<TmsStore>(() => loadStore());
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
@@ -115,6 +113,7 @@ function AppContent() {
 
   // Quick Dispatch Modal State
   const [isQuickTripOpen, setIsQuickTripOpen] = useState(false);
+  const [quickTripSubmitting, setQuickTripSubmitting] = useState(false);
   const [newTripCustomer, setNewTripCustomer] = useState('');
   const [newTripVehicle, setNewTripVehicle] = useState('');
   const [newTripDriver, setNewTripDriver] = useState('');
@@ -137,228 +136,37 @@ function AppContent() {
     setNewTripGoods('');
   };
 
-  // Synchronize company context and clear store if unauthenticated
+  // Reset ephemeral UI view state when signed out (never touches Firestore)
   useEffect(() => {
     if (!isAuthenticated) {
-      setStore(clearStoreForNewCustomer());
       setActiveTab('dashboard');
       setAuthScreen('login');
       setIsProfileModalOpen(false);
-      return;
+      setIsQuickTripOpen(false);
+      setIsResetDialogOpen(false);
     }
-    if (authCompany) {
-      setStore((prev) => ({
-        ...prev,
-        company: authCompany,
-        currentRole: authRole || prev.currentRole,
-      }));
-    }
-  }, [authCompany, authRole, isAuthenticated]);
-
-  // Listen to full Firestore company hydration bundle
-  useEffect(() => {
-    const onHydrated = (e: Event) => {
-      const custom = e as CustomEvent<{ companyId: string; bundle: HydratedCompanyBundle }>;
-      const bundle = custom.detail?.bundle;
-      if (!bundle) return;
-      setStore((prev) => ({
-        ...prev,
-        vehicles: bundle.vehicles || [],
-        drivers: bundle.drivers || [],
-        customers: bundle.customers || [],
-        trips: bundle.trips || [],
-        expenses: bundle.expenses || [],
-        advances: bundle.advances || [],
-        settlements: bundle.settlements || [],
-        invoices: bundle.invoices || [],
-        payments: bundle.payments || [],
-        documents: bundle.documents || [],
-      }));
-    };
-    window.addEventListener('tms:firestore-hydrated', onHydrated);
-    return () => window.removeEventListener('tms:firestore-hydrated', onHydrated);
-  }, []);
-
-  // Dynamically synchronize customers from API so customers only show after user adds them
-  useEffect(() => {
-    const fetchLiveCustomers = async () => {
-      try {
-        const activeToken = localStorage.getItem('token') || '';
-        if (!activeToken || !isAuthenticated || !authCompany?.id || (needsOnboarding && !onboardingCompleted)) {
-          return;
-        }
-        const res = await fetch('/api/customers?limit=100', {
-          headers: { Authorization: `Bearer ${activeToken}` },
-        });
-        const data = await parseResponseJson<any>(res);
-        if (res.ok && data?.success && Array.isArray(data.data)) {
-          setStore((prev) => ({
-            ...prev,
-            customers: data.data,
-          }));
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    fetchLiveCustomers();
-
-    const onCustomerUpdated = () => fetchLiveCustomers();
-    window.addEventListener('tms:customer-updated', onCustomerUpdated);
-    return () => window.removeEventListener('tms:customer-updated', onCustomerUpdated);
-  }, [isAuthenticated, authCompany?.id, needsOnboarding, onboardingCompleted]);
-
-  // Dynamically synchronize vehicles from API so trucks only show after user adds them
-  useEffect(() => {
-    const fetchLiveVehicles = async () => {
-      try {
-        const activeToken = localStorage.getItem('token') || '';
-        if (!activeToken || !isAuthenticated || !authCompany?.id || (needsOnboarding && !onboardingCompleted)) {
-          return;
-        }
-        const res = await fetch('/api/vehicles?limit=100', {
-          headers: { Authorization: `Bearer ${activeToken}` },
-        });
-        const data = await parseResponseJson<any>(res);
-        if (res.ok && data?.success && Array.isArray(data.data)) {
-          setStore((prev) => ({
-            ...prev,
-            vehicles: data.data,
-          }));
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    fetchLiveVehicles();
-
-    const onVehicleUpdated = () => fetchLiveVehicles();
-    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    return () => window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-  }, [isAuthenticated, authCompany?.id, needsOnboarding, onboardingCompleted]);
-
-  // Dynamically synchronize drivers from API so drivers only show after user adds them
-  useEffect(() => {
-    const fetchLiveDrivers = async () => {
-      try {
-        const activeToken = localStorage.getItem('token') || '';
-        if (!activeToken || !isAuthenticated || !authCompany?.id || (needsOnboarding && !onboardingCompleted)) {
-          return;
-        }
-        const res = await fetch('/api/drivers?limit=100', {
-          headers: { Authorization: `Bearer ${activeToken}` },
-        });
-        const data = await parseResponseJson<any>(res);
-        if (res.ok && data?.success && Array.isArray(data.data)) {
-          setStore((prev) => ({
-            ...prev,
-            drivers: data.data,
-          }));
-        }
-      } catch {
-        // ignore
-      }
-    };
-
-    fetchLiveDrivers();
-
-    const onDriverUpdated = () => fetchLiveDrivers();
-    window.addEventListener('tms:driver-updated', onDriverUpdated);
-    return () => window.removeEventListener('tms:driver-updated', onDriverUpdated);
-  }, [isAuthenticated, authCompany?.id, needsOnboarding, onboardingCompleted]);
-
-  // Synchronize trips, expenses, advances, settlements, invoices, documents updates
-  useEffect(() => {
-    const fetchLiveOperations = async () => {
-      try {
-        const activeToken = localStorage.getItem('token') || '';
-        if (!activeToken || !authCompany?.id) return;
-        const headers = { Authorization: `Bearer ${activeToken}` };
-        const [tRes, dRes] = await Promise.all([
-          fetch('/api/trips?limit=100', { headers }),
-          fetch('/api/fleet/documents?limit=100', { headers }),
-        ]);
-        const [tData, dData] = await Promise.all([
-          parseResponseJson<any>(tRes),
-          parseResponseJson<any>(dRes),
-        ]);
-        setStore((prev) => ({
-          ...prev,
-          trips: tRes.ok && tData?.success && Array.isArray(tData.data) ? tData.data : prev.trips,
-          documents: dRes.ok && dData?.success && Array.isArray(dData.data) ? dData.data : prev.documents,
-        }));
-      } catch {
-        // ignore
-      }
-    };
-
-    const onOpsUpdated = () => fetchLiveOperations();
-    window.addEventListener('tms:trip-updated', onOpsUpdated);
-    window.addEventListener('tms:document-updated', onOpsUpdated);
-    return () => {
-      window.removeEventListener('tms:trip-updated', onOpsUpdated);
-      window.removeEventListener('tms:document-updated', onOpsUpdated);
-    };
-  }, [authCompany?.id]);
-
-  // Sync state to localStorage whenever store changes
-  useEffect(() => {
-    saveStore(store);
-  }, [store]);
+  }, [isAuthenticated]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handleRoleChange = (role: UserRole) => {
-    setStore((prev) => ({ ...prev, currentRole: role }));
-    showToast(`Switched active role to ${role}`);
-  };
-
   const handleResetData = () => {
+    if (!permissions?.canManageCompany) {
+      showToast('Only company Owners or Admins can clear company operational data.');
+      return;
+    }
     setIsResetDialogOpen(true);
   };
 
   const confirmResetAllData = async () => {
+    if (!company?.id) return;
     setIsResetting(true);
     try {
-      const activeToken = localStorage.getItem('token') || '';
-      await fetch('/api/fleet/reset-data', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
-        },
-        body: JSON.stringify({ scope: 'current_company' }),
-      });
-      await clearCompanyOperationalDataInFirestore(authCompany?.id);
-      const fresh = clearStoreForNewCustomer();
-      setStore(fresh);
-      if (authCompany?.id) {
-        window.dispatchEvent(
-          new CustomEvent('tms:firestore-hydrated', {
-            detail: {
-              companyId: authCompany.id,
-              bundle: {
-                vehicles: [],
-                drivers: [],
-                customers: [],
-                trips: [],
-                expenses: [],
-                advances: [],
-                settlements: [],
-                invoices: [],
-                payments: [],
-                documents: [],
-              },
-            },
-          })
-        );
-      }
-      showToast('All operational company data cleared.');
+      await clearCompanyOperationalDataInFirestore(company.id);
+      clearClientTmsCaches();
+      showToast('All operational company data cleared in Firestore.');
     } catch (err: any) {
       showToast(err?.message || 'Failed to clear operational data.');
     } finally {
@@ -367,37 +175,13 @@ function AppContent() {
     }
   };
 
-  // Derived counts & metrics for the whole fleet
-  const metrics = useMemo(() => {
-    const totalFreightRevenue = store.trips.reduce((sum, t) => sum + t.totalRevenuePaise, 0);
-    const totalRecordedExpenses = store.expenses.reduce((sum, e) => sum + e.amountPaise, 0);
-    const netFleetContribution = totalFreightRevenue - totalRecordedExpenses;
-    const pendingSettlements = store.trips.filter((t) => t.status === 'DELIVERED' && !t.isSettled).length;
-    
-    const expiringDocuments = store.documents.filter(
-      (d) => d.status === 'EXPIRING_SOON' || d.status === 'EXPIRED'
-    ).length;
-
-    const activeVehicles = store.vehicles.filter((v) => v.status === 'IN_TRANSIT').length;
-    const totalVehicles = store.vehicles.length;
-
-    const totalReceivables = store.invoices.reduce((sum, inv) => sum + inv.balanceDuePaise, 0);
-
-    return {
-      totalFreightRevenue,
-      totalRecordedExpenses,
-      netFleetContribution,
-      pendingSettlements,
-      expiringDocuments,
-      activeVehicles,
-      totalVehicles,
-      totalReceivables,
-    };
-  }, [store]);
-
-  // Handle Quick Trip Submission via Backend API + Firestore Sync
+  // Quick Dispatch Submission -> Atomic Firestore writeBatch
   const handleCreateTrip = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!company?.id) {
+      showToast('No active company selected.');
+      return;
+    }
     if (!newTripCustomer || !newTripVehicle || !newTripDriver) {
       showToast('Please select customer, vehicle, and driver.');
       return;
@@ -422,9 +206,9 @@ function AppContent() {
       return;
     }
 
-    const customerObj = store.customers.find((c) => c.id === newTripCustomer);
-    const vehicleObj = store.vehicles.find((v) => v.id === newTripVehicle);
-    const driverObj = store.drivers.find((d) => d.id === newTripDriver);
+    const customerObj = customers.find((c) => c.id === newTripCustomer);
+    const vehicleObj = vehicles.find((v) => v.id === newTripVehicle);
+    const driverObj = drivers.find((d) => d.id === newTripDriver);
 
     if (!customerObj || !vehicleObj || !driverObj) {
       showToast('Selected customer, vehicle, or driver could not be found.');
@@ -432,225 +216,89 @@ function AppContent() {
     }
 
     const advanceRupees = parseFloat(newTripAdvance) || 0;
-    const activeToken = localStorage.getItem('token') || '';
+    const advancePaise = Math.max(0, Math.round(advanceRupees * 100));
+    const ratePerTonnePaise = Math.round(rateRupees * 100);
+    const freightAmountPaise = Math.round(weight * ratePerTonnePaise);
+    const todayStr = new Date().toISOString().split('T')[0];
 
+    const tripId = `trip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const tripNumber = getNextTripNumber(trips, company);
+    const lrNumber = getNextLrNumber(trips, company);
+
+    const newTrip: Trip = {
+      id: tripId,
+      companyId: company.id,
+      tripNumber,
+      lrNumber,
+      customerId: customerObj.id,
+      customerName: customerObj.name,
+      customerGstin: customerObj.gstin,
+      vehicleId: vehicleObj.id,
+      vehicleReg: vehicleObj.registrationNumber,
+      driverId: driverObj.id,
+      driverName: driverObj.fullName,
+      driverPhone: driverObj.phone,
+      originCity: newTripOrigin.trim(),
+      destinationCity: newTripDestination.trim(),
+      goodsType: newTripGoods.trim(),
+      weightTonnes: weight,
+      ratePerTonnePaise,
+      freightAmountPaise,
+      otherChargesPaise: 0,
+      totalRevenuePaise: freightAmountPaise,
+      dispatchDate: todayStr,
+      expectedDeliveryDate: new Date(Date.now() + 2 * 86400 * 1000).toISOString().split('T')[0],
+      status: 'DISPATCHED',
+      startOdometerKm: vehicleObj.currentOdometerKm || 0,
+      podReceived: false,
+      totalExpensesPaise: 0,
+      totalAdvancesPaise: advancePaise,
+      tripContributionPaise: freightAmountPaise,
+      isSettled: false,
+      isInvoiced: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    const initialAdvance: DriverAdvance | null =
+      advancePaise > 0
+        ? {
+            id: `adv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            companyId: company.id,
+            tripId,
+            tripNumber,
+            driverId: driverObj.id,
+            driverName: driverObj.fullName,
+            vehicleReg: vehicleObj.registrationNumber,
+            amountPaise: advancePaise,
+            advanceType: 'CASH_DISPATCH',
+            paymentMode: 'CASH',
+            date: todayStr,
+            reference: 'Initial Dispatch Handover',
+            disbursedBy: user?.name || 'Dispatch Desk',
+            isSettled: false,
+            createdAt: new Date().toISOString(),
+          }
+        : null;
+
+    setQuickTripSubmitting(true);
     try {
-      const res = await fetch('/api/trips', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(activeToken ? { Authorization: `Bearer ${activeToken}` } : {}),
-        },
-        body: JSON.stringify({
-          customerId: customerObj.id,
-          vehicleId: vehicleObj.id,
-          driverId: driverObj.id,
-          originCity: newTripOrigin.trim(),
-          destinationCity: newTripDestination.trim(),
-          goodsType: newTripGoods.trim(),
-          weightTonnes: weight,
-          ratePerTonnePaise: Math.round(rateRupees * 100),
-          initialAdvanceRupees: advanceRupees,
-          status: 'DISPATCHED',
-          startOdometerKm: vehicleObj.currentOdometerKm,
-        }),
+      await createOrUpdateTripInFirestore(company.id, {
+        trip: newTrip,
+        vehicle: vehicleObj,
+        driver: driverObj,
+        initialAdvance,
       });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success || !data.trip) {
-        showToast(data?.error || 'Failed to dispatch trip.');
-        return;
-      }
-
-      const activeCompanyId = authCompany?.id || store.company.id;
-      await Promise.all([
-        syncEntityToFirestore(activeCompanyId, 'trips', data.trip),
-        data.vehicle ? syncEntityToFirestore(activeCompanyId, 'vehicles', data.vehicle) : Promise.resolve(),
-        data.driver ? syncEntityToFirestore(activeCompanyId, 'drivers', data.driver) : Promise.resolve(),
-        data.advance ? syncEntityToFirestore(activeCompanyId, 'advances', data.advance) : Promise.resolve(),
-      ]);
-
-      setStore((prev) => ({
-        ...prev,
-        trips: [data.trip, ...prev.trips.filter((t) => t.id !== data.trip.id)],
-        vehicles: data.vehicle
-          ? prev.vehicles.map((v) => (v.id === data.vehicle.id ? data.vehicle : v))
-          : prev.vehicles,
-        drivers: data.driver
-          ? prev.drivers.map((d) => (d.id === data.driver.id ? data.driver : d))
-          : prev.drivers,
-        advances: data.advance
-          ? [data.advance, ...prev.advances]
-          : prev.advances,
-      }));
-
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
 
       resetQuickTripForm();
       setIsQuickTripOpen(false);
-      showToast(`Trip ${data.trip.tripNumber} (${vehicleObj.registrationNumber}) dispatched successfully!`);
+      showToast(`Trip ${tripNumber} (${vehicleObj.registrationNumber}) saved to Firestore!`);
     } catch (err: any) {
-      showToast(err?.message || 'Network error dispatching trip.');
+      showToast(err?.message || 'Failed to dispatch trip.');
+    } finally {
+      setQuickTripSubmitting(false);
     }
   };
 
-  // Status badge mappings
-  const getTripBadge = (status: Trip['status']): { label: string; variant: BadgeVariant } => {
-    switch (status) {
-      case 'PLANNED':
-        return { label: 'Planned', variant: 'slate' };
-      case 'DISPATCHED':
-        return { label: 'Dispatched', variant: 'info' };
-      case 'IN_TRANSIT':
-        return { label: 'In Transit', variant: 'purple' };
-      case 'DELIVERED':
-        return { label: 'Delivered', variant: 'warning' };
-      case 'SETTLED':
-        return { label: 'Settled', variant: 'success' };
-      case 'COMPLETED':
-        return { label: 'Completed', variant: 'success' };
-      case 'CANCELLED':
-        return { label: 'Cancelled', variant: 'danger' };
-      default:
-        return { label: status, variant: 'slate' };
-    }
-  };
-
-  const getVehicleBadge = (status: Vehicle['status']): { label: string; variant: BadgeVariant } => {
-    switch (status) {
-      case 'AVAILABLE':
-        return { label: 'Available', variant: 'success' };
-      case 'IN_TRANSIT':
-        return { label: 'On Route', variant: 'purple' };
-      case 'UNDER_MAINTENANCE':
-        return { label: 'In Garage', variant: 'danger' };
-      case 'INACTIVE':
-        return { label: 'Inactive', variant: 'slate' };
-    }
-  };
-
-  // Columns for Trips Table
-  const tripColumns: Column<Trip>[] = [
-    {
-      header: 'Trip & LR No.',
-      accessor: (t) => (
-        <div>
-          <span className="font-bold text-slate-900 block">{t.tripNumber}</span>
-          <span className="text-[11px] text-slate-500 font-mono">LR: {t.lrNumber}</span>
-        </div>
-      ),
-      sortable: true,
-    },
-    {
-      header: 'Route & Goods',
-      accessor: (t) => (
-        <div>
-          <div className="flex items-center gap-1 font-medium text-slate-900">
-            <span>{t.originCity.split(',')[0]}</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
-            <span>{t.destinationCity.split(',')[0]}</span>
-          </div>
-          <span className="text-xs text-slate-500">
-            {t.goodsType} ({t.weightTonnes} MT)
-          </span>
-        </div>
-      ),
-    },
-    {
-      header: 'Vehicle & Driver',
-      accessor: (t) => (
-        <div>
-          <span className="font-semibold text-slate-900 block">{t.vehicleReg}</span>
-          <span className="text-xs text-slate-600">{t.driverName}</span>
-        </div>
-      ),
-    },
-    {
-      header: 'Customer',
-      accessor: (t) => (
-        <span className="font-medium text-slate-800 line-clamp-1">{t.customerName}</span>
-      ),
-    },
-    {
-      header: 'Freight Revenue',
-      accessor: (t) => (
-        <span className="font-bold text-slate-900">{formatINR(t.totalRevenuePaise)}</span>
-      ),
-      sortable: true,
-    },
-    {
-      header: 'Trip Expenses',
-      accessor: (t) => (
-        <span className="font-medium text-rose-600">{formatINR(t.totalExpensesPaise)}</span>
-      ),
-    },
-    {
-      header: 'Trip Contribution',
-      accessor: (t) => {
-        const contr = t.totalRevenuePaise - t.totalExpensesPaise;
-        return (
-          <span className="font-bold text-emerald-700">{formatINR(contr)}</span>
-        );
-      },
-      sortable: true,
-    },
-    {
-      header: 'Status',
-      accessor: (t) => {
-        const badge = getTripBadge(t.status);
-        return <Badge variant={badge.variant} dot>{badge.label}</Badge>;
-      },
-    },
-  ];
-
-  // Columns for Vehicles Table
-  const vehicleColumns: Column<Vehicle>[] = [
-    {
-      header: 'Registration No.',
-      accessor: (v) => (
-        <div>
-          <span className="font-bold font-mono text-slate-900 text-sm">{v.registrationNumber}</span>
-          <span className="block text-xs text-slate-500">{v.makeModel}</span>
-        </div>
-      ),
-      sortable: true,
-    },
-    {
-      header: 'Type & Capacity',
-      accessor: (v) => (
-        <div>
-          <span className="font-medium text-slate-800">{v.vehicleType}</span>
-          <span className="block text-xs text-slate-500">{v.capacityTonnes} Tonnes Payload</span>
-        </div>
-      ),
-    },
-    {
-      header: 'Assigned Driver',
-      accessor: (v) => v.assignedDriverName || <span className="text-slate-400 italic">Unassigned</span>,
-    },
-    {
-      header: 'Odometer',
-      accessor: (v) => `${v.currentOdometerKm.toLocaleString()} KM`,
-      sortable: true,
-    },
-    {
-      header: 'FastTag Balance',
-      accessor: (v) => (
-        <span className="font-semibold text-slate-800">{formatINR(v.fastagBalancePaise)}</span>
-      ),
-    },
-    {
-      header: 'Status',
-      accessor: (v) => {
-        const badge = getVehicleBadge(v.status);
-        return <Badge variant={badge.variant} dot>{badge.label}</Badge>;
-      },
-    },
-  ];
-
-  // If loading session
   if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -662,7 +310,6 @@ function AppContent() {
     );
   }
 
-  // If unauthenticated: render Login or Registration screen
   if (!isAuthenticated) {
     if (authScreen === 'register') {
       return <RegisterPage onSwitchToLogin={() => setAuthScreen('login')} />;
@@ -670,15 +317,12 @@ function AppContent() {
     return <LoginPage onSwitchToRegister={() => setAuthScreen('register')} />;
   }
 
-  // If authenticated and onboarding not permanently completed: render Welcome/Onboarding Wizard
   if (needsOnboarding && !onboardingCompleted) {
     return <CompanyOnboardingPage />;
   }
 
-  // Authenticated Protected Dashboard
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden text-slate-900 antialiased font-sans">
-      {/* Toast Notification */}
       {toastMessage && (
         <div className="fixed top-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-lg shadow-xl text-xs sm:text-sm font-medium flex items-center gap-2 border border-slate-700 animate-in fade-in slide-in-from-top-4 duration-200">
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -691,19 +335,17 @@ function AppContent() {
         <Sidebar
           activeTab={activeTab}
           onSelectTab={setActiveTab}
-          userRole={store.currentRole}
-          pendingSettlementsCount={metrics.pendingSettlements}
-          expiringDocsCount={metrics.expiringDocuments}
+          userRole={effectiveRole}
+          pendingSettlementsCount={pendingSettlementsCount}
+          expiringDocsCount={expiringDocsCount}
         />
       </div>
 
       {/* Main App Container */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Topbar */}
         <Topbar
-          company={store.company}
-          currentRole={store.currentRole}
-          onRoleChange={handleRoleChange}
+          company={company}
+          currentRole={effectiveRole}
           onResetData={handleResetData}
           onQuickDispatch={() => {
             resetQuickTripForm();
@@ -712,7 +354,7 @@ function AppContent() {
           onOpenProfile={() => setIsProfileModalOpen(true)}
         />
 
-        {/* Email Verification Reminder Banner for Unverified Firebase Users */}
+        {/* Email Verification Reminder Banner */}
         {isFirebaseUser && !isEmailVerified && (
           <div className="bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-900">
             <div className="flex items-center gap-2">
@@ -744,7 +386,7 @@ function AppContent() {
                   setVerificationBusy(false);
                   showToast(
                     res.verified
-                      ? 'Email verified! Syncing your data to Firebase Firestore...'
+                      ? 'Email verified! Cloud Firestore sync is now active.'
                       : res.error || 'Email is not verified yet. Please click the link in your inbox.'
                   );
                 }}
@@ -756,9 +398,26 @@ function AppContent() {
           </div>
         )}
 
+        {/* Firestore Sync Error Banner */}
+        {firestoreError && (
+          <div className="bg-rose-50 border-b border-rose-200 px-4 sm:px-6 py-2.5 flex items-center justify-between gap-2 text-xs text-rose-900">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{firestoreError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={clearFirestoreError}
+              className="p-1 rounded hover:bg-rose-100 text-rose-700"
+              aria-label="Dismiss error"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Scrollable Viewport Content */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 pb-20 md:pb-6">
-          {/* DASHBOARD VIEW */}
           {activeTab === 'dashboard' && (
             <DashboardView
               onQuickDispatch={() => {
@@ -766,92 +425,43 @@ function AppContent() {
                 setIsQuickTripOpen(true);
               }}
               onNavigateTab={setActiveTab}
-              userRole={store.currentRole}
-              localStoreTrips={store.trips}
-              localStoreVehicles={store.vehicles}
+              userRole={effectiveRole}
             />
           )}
 
-          {/* TRIPS VIEW */}
-          {activeTab === 'trips' && (
-            <TripsView
-              userRole={store.currentRole}
-              localVehicles={store.vehicles}
-              localDrivers={store.drivers}
-              localCustomers={store.customers}
-            />
-          )}
-
-          {/* VEHICLES VIEW */}
-          {activeTab === 'vehicles' && (
-            <VehiclesView
-              userRole={store.currentRole}
-              localDrivers={store.drivers}
-            />
-          )}
-
-          {/* DRIVERS VIEW */}
-          {activeTab === 'drivers' && (
-            <DriversView
-              userRole={store.currentRole}
-              localVehicles={store.vehicles}
-            />
-          )}
-
-          {/* CUSTOMERS VIEW */}
-          {activeTab === 'customers' && (
-            <CustomersView
-              userRole={store.currentRole}
-            />
-          )}
-
-          {/* EXPENSES VIEW */}
+          {activeTab === 'trips' && <TripsView userRole={effectiveRole} />}
+          {activeTab === 'vehicles' && <VehiclesView userRole={effectiveRole} />}
+          {activeTab === 'drivers' && <DriversView userRole={effectiveRole} />}
+          {activeTab === 'customers' && <CustomersView userRole={effectiveRole} />}
           {activeTab === 'expenses' && (
-            <ExpensesView userRole={authRole || 'OPERATIONS'} onNavigateTab={setActiveTab} />
+            <ExpensesView userRole={effectiveRole} onNavigateTab={setActiveTab} />
           )}
-
-          {/* ADVANCES VIEW */}
           {activeTab === 'advances' && (
-            <DriverAdvancesView userRole={authRole || 'OPERATIONS'} onNavigateTab={setActiveTab} />
+            <DriverAdvancesView userRole={effectiveRole} onNavigateTab={setActiveTab} />
           )}
-
-          {/* SETTLEMENTS VIEW */}
           {activeTab === 'settlements' && (
-            <SettlementsView userRole={authRole || 'OPERATIONS'} onNavigateTab={setActiveTab} />
+            <SettlementsView userRole={effectiveRole} onNavigateTab={setActiveTab} />
           )}
-
-          {/* INVOICES & CUSTOMER PAYMENTS VIEW (PHASE 8) */}
           {(activeTab === 'invoices' || activeTab === 'payments') && (
-            <InvoicesView userRole={authRole || 'OPERATIONS'} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
+            <InvoicesView userRole={effectiveRole} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
           )}
-
-          {/* DOCUMENTS COMPLIANCE VIEW */}
           {activeTab === 'documents' && (
-            <VehicleDocumentsView userRole={authRole || 'OPERATIONS'} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
+            <VehicleDocumentsView userRole={effectiveRole} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
           )}
-
-          {/* SETTINGS VIEW (COMPANY PROFILE) */}
           {activeTab === 'settings' && <CompanyProfilePage />}
-
-          {/* USERS VIEW (USER & ROLE MANAGEMENT) */}
           {activeTab === 'users' && <UserManagementPage />}
+          {activeTab === 'reports' && <ReportsView userRole={effectiveRole} />}
 
-          {/* REPORTS & ANALYTICS VIEW */}
-          {activeTab === 'reports' && (
-            <ReportsView userRole={authRole || 'OPERATIONS'} />
-          )}
-
-          {/* OTHER TABS PLACEHOLDER WITH ARCHITECTURAL DETAIL */}
-          {['maintenance'].includes(activeTab) && (
+          {activeTab === 'maintenance' && (
             <div className="max-w-4xl mx-auto py-12 text-center bg-white rounded-xl border border-slate-200 p-8 shadow-xs">
               <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3">
                 <CheckCircle2 className="w-6 h-6" />
               </div>
-              <h3 className="text-lg font-bold text-slate-900 capitalize">
-                {activeTab.replace('_', ' ')} Module Prepared
+              <h3 className="text-lg font-bold text-slate-900">
+                Maintenance Module Prepared
               </h3>
               <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-md mx-auto">
-                Authentication, PostgreSQL models, and security permissions are active. Granular forms for this module will be activated in upcoming phases.
+                Firestore collections and security permissions are active for maintenance records.
               </p>
               <div className="mt-6 flex justify-center gap-3">
                 <button
@@ -866,19 +476,11 @@ function AppContent() {
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation */}
-      <MobileNav
-        activeTab={activeTab}
-        onSelectTab={setActiveTab}
-        userRole={store.currentRole}
-        pendingSettlementsCount={metrics.pendingSettlements}
-      />
-
       {/* User Profile & Multi-Tenant Switch Modal */}
       <UserProfileModal
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
-        fallbackCompany={store.company}
+        fallbackCompany={company}
       />
 
       {/* Quick Dispatch Modal */}
@@ -905,17 +507,17 @@ function AppContent() {
                 required
               >
                 <option value="">
-                  {store.customers.length === 0
+                  {customers.length === 0
                     ? '-- No Customer Parties Registered --'
                     : '-- Choose Consignor / Client --'}
                 </option>
-                {store.customers.map((c) => (
+                {customers.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name} ({c.city})
                   </option>
                 ))}
               </select>
-              {store.customers.length === 0 && (
+              {customers.length === 0 && (
                 <div className="mt-1.5 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between text-[11px] text-amber-800">
                   <span>No parties found. Add in Customer (Parties) first.</span>
                   <button
@@ -944,17 +546,17 @@ function AppContent() {
                 required
               >
                 <option value="">
-                  {store.vehicles.length === 0
+                  {vehicles.length === 0
                     ? '-- No Commercial Trucks Registered --'
                     : '-- Choose Commercial Truck --'}
                 </option>
-                {store.vehicles.map((v) => (
+                {vehicles.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.registrationNumber} - {v.vehicleType} ({v.status})
                   </option>
                 ))}
               </select>
-              {store.vehicles.length === 0 && (
+              {vehicles.length === 0 && (
                 <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start justify-between gap-2">
                   <div className="flex items-start gap-1.5">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -990,17 +592,17 @@ function AppContent() {
                 required
               >
                 <option value="">
-                  {store.drivers.length === 0
+                  {drivers.length === 0
                     ? '-- No Commercial Drivers Registered --'
                     : '-- Choose Commercial Driver --'}
                 </option>
-                {store.drivers.map((d) => (
+                {drivers.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.fullName} (DL: {d.licenseNumber})
                   </option>
                 ))}
               </select>
-              {store.drivers.length === 0 && (
+              {drivers.length === 0 && (
                 <div className="mt-1.5 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start justify-between gap-2">
                   <div className="flex items-start gap-1.5">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -1148,9 +750,10 @@ function AppContent() {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs"
+                disabled={quickTripSubmitting}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50"
               >
-                Confirm & Dispatch
+                {quickTripSubmitting ? 'Dispatching...' : 'Confirm & Dispatch'}
               </button>
             </div>
           </div>
@@ -1161,7 +764,7 @@ function AppContent() {
       <ConfirmDialog
         isOpen={isResetDialogOpen}
         title="Clear All Operational Data?"
-        message="This will remove all customers, trucks, drivers, trips, expenses, advances, settlements, and invoices for this company so you can start with an empty workspace. Your company profile and account remain intact."
+        message="This will permanently delete all customers, trucks, drivers, trips, expenses, advances, settlements, and invoices for this company from Firebase Firestore. Your company profile and account remain intact."
         confirmLabel="Yes, Clear All Data"
         cancelLabel="Cancel"
         variant="danger"
@@ -1174,8 +777,8 @@ function AppContent() {
       <MobileNav
         activeTab={activeTab}
         onSelectTab={setActiveTab}
-        userRole={store.currentRole}
-        pendingSettlementsCount={metrics.pendingSettlements}
+        userRole={effectiveRole}
+        pendingSettlementsCount={pendingSettlementsCount}
       />
     </div>
   );
@@ -1184,7 +787,9 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <FirestoreDataProvider>
+        <AppContent />
+      </FirestoreDataProvider>
     </AuthProvider>
   );
 }

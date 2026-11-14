@@ -1,26 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Scale,
-  IndianRupee,
-  Calendar,
   AlertTriangle,
   CheckCircle2,
-  Receipt,
-  Wallet,
-  Clock,
-  ShieldCheck,
-  User,
-  Truck,
-  ArrowRight,
-  Info,
 } from 'lucide-react';
-import { TripSettlement, Trip, Driver, DriverAdvance, TripExpense, SettlementStatus, UserRole } from '../../types/tms';
+import { TripSettlement, SettlementStatus } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
-import { formatINR, paiseToRupees } from '../../lib/currency';
+import { formatINR } from '../../lib/currency';
 import { calculateDriverSettlement, DriverSettlementCalculation } from '../../lib/financialEngine';
-import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { saveSettlementInFirestore } from '../../lib/firebase/firestoreService';
+import { getNextSettlementNumber } from '../../lib/tmsCalculations';
 
 interface SettlementModalProps {
   isOpen: boolean;
@@ -37,12 +28,21 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
   settlementToEdit,
   defaultTripId,
 }) => {
-  const { token, role, company } = useAuth();
-  const isEdit = Boolean(settlementToEdit);
-  const isAlreadyFinalized = settlementToEdit?.status === 'FINALIZED' || settlementToEdit?.status === 'APPROVED_SETTLED';
+  const { user, role, company: authCompany } = useAuth();
+  const {
+    company: liveCompany,
+    trips,
+    drivers,
+    advances: allAdvances,
+    expenses: allExpenses,
+    settlements: allSettlements,
+    loading: dataLoading,
+  } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
 
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [loadingTrips, setLoadingTrips] = useState(false);
+  const isEdit = Boolean(settlementToEdit);
+  const isAlreadyFinalized =
+    settlementToEdit?.status === 'FINALIZED' || settlementToEdit?.status === 'APPROVED_SETTLED';
 
   // Form inputs
   const [tripId, setTripId] = useState(defaultTripId || '');
@@ -56,81 +56,32 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
   const [isCorrectionAuthorized, setIsCorrectionAuthorized] = useState(false);
   const [correctionReason, setCorrectionReason] = useState('');
 
-  // Trip dossier data
-  const [advances, setAdvances] = useState<DriverAdvance[]>([]);
-  const [expenses, setExpenses] = useState<TripExpense[]>([]);
-  const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
-  const [loadingDossier, setLoadingDossier] = useState(false);
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch available trips
-  useEffect(() => {
-    if (isOpen) {
-      setLoadingTrips(true);
-      fetch('/api/trips?limit=100', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success) {
-            setTrips(data.data || []);
-          }
-        })
-        .catch((err) => console.warn('Failed to load trips for settlement modal:', err))
-        .finally(() => setLoadingTrips(false));
-    }
-  }, [isOpen, token, company?.id]);
-
-  // Load trip-specific advances, expenses, and driver when tripId changes
+  // Populate from settlementToEdit if editing, else reset on open
   useEffect(() => {
     if (!isOpen) return;
-    if (!tripId) {
-      setAdvances([]);
-      setExpenses([]);
-      setSelectedDriver(null);
-      return;
-    }
-
-    setLoadingDossier(true);
-    fetch(`/api/trips/${tripId}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then((res) => parseResponseJson<any>(res))
-      .then((data) => {
-        if (data && data.success) {
-          setAdvances(data.advances || []);
-          setExpenses(data.expenses || []);
-          setSelectedDriver(data.driver || null);
-
-          // Auto-compute trip days if dispatchDate and actualDeliveryDate exist
-          if (data.trip) {
-            const start = new Date(data.trip.dispatchDate).getTime();
-            const end = data.trip.actualDeliveryDate ? new Date(data.trip.actualDeliveryDate).getTime() : Date.now();
-            const diffDays = Math.max(1, Math.ceil((end - start) / (1000 * 3600 * 24)));
-            if (!settlementToEdit && !Number.isNaN(diffDays)) {
-              setDriverBataDays(diffDays.toString());
-            }
-          }
-        }
-      })
-      .catch((err) => console.warn('Failed to load trip dossier:', err))
-      .finally(() => setLoadingDossier(false));
-  }, [tripId, isOpen, settlementToEdit, token]);
-
-  // Populate from settlementToEdit if editing
-  useEffect(() => {
-    if (!isOpen) return;
+    setError(null);
     if (settlementToEdit) {
       setTripId(settlementToEdit.tripId);
-      setDeductionsRupees(((settlementToEdit.approvedDeductionsPaise || settlementToEdit.otherDeductionsPaise || 0) / 100).toString());
+      setDeductionsRupees(
+        ((settlementToEdit.approvedDeductionsPaise || settlementToEdit.otherDeductionsPaise || 0) / 100).toString()
+      );
       setDeductionReason(settlementToEdit.deductionReason || '');
       setSettlementNotes(settlementToEdit.settlementNotes || '');
       setTargetStatus(settlementToEdit.status);
       setIsCorrectionAuthorized(Boolean(settlementToEdit.isCorrectionAuthorized));
       setCorrectionReason(settlementToEdit.correctionReason || '');
-      setError(null);
+
+      // Infer days from existing bata allowance & driver rate if available
+      const drv = drivers.find((d) => d.id === settlementToEdit.driverId);
+      if (drv && drv.perDayBataPaise > 0) {
+        const inferred = Math.max(1, Math.round((settlementToEdit.driverBataAllowancePaise || 0) / drv.perDayBataPaise));
+        setDriverBataDays(inferred.toString());
+      } else {
+        setDriverBataDays('1');
+      }
     } else {
       setTripId(defaultTripId || '');
       setDriverBataDays('1');
@@ -140,15 +91,42 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
       setTargetStatus('FINALIZED');
       setIsCorrectionAuthorized(false);
       setCorrectionReason('');
-      setError(null);
     }
-  }, [settlementToEdit, defaultTripId, isOpen]);
+  }, [settlementToEdit, defaultTripId, isOpen, drivers]);
 
-  const selectedTrip = trips.find((t) => t.id === tripId);
+  const selectedTrip = useMemo(() => trips.find((t) => t.id === tripId) || null, [trips, tripId]);
+
+  const selectedDriver = useMemo(
+    () => (selectedTrip ? drivers.find((d) => d.id === selectedTrip.driverId) || null : null),
+    [selectedTrip, drivers]
+  );
+
+  const advances = useMemo(
+    () => (tripId ? allAdvances.filter((a) => a.tripId === tripId) : []),
+    [allAdvances, tripId]
+  );
+
+  const expenses = useMemo(
+    () => (tripId ? allExpenses.filter((e) => e.tripId === tripId) : []),
+    [allExpenses, tripId]
+  );
+
+  // Auto-compute trip duration days when switching trips for a new settlement
+  useEffect(() => {
+    if (!isOpen || settlementToEdit || !selectedTrip) return;
+    const start = new Date(selectedTrip.dispatchDate || selectedTrip.createdAt).getTime();
+    const end = selectedTrip.actualDeliveryDate
+      ? new Date(selectedTrip.actualDeliveryDate).getTime()
+      : Date.now();
+    if (!Number.isNaN(start) && !Number.isNaN(end)) {
+      const diffDays = Math.max(1, Math.ceil((end - start) / (1000 * 3600 * 24)));
+      setDriverBataDays(diffDays.toString());
+    }
+  }, [selectedTrip?.id, isOpen, settlementToEdit]);
+
   const perDayBataPaise = selectedDriver?.perDayBataPaise ?? 0;
-
   const parsedDeductionsPaise = Math.round((parseFloat(deductionsRupees) || 0) * 100);
-  const parsedDays = parseInt(driverBataDays, 10) || 1;
+  const parsedDays = Math.max(0, parseInt(driverBataDays, 10) || 0);
 
   // Live calculation
   const calc: DriverSettlementCalculation = calculateDriverSettlement(
@@ -163,8 +141,18 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
     e.preventDefault();
     setError(null);
 
-    if (!tripId) {
+    if (!company?.id) {
+      setError('Active company profile is required to save a settlement.');
+      return;
+    }
+
+    if (!tripId || !selectedTrip) {
       setError('Please select a trip to reconcile.');
+      return;
+    }
+
+    if (!selectedTrip.driverId) {
+      setError('Selected trip does not have an assigned driver.');
       return;
     }
 
@@ -173,62 +161,69 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
       return;
     }
 
+    if (parsedDeductionsPaise > 0 && !deductionReason.trim()) {
+      setError('Please enter a reason for approved deductions.');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const payload = {
-        tripId,
+      const nowIso = new Date().toISOString();
+      const todayStr = nowIso.split('T')[0];
+      const actorName = (user?.name || user?.email || 'Accountant').slice(0, 100);
+      const settlementId =
+        settlementToEdit?.id || `stl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const settlementNumber =
+        settlementToEdit?.settlementNumber ||
+        getNextSettlementNumber(allSettlements.length, allSettlements);
+
+      const settlement: TripSettlement = {
+        ...(settlementToEdit || {}),
+        id: settlementId,
+        companyId: company.id,
+        tripId: selectedTrip.id,
+        tripNumber: selectedTrip.tripNumber,
+        driverId: selectedTrip.driverId,
+        driverName: (selectedDriver?.fullName || selectedTrip.driverName || 'Driver').slice(0, 100),
+        vehicleId: selectedTrip.vehicleId,
+        vehicleReg: selectedTrip.vehicleReg?.slice(0, 30),
+        settlementNumber,
+        totalAdvanceGivenPaise: calc.totalAdvancesGivenPaise,
+        driverCashExpensesPaise: calc.driverPaidExpensesPaise,
+        driverBataAllowancePaise: calc.driverBataAllowancePaise,
+        approvedDeductionsPaise: calc.approvedDeductionsPaise,
+        otherDeductionsPaise: calc.approvedDeductionsPaise,
+        deductionReason: deductionReason.trim() ? deductionReason.trim().slice(0, 300) : undefined,
+        remainingDriverBalancePaise: calc.remainingDriverBalancePaise,
+        netPayableToDriverPaise: calc.netPayableToDriverPaise,
+        isCompanyDue: calc.isCompanyDue,
         status: targetStatus,
-        driverBataDays: parsedDays,
-        approvedDeductionsPaise: parsedDeductionsPaise,
-        otherDeductionsPaise: parsedDeductionsPaise,
-        deductionReason: deductionReason.trim() || undefined,
-        settlementNotes: settlementNotes.trim() || undefined,
-        isCorrectionAuthorized,
-        correctionReason: correctionReason.trim() || undefined,
+        settledDate: settlementToEdit?.settledDate || todayStr,
+        settledBy: actorName,
+        settlementNotes: settlementNotes.trim() ? settlementNotes.trim().slice(0, 400) : undefined,
+        isCorrectionAuthorized: isAlreadyFinalized && isCorrectionAuthorized ? true : settlementToEdit?.isCorrectionAuthorized,
+        correctionReason:
+          isAlreadyFinalized && isCorrectionAuthorized && correctionReason.trim()
+            ? correctionReason.trim().slice(0, 300)
+            : settlementToEdit?.correctionReason,
+        correctedBy:
+          isAlreadyFinalized && isCorrectionAuthorized ? actorName : settlementToEdit?.correctedBy,
+        correctedAt:
+          isAlreadyFinalized && isCorrectionAuthorized ? nowIso : settlementToEdit?.correctedAt,
+        createdAt: settlementToEdit?.createdAt || nowIso,
       };
 
-      const url = isEdit ? `/api/settlements/${settlementToEdit!.id}` : '/api/settlements';
-      const method = isEdit ? 'PUT' : 'POST';
+      await saveSettlementInFirestore(
+        company.id,
+        settlement,
+        selectedTrip,
+        selectedDriver || undefined,
+        advances,
+        expenses
+      );
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to complete settlement.');
-      }
-
-      const activeCompanyId = company?.id || data.settlement?.companyId;
-      if (activeCompanyId) {
-        if (data.settlement) await syncEntityToFirestore(activeCompanyId, 'settlements', data.settlement);
-        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
-        if (data.driver) await syncEntityToFirestore(activeCompanyId, 'drivers', data.driver);
-        if (Array.isArray(data.updatedAdvances)) {
-          for (const adv of data.updatedAdvances) {
-            await syncEntityToFirestore(activeCompanyId, 'advances', adv);
-          }
-        }
-        if (Array.isArray(data.updatedExpenses)) {
-          for (const exp of data.updatedExpenses) {
-            await syncEntityToFirestore(activeCompanyId, 'expenses', exp);
-          }
-        }
-      }
-
-      window.dispatchEvent(new CustomEvent('tms:settlement-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
-      window.dispatchEvent(new CustomEvent('tms:advance-updated'));
-      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
-
-      onSuccess(data.settlement, isEdit);
+      onSuccess(settlement, isEdit);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error occurred while saving settlement.');
@@ -296,22 +291,24 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
           <select
             value={tripId}
             onChange={(e) => setTripId(e.target.value)}
-            disabled={isEdit && !isCorrectionAuthorized}
+            disabled={isEdit}
             required
             className="w-full px-3 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
           >
-            {loadingTrips ? (
+            {dataLoading && trips.length === 0 ? (
               <option value="">Loading trips...</option>
             ) : trips.length === 0 ? (
               <option value="">No trips available</option>
             ) : (
               <>
                 <option value="">-- Choose Trip to Reconcile --</option>
-                {trips.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.status}] {t.isSettled ? '✓ ALREADY SETTLED' : ''}
-                  </option>
-                ))}
+                {trips
+                  .filter((t) => t.status !== 'CANCELLED' || t.id === tripId)
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.status}] {t.isSettled ? '✓ ALREADY SETTLED' : ''}
+                    </option>
+                  ))}
               </>
             )}
           </select>
@@ -547,14 +544,14 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
             type="button"
             onClick={onClose}
             disabled={loading}
-            className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 transition-colors"
+            className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={loading || (isAlreadyFinalized && !isCorrectionAuthorized)}
-            className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 flex items-center gap-2"
+            className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 flex items-center gap-2 cursor-pointer disabled:opacity-50"
           >
             {loading ? (
               <span>Processing...</span>

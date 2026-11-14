@@ -1,27 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Navigation,
   Plus,
   Search,
-  Filter,
   AlertTriangle,
-  FileText,
-  Truck,
-  Users,
-  Building2,
   CheckCircle2,
-  Clock,
   Eye,
   Edit,
-  Trash2,
   RefreshCw,
   ChevronLeft,
   ChevronRight,
-  TrendingUp,
-  MapPin,
-  Calendar,
-  XCircle,
-  Scale,
   RotateCcw,
 } from 'lucide-react';
 import { Trip, Vehicle, Driver, Customer, UserRole, TripStatus } from '../../types/tms';
@@ -33,8 +21,12 @@ import { TripModal } from './TripModal';
 import { TripDetailModal } from './TripDetailModal';
 import { TripStatusTransitionModal } from './TripStatusTransitionModal';
 import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { syncEntityToFirestore, clearCompanyTripsDataInFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { isDateWithinRange } from '../../lib/tmsCalculations';
+import {
+  transitionTripStatusInFirestore,
+  clearCompanyTripsDataInFirestore,
+} from '../../lib/firebase/firestoreService';
 
 interface TripsViewProps {
   userRole: UserRole;
@@ -49,93 +41,21 @@ export const TripsView: React.FC<TripsViewProps> = ({
   localDrivers = [],
   localCustomers = [],
 }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
+  const { user } = useAuth();
+  const {
+    company,
+    trips: allTrips,
+    vehicles: firestoreVehicles,
+    drivers: firestoreDrivers,
+    customers: firestoreCustomers,
+    loading,
+    error,
+    clearError,
+  } = useFirestoreData();
 
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [liveCustomers, setLiveCustomers] = useState<Customer[]>(localCustomers);
-  const [liveVehicles, setLiveVehicles] = useState<Vehicle[]>(localVehicles);
-  const [liveDrivers, setLiveDrivers] = useState<Driver[]>(localDrivers);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Sync customers live from API whenever customer is added/updated in Customers tab
-  useEffect(() => {
-    const fetchCustomersList = async () => {
-      try {
-        const res = await fetch('/api/customers?limit=100', {
-          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-        });
-        const data = await parseResponseJson<any>(res);
-        if (res.ok && data?.success && Array.isArray(data.data)) {
-          setLiveCustomers(data.data);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    fetchCustomersList();
-
-    const onCustomerUpdated = () => fetchCustomersList();
-    window.addEventListener('tms:customer-updated', onCustomerUpdated);
-    window.addEventListener('tms:firestore-hydrated', onCustomerUpdated);
-    return () => {
-      window.removeEventListener('tms:customer-updated', onCustomerUpdated);
-      window.removeEventListener('tms:firestore-hydrated', onCustomerUpdated);
-    };
-  }, [activeToken, company?.id]);
-
-  // Sync vehicles live from API whenever truck is added/updated in Vehicles tab
-  useEffect(() => {
-    const fetchVehiclesList = async () => {
-      try {
-        const res = await fetch('/api/vehicles?limit=100', {
-          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-        });
-        const data = await parseResponseJson<any>(res);
-        if (res.ok && data?.success && Array.isArray(data.data)) {
-          setLiveVehicles(data.data);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    fetchVehiclesList();
-
-    const onVehicleUpdated = () => fetchVehiclesList();
-    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    window.addEventListener('tms:firestore-hydrated', onVehicleUpdated);
-    return () => {
-      window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-      window.removeEventListener('tms:firestore-hydrated', onVehicleUpdated);
-    };
-  }, [activeToken, company?.id]);
-
-  // Sync drivers live from API whenever driver is added/updated in Drivers tab
-  useEffect(() => {
-    const fetchDriversList = async () => {
-      try {
-        const res = await fetch('/api/drivers?limit=100', {
-          headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-        });
-        const data = await parseResponseJson<any>(res);
-        if (res.ok && data?.success && Array.isArray(data.data)) {
-          setLiveDrivers(data.data);
-        }
-      } catch {
-        // ignore
-      }
-    };
-    fetchDriversList();
-
-    const onDriverUpdated = () => fetchDriversList();
-    window.addEventListener('tms:driver-updated', onDriverUpdated);
-    window.addEventListener('tms:firestore-hydrated', onDriverUpdated);
-    return () => {
-      window.removeEventListener('tms:driver-updated', onDriverUpdated);
-      window.removeEventListener('tms:firestore-hydrated', onDriverUpdated);
-    };
-  }, [activeToken, company?.id]);
+  const liveVehicles = firestoreVehicles.length > 0 ? firestoreVehicles : localVehicles;
+  const liveDrivers = firestoreDrivers.length > 0 ? firestoreDrivers : localDrivers;
+  const liveCustomers = firestoreCustomers.length > 0 ? firestoreCustomers : localCustomers;
 
   // Filters and Pagination
   const [searchQuery, setSearchQuery] = useState('');
@@ -147,120 +67,157 @@ export const TripsView: React.FC<TripsViewProps> = ({
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [page, setPage] = useState(1);
-  const [limit] = useState(10);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
-
-  // Summary Metrics
-  const [summary, setSummary] = useState({
-    totalTrips: 0,
-    activeTrips: 0,
-    deliveredTrips: 0,
-    totalRevenuePaise: 0,
-    totalExpensesPaise: 0,
-    totalContributionPaise: 0,
-  });
+  const limit = 10;
 
   // Modal States
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [tripToEdit, setTripToEdit] = useState<Trip | null>(null);
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
-  const [tripForStatusChange, setTripForStatusChange] = useState<{ trip: Trip; targetStatus: TripStatus } | null>(null);
+  const [tripForStatusChange, setTripForStatusChange] = useState<{
+    trip: Trip;
+    targetStatus: TripStatus;
+  } | null>(null);
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isResetTripsDialogOpen, setIsResetTripsDialogOpen] = useState(false);
   const [resettingTrips, setResettingTrips] = useState(false);
 
-  const handleResetTrips = async () => {
-    setResettingTrips(true);
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch('/api/trips/reset', { method: 'POST', headers });
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to reset trips.');
-      }
-      await clearCompanyTripsDataInFirestore(company?.id, data.vehicles || [], data.drivers || []);
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
-      showNotification('All trips have been reset. Fleet is clean and ready for user dispatches.');
-      setIsResetTripsDialogOpen(false);
-      fetchTrips(1);
-    } catch (err: any) {
-      showNotification(err.message || 'Error resetting trips', 'error');
-    } finally {
-      setResettingTrips(false);
-    }
-  };
-
-  const fetchTrips = async (targetPage = 1) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: limit.toString(),
-      });
-
-      if (searchQuery.trim()) params.append('search', searchQuery.trim());
-      if (statusFilter !== 'ALL') params.append('status', statusFilter);
-      if (vehicleFilter !== 'ALL') params.append('vehicleId', vehicleFilter);
-      if (driverFilter !== 'ALL') params.append('driverId', driverFilter);
-      if (customerFilter !== 'ALL') params.append('customerId', customerFilter);
-      if (dateFilter !== 'ALL') params.append('dateFilter', dateFilter);
-      if (dateFilter === 'CUSTOM' && startDate && endDate) {
-        params.append('startDate', startDate);
-        params.append('endDate', endDate);
-      }
-
-      const headers: Record<string, string> = {};
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/trips?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to load trips from company database.');
-      }
-
-      setTrips(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages);
-      setTotalCount(data.pagination.total);
-      if (data.summary) setSummary(data.summary);
-    } catch (err: any) {
-      setError(err.message || 'Error communicating with fleet trip API.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchTrips(1);
-  }, [statusFilter, vehicleFilter, driverFilter, customerFilter, dateFilter, activeToken, company?.id]);
-
-  useEffect(() => {
-    const onTripsSync = () => fetchTrips(1);
-    window.addEventListener('tms:firestore-hydrated', onTripsSync);
-    window.addEventListener('tms:trip-updated', onTripsSync);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', onTripsSync);
-      window.removeEventListener('tms:trip-updated', onTripsSync);
-    };
-  }, [activeToken, company?.id]);
-
-  // Debounced search
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchTrips(1);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery, startDate, endDate]);
-
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setActionMsg({ type, text });
     setTimeout(() => setActionMsg(null), 3500);
+  };
+
+  // Summary metrics derived directly from Firestore trips
+  const summary = useMemo(() => {
+    const nonCancelled = allTrips.filter((t) => t.status !== 'CANCELLED');
+    const activeTrips = allTrips.filter(
+      (t) => t.status === 'DISPATCHED' || t.status === 'IN_TRANSIT'
+    ).length;
+    const deliveredTrips = allTrips.filter(
+      (t) => t.status === 'DELIVERED' || t.status === 'COMPLETED' || t.status === 'SETTLED'
+    ).length;
+    const totalRevenuePaise = nonCancelled.reduce(
+      (sum, t) => sum + (t.totalRevenuePaise || t.freightAmountPaise || 0),
+      0
+    );
+    const totalExpensesPaise = nonCancelled.reduce(
+      (sum, t) => sum + (t.totalExpensesPaise || 0),
+      0
+    );
+    const totalContributionPaise = totalRevenuePaise - totalExpensesPaise;
+
+    return {
+      totalTrips: allTrips.length,
+      activeTrips,
+      deliveredTrips,
+      totalRevenuePaise,
+      totalExpensesPaise,
+      totalContributionPaise,
+    };
+  }, [allTrips]);
+
+  // Filtered and sorted trips
+  const filteredTrips = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+    const monthStartStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    const monthEndStr = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+
+    return [...allTrips]
+      .filter((t) => {
+        if (q) {
+          const hay = [
+            t.tripNumber,
+            t.lrNumber,
+            t.customerName,
+            t.vehicleReg,
+            t.driverName,
+            t.originCity,
+            t.destinationCity,
+            t.goodsType,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+
+        if (statusFilter !== 'ALL' && t.status !== statusFilter) return false;
+        if (vehicleFilter !== 'ALL' && t.vehicleId !== vehicleFilter) return false;
+        if (driverFilter !== 'ALL' && t.driverId !== driverFilter) return false;
+        if (customerFilter !== 'ALL' && t.customerId !== customerFilter) return false;
+
+        const dateVal = t.dispatchDate || t.createdAt;
+        if (dateFilter === 'TODAY' && !isDateWithinRange(dateVal, todayStr, todayStr)) return false;
+        if (dateFilter === 'THIS_MONTH' && !isDateWithinRange(dateVal, monthStartStr, monthEndStr)) {
+          return false;
+        }
+        if (dateFilter === 'CUSTOM' && (startDate || endDate)) {
+          if (!isDateWithinRange(dateVal, startDate || undefined, endDate || undefined)) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          new Date(b.dispatchDate || b.createdAt || 0).getTime() -
+          new Date(a.dispatchDate || a.createdAt || 0).getTime()
+      );
+  }, [
+    allTrips,
+    searchQuery,
+    statusFilter,
+    vehicleFilter,
+    driverFilter,
+    customerFilter,
+    dateFilter,
+    startDate,
+    endDate,
+  ]);
+
+  const totalCount = filteredTrips.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, statusFilter, vehicleFilter, driverFilter, customerFilter, dateFilter, startDate, endDate]);
+
+  const trips = useMemo(() => {
+    const startIdx = (safePage - 1) * limit;
+    return filteredTrips.slice(startIdx, startIdx + limit);
+  }, [filteredTrips, safePage, limit]);
+
+  const handleResetTrips = async () => {
+    if (!company?.id) return;
+    setResettingTrips(true);
+    try {
+      const resetVehicles: Vehicle[] = liveVehicles
+        .filter((v) => v.status === 'IN_TRANSIT' || Boolean(v.activeTripId))
+        .map((v) => ({
+          ...v,
+          status: 'AVAILABLE',
+          activeTripId: undefined,
+        }));
+
+      const resetDrivers: Driver[] = liveDrivers
+        .filter((d) => d.status === 'ON_TRIP' || (d.currentAdvanceBalancePaise || 0) > 0)
+        .map((d) => ({
+          ...d,
+          status: 'AVAILABLE',
+          currentAdvanceBalancePaise: 0,
+        }));
+
+      await clearCompanyTripsDataInFirestore(company.id, resetVehicles, resetDrivers);
+      showNotification('All trips have been reset in Firestore. Fleet is ready for new dispatches.');
+      setIsResetTripsDialogOpen(false);
+      setPage(1);
+    } catch (err: any) {
+      showNotification(err.message || 'Error resetting trips in Firestore', 'error');
+    } finally {
+      setResettingTrips(false);
+    }
   };
 
   const handleModalSuccess = (savedTrip: Trip, isEdit: boolean) => {
@@ -270,7 +227,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
         : `Trip ${savedTrip.tripNumber} booked (LR: ${savedTrip.lrNumber}).`,
       'success'
     );
-    fetchTrips(isEdit ? page : 1);
+    if (!isEdit) setPage(1);
   };
 
   const getStatusBadge = (status: TripStatus): { variant: BadgeVariant; label: string } => {
@@ -301,41 +258,27 @@ export const TripsView: React.FC<TripsViewProps> = ({
     podReceived?: boolean;
     podRemarks?: string;
   }) => {
-    if (!tripForStatusChange) return;
+    if (!tripForStatusChange || !company?.id) return;
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
+      const targetTrip = tripForStatusChange.trip;
+      const veh = liveVehicles.find((v) => v.id === targetTrip.vehicleId);
+      const drv = liveDrivers.find((d) => d.id === targetTrip.driverId);
 
-      const res = await fetch(`/api/trips/${tripForStatusChange.trip.id}/status`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          status: transitionData.targetStatus,
-          cancellationReason: transitionData.cancellationReason,
-          actualDeliveryDate: transitionData.actualDeliveryDate,
-          endOdometerKm: transitionData.endOdometerKm,
-          podReceived: transitionData.podReceived,
-          podRemarks: transitionData.podRemarks,
-        }),
+      await transitionTripStatusInFirestore(company.id, {
+        trip: targetTrip,
+        nextStatus: transitionData.targetStatus,
+        vehicle: veh,
+        driver: drv,
+        actualDeliveryDate: transitionData.actualDeliveryDate,
+        endOdometerKm: transitionData.endOdometerKm,
+        podReceived: transitionData.podReceived,
+        podRemarks: transitionData.podRemarks,
+        cancellationReason: transitionData.cancellationReason,
+        cancelledBy: user?.email || user?.name || 'System',
       });
 
-      const json = await parseResponseJson<any>(res);
-      if (!res.ok || !json || !json.success) {
-        throw new Error(json?.error || 'Failed to advance trip status.');
-      }
-
-      await Promise.all([
-        syncEntityToFirestore(company?.id, 'trips', json.trip),
-        syncEntityToFirestore(company?.id, 'vehicles', json.vehicle),
-        syncEntityToFirestore(company?.id, 'drivers', json.driver),
-      ]);
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
-
-      showNotification(`Trip ${tripForStatusChange.trip.tripNumber} is now ${transitionData.targetStatus}.`);
+      showNotification(`Trip ${targetTrip.tripNumber} is now ${transitionData.targetStatus}.`);
       setTripForStatusChange(null);
-      fetchTrips(page);
     } catch (err: any) {
       showNotification(err.message || 'Status transition failed.', 'error');
     }
@@ -367,7 +310,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
         subtitle="Manage company-owned truck dispatches, route execution, cargo bills, live contribution, and POD delivery receipts"
         actions={
           <div className="flex items-center gap-2">
-            {(userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'MANAGER') && (
+            {(userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'MANAGER') && allTrips.length > 0 && (
               <button
                 onClick={() => setIsResetTripsDialogOpen(true)}
                 className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
@@ -424,7 +367,6 @@ export const TripsView: React.FC<TripsViewProps> = ({
       {/* Filter and Search Bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs space-y-3">
         <div className="flex flex-col sm:flex-row gap-3">
-          {/* Search Input */}
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
@@ -444,10 +386,12 @@ export const TripsView: React.FC<TripsViewProps> = ({
             )}
           </div>
 
-          {/* Quick Refresh */}
           <button
-            onClick={() => fetchTrips(page)}
-            title="Refresh trips"
+            onClick={() => {
+              clearError();
+              setPage(1);
+            }}
+            title="Live Firestore sync active"
             className="p-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors shrink-0"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -471,7 +415,6 @@ export const TripsView: React.FC<TripsViewProps> = ({
             </button>
           ))}
 
-          {/* Date Filter */}
           <span className="text-slate-400 font-semibold uppercase text-[10px] tracking-wider ml-2 mr-1">Period:</span>
           {[
             { id: 'ALL', label: 'All Time' },
@@ -493,7 +436,6 @@ export const TripsView: React.FC<TripsViewProps> = ({
           ))}
         </div>
 
-        {/* Custom Date Range Picker */}
         {dateFilter === 'CUSTOM' && (
           <div className="flex items-center gap-3 pt-2 text-xs">
             <div className="flex items-center gap-1.5">
@@ -519,20 +461,20 @@ export const TripsView: React.FC<TripsViewProps> = ({
       </div>
 
       {/* Main Content Area */}
-      {loading ? (
+      {loading && allTrips.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
           <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-500 font-medium">Loading commercial trip dispatches...</p>
+          <p className="text-xs text-slate-500 font-medium">Loading commercial trip dispatches from Firestore...</p>
         </div>
       ) : error ? (
         <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
           <p className="text-sm font-semibold text-slate-800">{error}</p>
           <button
-            onClick={() => fetchTrips(1)}
+            onClick={clearError}
             className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800"
           >
-            Retry Connection
+            Dismiss
           </button>
         </div>
       ) : trips.length === 0 ? (
@@ -665,7 +607,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
                           >
                             <Eye className="w-4 h-4" />
                           </button>
-                          {!['COMPLETED', 'CANCELLED'].includes(t.status) && (
+                          {!['COMPLETED', 'SETTLED', 'CANCELLED'].includes(t.status) && (
                             <button
                               onClick={() => setTripToEdit(t)}
                               title="Edit Trip Details"
@@ -674,7 +616,6 @@ export const TripsView: React.FC<TripsViewProps> = ({
                               <Edit className="w-4 h-4" />
                             </button>
                           )}
-                          {/* Quick advance status button */}
                           {t.status === 'PLANNED' && (
                             <button
                               onClick={() => setTripForStatusChange({ trip: t, targetStatus: 'DISPATCHED' })}
@@ -771,7 +712,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
                     >
                       Dossier
                     </button>
-                    {!['COMPLETED', 'CANCELLED'].includes(t.status) && (
+                    {!['COMPLETED', 'SETTLED', 'CANCELLED'].includes(t.status) && (
                       <button
                         onClick={() => setTripToEdit(t)}
                         className="px-3 py-1 border border-slate-200 text-slate-700 rounded-lg text-xs font-medium"
@@ -794,20 +735,20 @@ export const TripsView: React.FC<TripsViewProps> = ({
 
             <div className="flex items-center gap-1.5">
               <button
-                onClick={() => fetchTrips(page - 1)}
-                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={safePage <= 1}
                 className="p-1.5 border border-slate-200 rounded-lg hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed text-slate-700"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
 
               <span className="px-2 font-medium">
-                Page {page} of {totalPages}
+                Page {safePage} of {totalPages}
               </span>
 
               <button
-                onClick={() => fetchTrips(page + 1)}
-                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={safePage >= totalPages}
                 className="p-1.5 border border-slate-200 rounded-lg hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed text-slate-700"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -847,7 +788,6 @@ export const TripsView: React.FC<TripsViewProps> = ({
           isOpen={Boolean(selectedTripId)}
           onClose={() => setSelectedTripId(null)}
           tripId={selectedTripId}
-          onTripUpdated={() => fetchTrips(page)}
           userRole={userRole}
         />
       )}

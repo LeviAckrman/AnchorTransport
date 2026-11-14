@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Building2, Save, CheckCircle2, AlertCircle, ShieldAlert, CreditCard, Hash, RotateCcw, Trash2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { PageHeader } from '../layout/PageHeader';
-import { clearStoreForNewCustomer } from '../../lib/storage';
+import { clearClientTmsCaches } from '../../lib/storage';
 import { clearCompanyOperationalDataInFirestore } from '../../lib/firebase/firestoreService';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 
 export const CompanyProfilePage: React.FC = () => {
-  const { company, role, permissions, updateCompanyProfile } = useAuth();
+  const { role, permissions, updateCompanyProfile } = useAuth();
+  const { company } = useFirestoreData();
 
   const [name, setName] = useState(company?.name || '');
   const [tradeName, setTradeName] = useState(company?.tradeName || '');
@@ -38,9 +40,6 @@ export const CompanyProfilePage: React.FC = () => {
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  const { token } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
-
   useEffect(() => {
     setName(company?.name || '');
     setTradeName(company?.tradeName || '');
@@ -61,31 +60,18 @@ export const CompanyProfilePage: React.FC = () => {
     setInvoicePrefix(company?.invoicePrefix || 'INV/25-26/');
     setTripPrefix(company?.tripPrefix || 'TR-');
     setLogoUrl(company?.logoUrl || '');
-  }, [company?.id, company?.name, company?.gstin]);
+  }, [company]);
 
   const handleResetData = async () => {
     setResetting(true);
     try {
-      await fetch('/api/fleet/reset-data', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${activeToken}`,
-        },
-        body: JSON.stringify({ scope: 'current_company' }),
-      });
-
       await clearCompanyOperationalDataInFirestore(company?.id);
-      clearStoreForNewCustomer();
+      clearClientTmsCaches();
 
       setFeedback({
         type: 'success',
-        message: 'All operational data (vehicles, trips, drivers, invoices, expenses) has been reset to 0 for a clean customer start. Refreshing...',
+        message: 'All operational data (vehicles, trips, drivers, invoices, expenses) has been cleared in Firestore.',
       });
-
-      setTimeout(() => {
-        window.location.reload();
-      }, 1200);
     } catch (err: any) {
       setFeedback({
         type: 'error',

@@ -15,12 +15,15 @@ import {
   writeBatch,
   query,
   where,
+  onSnapshot,
   serverTimestamp,
   Timestamp,
   type DocumentData,
+  type Unsubscribe,
 } from 'firebase/firestore';
 import type { User as FirebaseUser } from 'firebase/auth';
 import { db, auth, handleFirestoreError, OperationType } from './client';
+import { calculateDocComplianceStatus } from '../tmsCalculations';
 import type {
   Company,
   Vehicle,
@@ -51,6 +54,7 @@ export interface HydratedCompanyBundle {
   invoices: Invoice[];
   payments: Payment[];
   documents: VehicleDocument[];
+  maintenance: MaintenanceRecord[];
 }
 
 export interface FirestoreUserProfile {
@@ -294,7 +298,7 @@ function sanitizeSubcollectionPayload(
         currentAdvanceBalancePaise: toNum(item.currentAdvanceBalancePaise),
         totalTripsCompleted: toNum(item.totalTripsCompleted),
         monthlySalaryPaise,
-        perDayBataPaise: toNum(item.perDayBataPaise),
+        perDayBataPaise: toNum(item.perDayBataPaise) ?? toNum(existingData?.perDayBataPaise),
         assignedVehicleId: clipStr(item.assignedVehicleId, 128),
         assignedVehicleReg: clipStr(item.assignedVehicleReg, 30),
         aadharNumber,
@@ -303,7 +307,7 @@ function sanitizeSubcollectionPayload(
         bankIfsc,
         bankName: clipStr(item.bankName, 80) ?? clipStr(existingData?.bankName, 80),
         bankBranch: clipStr(item.bankBranch, 80) ?? clipStr(existingData?.bankBranch, 80),
-        joinedDate: clipStr(item.joinedDate, 30),
+        joinedDate: clipStr(item.joinedDate, 30) ?? clipStr(existingData?.joinedDate, 30),
         createdAt,
         updatedAt,
       });
@@ -1201,7 +1205,7 @@ export class FirestoreTMSClient {
   }
 
   /**
-   * Hydrates all 10 operational collections from Firestore for the active company
+   * Hydrates all 11 operational collections from Firestore for the active company
    */
   async hydrateAll(): Promise<HydratedCompanyBundle> {
     const [
@@ -1215,6 +1219,7 @@ export class FirestoreTMSClient {
       invoices,
       payments,
       documents,
+      maintenance,
     ] = await Promise.all([
       this.getVehicles(),
       this.getDrivers(),
@@ -1226,6 +1231,7 @@ export class FirestoreTMSClient {
       this.getInvoices(),
       this.getPayments(),
       this.getDocuments(),
+      this.getMaintenance(),
     ]);
 
     return {
@@ -1239,6 +1245,7 @@ export class FirestoreTMSClient {
       invoices,
       payments,
       documents,
+      maintenance,
     };
   }
 }
@@ -1409,6 +1416,1168 @@ export async function deleteEntityFromFirestore(
     case 'expenses':
       return client.deleteExpense(docId);
     case 'documents':
-      return client.deleteDocument(docId);
+  return client.deleteDocument(docId);
   }
 }
+
+/**
+ * Resolves all companies a signed-in user belongs to via Firestore (owned + user doc refs)
+ */
+export async function listAccessibleCompaniesForUserFromFirestore(
+  uid: string,
+  userDoc?: FirestoreUserProfile | null
+): Promise<Array<{ companyId: string; companyName: string; role: UserRole; company: Company }>> {
+  if (!auth.currentUser || !isValidDocSegment(uid)) return [];
+  const candidateIds = new Set<string>();
+
+  if (isValidDocSegment(userDoc?.activeCompanyId)) {
+    candidateIds.add(userDoc!.activeCompanyId!.trim());
+  }
+  if (isValidDocSegment(userDoc?.defaultCompanyId)) {
+    candidateIds.add(userDoc!.defaultCompanyId!.trim());
+  }
+
+  try {
+    const owned = await listOwnedCompaniesFromFirestore(uid);
+    for (const c of owned) {
+      if (isValidDocSegment(c.id)) candidateIds.add(c.id.trim());
+    }
+  } catch {
+    // Ignore if query fails
+  }
+
+  const results: Array<{ companyId: string; companyName: string; role: UserRole; company: Company }> = [];
+  for (const cid of candidateIds) {
+    try {
+      const res = await fetchUserCompanyFromFirestore(cid, uid);
+      if (res?.company) {
+        results.push({
+          companyId: res.company.id,
+          companyName: res.company.name,
+          role: res.role,
+          company: res.company,
+        });
+      }
+    } catch {
+      // Skip inaccessible company
+    }
+  }
+  return results;
+}
+
+export interface CompanyRealtimeCallbacks {
+  onCompany: (company: Company | null) => void;
+  onMembers: (members: FirestoreCompanyMember[]) => void;
+  onVehicles: (items: Vehicle[]) => void;
+  onDrivers: (items: Driver[]) => void;
+  onCustomers: (items: Customer[]) => void;
+  onTrips: (items: Trip[]) => void;
+  onExpenses: (items: TripExpense[]) => void;
+  onAdvances: (items: DriverAdvance[]) => void;
+  onSettlements: (items: TripSettlement[]) => void;
+  onInvoices: (items: Invoice[]) => void;
+  onPayments: (items: Payment[]) => void;
+  onDocuments: (items: VehicleDocument[]) => void;
+  onMaintenance: (items: MaintenanceRecord[]) => void;
+  onAuditLogs: (items: AuditLog[]) => void;
+  onInitialLoadComplete?: () => void;
+}
+
+/**
+ * Subscribes to live Firestore onSnapshot updates for all authorized company data.
+ * Returns a synchronous unsubscribeAll() cleanup function that stops every active listener.
+ */
+export function subscribeToCompanyOperationalData(
+  companyId: string,
+  role: UserRole | null,
+  callbacks: CompanyRealtimeCallbacks,
+  onError: (err: Error) => void
+): () => void {
+  if (!auth.currentUser || !isValidDocSegment(companyId)) {
+    callbacks.onInitialLoadComplete?.();
+    return () => {};
+  }
+
+  const safeCompanyId = companyId.trim();
+  const unsubs: Unsubscribe[] = [];
+  let cancelled = false;
+  let completedCollections = 0;
+  let initialFired = false;
+
+  const canReadAuditLogs =
+    role === 'OWNER' || role === 'ADMIN' || isBootstrappedAdminUser();
+
+  const totalCollections = canReadAuditLogs ? 14 : 13;
+
+  const markCollectionLoaded = () => {
+    completedCollections += 1;
+    if (!initialFired && completedCollections >= totalCollections) {
+      initialFired = true;
+      callbacks.onInitialLoadComplete?.();
+    }
+  };
+
+  const reportError = (err: unknown, path: string, op: OperationType) => {
+    if (cancelled) return;
+    try {
+      handleFirestoreError(err, op, path);
+    } catch (wrapped: any) {
+      onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+    }
+    markCollectionLoaded();
+  };
+
+  hasActiveCompanyMembershipInFirestore(safeCompanyId)
+    .then((hasAccess) => {
+      if (cancelled) return;
+      if (!hasAccess) {
+        onError(new Error('Active company membership required to read company records.'));
+        callbacks.onInitialLoadComplete?.();
+        return;
+      }
+
+      // 1. Company document
+      unsubs.push(
+        onSnapshot(
+          doc(db, 'companies', safeCompanyId),
+          (snap) => {
+            if (cancelled) return;
+            callbacks.onCompany(snap.exists() ? normalizeTimestamps<Company>({ id: snap.id, ...snap.data() }) : null);
+            markCollectionLoaded();
+          },
+          (err) => reportError(err, `companies/${safeCompanyId}`, OperationType.GET)
+        )
+      );
+
+      // 2. Members collection
+      unsubs.push(
+        onSnapshot(
+          collection(db, 'companies', safeCompanyId, 'members'),
+          (snap) => {
+            if (cancelled) return;
+            const list = snap.docs.map((d) =>
+              normalizeTimestamps<FirestoreCompanyMember>({ id: d.id, ...d.data() })
+            );
+            callbacks.onMembers(list);
+            markCollectionLoaded();
+          },
+          (err) => reportError(err, `companies/${safeCompanyId}/members`, OperationType.LIST)
+        )
+      );
+
+      // 3-13. Operational subcollections (all filtered by companyId == safeCompanyId to match firestore.rules)
+      const subscribeSub = <T>(sub: CompanySubcollection, cb: (items: T[]) => void) => {
+        const path = `companies/${safeCompanyId}/${sub}`;
+        const q = query(
+          collection(db, 'companies', safeCompanyId, sub),
+          where('companyId', '==', safeCompanyId)
+        );
+        unsubs.push(
+          onSnapshot(
+            q,
+            (snap) => {
+              if (cancelled) return;
+              const items = snap.docs.map((d) =>
+                normalizeTimestamps<T>({ id: d.id, ...d.data() })
+              );
+              cb(items);
+              markCollectionLoaded();
+            },
+            (err) => reportError(err, path, OperationType.LIST)
+          )
+        );
+      };
+
+      subscribeSub<Vehicle>('vehicles', callbacks.onVehicles);
+      subscribeSub<Driver>('drivers', callbacks.onDrivers);
+      subscribeSub<Customer>('customers', callbacks.onCustomers);
+      subscribeSub<Trip>('trips', callbacks.onTrips);
+      subscribeSub<TripExpense>('expenses', callbacks.onExpenses);
+      subscribeSub<DriverAdvance>('advances', callbacks.onAdvances);
+      subscribeSub<TripSettlement>('settlements', callbacks.onSettlements);
+      subscribeSub<Invoice>('invoices', callbacks.onInvoices);
+      subscribeSub<Payment>('payments', callbacks.onPayments);
+      subscribeSub<VehicleDocument>('documents', callbacks.onDocuments);
+      subscribeSub<MaintenanceRecord>('maintenance', callbacks.onMaintenance);
+
+      // 14. Audit logs (strictly OWNER / ADMIN per firestore.rules)
+      if (canReadAuditLogs) {
+        const auditPath = `companies/${safeCompanyId}/auditLogs`;
+        const auditQ = query(
+          collection(db, 'companies', safeCompanyId, 'auditLogs'),
+          where('companyId', '==', safeCompanyId)
+        );
+        unsubs.push(
+          onSnapshot(
+            auditQ,
+            (snap) => {
+              if (cancelled) return;
+              const logs = snap.docs.map((d) =>
+                normalizeTimestamps<AuditLog>({ id: d.id, ...d.data() })
+              );
+              callbacks.onAuditLogs(logs);
+              markCollectionLoaded();
+            },
+            (err) => reportError(err, auditPath, OperationType.LIST)
+          )
+        );
+      } else {
+        callbacks.onAuditLogs([]);
+      }
+    })
+    .catch((err) => {
+      if (!cancelled) {
+        onError(err instanceof Error ? err : new Error(String(err)));
+        callbacks.onInitialLoadComplete?.();
+      }
+    });
+
+  return () => {
+    cancelled = true;
+    while (unsubs.length > 0) {
+      const unsub = unsubs.pop();
+      try {
+        unsub?.();
+      } catch {
+        // Ignore unsubscribe cleanup errors
+      }
+    }
+  };
+}
+
+async function assertWritableFirestoreUser(companyId: string): Promise<string> {
+  if (!auth.currentUser) {
+    throw new Error('Authentication required. Please sign in to save changes.');
+  }
+  if (!isVerifiedEmailUser()) {
+    throw new Error('Please verify your email address before saving changes to Firestore.');
+  }
+  if (!isValidDocSegment(companyId)) {
+    throw new Error('A valid company ID is required.');
+  }
+  const safeCompanyId = companyId.trim();
+  const hasAccess = await hasActiveCompanyMembershipInFirestore(safeCompanyId);
+  if (!hasAccess) {
+    throw new Error('Your account does not have active company membership.');
+  }
+  return safeCompanyId;
+}
+
+function addAuditLogToBatch(
+  batch: ReturnType<typeof writeBatch>,
+  companyId: string,
+  entry: {
+    action: AuditLog['action'];
+    entityType: AuditLog['entityType'];
+    entityId: string;
+    summary: string;
+  }
+) {
+  if (!auth.currentUser) return;
+  const logId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const ref = doc(db, 'companies', companyId, 'auditLogs', logId);
+  batch.set(
+    ref,
+    stripUndefined({
+      id: logId,
+      companyId,
+      userId: auth.currentUser.uid,
+      userName: clipStr(auth.currentUser.displayName || auth.currentUser.email, 100),
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: clipStr(entry.entityId, 128) || 'system',
+      summary: clipStr(entry.summary, 500) || 'Action logged',
+      timestamp: serverTimestamp(),
+    })
+  );
+}
+
+async function prepareBatchDoc(
+  companyId: string,
+  subcollection: CompanySubcollection,
+  item: Record<string, any> & { id: string }
+): Promise<{ ref: ReturnType<typeof doc>; payload: Record<string, any>; isNew: boolean }> {
+  if (!isValidDocSegment(item.id)) {
+    throw new Error(`Invalid document ID for ${subcollection}`);
+  }
+  const safeDocId = item.id.trim();
+  const ref = doc(db, 'companies', companyId, subcollection, safeDocId);
+  const existingSnap = await getDoc(ref);
+  const existingData = existingSnap.exists() ? existingSnap.data() : null;
+  const payload = sanitizeSubcollectionPayload(subcollection, companyId, item, existingData);
+  if (!payload) {
+    throw new Error(`Missing required fields for ${subcollection} record.`);
+  }
+  return { ref, payload, isNew: !existingSnap.exists() };
+}
+
+/**
+ * Atomic Vehicle + Compliance Docs Save
+ */
+export async function saveVehicleWithDocsInFirestore(
+  companyId: string,
+  vehicle: Vehicle,
+  docsToUpsert: VehicleDocument[] = []
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/vehicles/${vehicle.id}`;
+  try {
+    const batch = writeBatch(db);
+    const vehDoc = await prepareBatchDoc(safeCompanyId, 'vehicles', vehicle);
+    batch.set(vehDoc.ref, vehDoc.payload);
+
+    for (const d of docsToUpsert) {
+      const comp = calculateDocComplianceStatus(d.expiryDate);
+      const prepared = await prepareBatchDoc(safeCompanyId, 'documents', {
+        ...d,
+        companyId: safeCompanyId,
+        daysUntilExpiry: comp.daysUntilExpiry,
+        status: comp.status,
+      });
+      batch.set(prepared.ref, prepared.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: vehDoc.isNew ? 'CREATE' : 'UPDATE',
+      entityType: 'VEHICLE',
+      entityId: vehicle.id,
+      summary: `${vehDoc.isNew ? 'Registered' : 'Updated'} truck ${vehicle.registrationNumber}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Atomic Vehicle Delete + Cascade Delete Compliance Documents
+ */
+export async function deleteVehicleWithDocsInFirestore(
+  companyId: string,
+  vehicleId: string,
+  regNo?: string
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  if (!isValidDocSegment(vehicleId)) return;
+  const path = `companies/${safeCompanyId}/vehicles/${vehicleId}`;
+  try {
+    const docsSnap = await getDocs(
+      query(
+        collection(db, 'companies', safeCompanyId, 'documents'),
+        where('companyId', '==', safeCompanyId),
+        where('vehicleId', '==', vehicleId.trim())
+      )
+    );
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'companies', safeCompanyId, 'vehicles', vehicleId.trim()));
+    docsSnap.docs.forEach((d) => batch.delete(d.ref));
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'DELETE',
+      entityType: 'VEHICLE',
+      entityId: vehicleId.trim(),
+      summary: `Deleted truck ${regNo || vehicleId}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Save / Delete Driver
+ */
+export async function saveDriverInFirestore(companyId: string, driver: Driver): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/drivers/${driver.id}`;
+  try {
+    const batch = writeBatch(db);
+    const drvDoc = await prepareBatchDoc(safeCompanyId, 'drivers', driver);
+    batch.set(drvDoc.ref, drvDoc.payload);
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: drvDoc.isNew ? 'CREATE' : 'UPDATE',
+      entityType: 'DRIVER',
+      entityId: driver.id,
+      summary: `${drvDoc.isNew ? 'Added' : 'Updated'} driver ${driver.fullName}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteDriverInFirestore(
+  companyId: string,
+  driverId: string,
+  fullName?: string
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  if (!isValidDocSegment(driverId)) return;
+  const path = `companies/${safeCompanyId}/drivers/${driverId}`;
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'companies', safeCompanyId, 'drivers', driverId.trim()));
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'DELETE',
+      entityType: 'DRIVER',
+      entityId: driverId.trim(),
+      summary: `Deleted driver ${fullName || driverId}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Save / Delete Customer
+ */
+export async function saveCustomerInFirestore(companyId: string, customer: Customer): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/customers/${customer.id}`;
+  try {
+    const batch = writeBatch(db);
+    const custDoc = await prepareBatchDoc(safeCompanyId, 'customers', customer);
+    batch.set(custDoc.ref, custDoc.payload);
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: custDoc.isNew ? 'CREATE' : 'UPDATE',
+      entityType: 'CUSTOMER',
+      entityId: customer.id,
+      summary: `${custDoc.isNew ? 'Added' : 'Updated'} customer ${customer.name}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteCustomerInFirestore(
+  companyId: string,
+  customerId: string,
+  name?: string
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  if (!isValidDocSegment(customerId)) return;
+  const path = `companies/${safeCompanyId}/customers/${customerId}`;
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'companies', safeCompanyId, 'customers', customerId.trim()));
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'DELETE',
+      entityType: 'CUSTOMER',
+      entityId: customerId.trim(),
+      summary: `Deleted customer ${name || customerId}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Atomic Trip Create/Update + Vehicle/Driver Assignment + Optional Dispatch Advance
+ */
+export async function createOrUpdateTripInFirestore(
+  companyId: string,
+  params: {
+    trip: Trip;
+    vehicle?: Vehicle;
+    driver?: Driver;
+    initialAdvance?: DriverAdvance | null;
+  }
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const { trip, vehicle, driver, initialAdvance } = params;
+  const path = `companies/${safeCompanyId}/trips/${trip.id}`;
+
+  try {
+    const batch = writeBatch(db);
+    const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', trip);
+    batch.set(tripDoc.ref, tripDoc.payload);
+
+    if (initialAdvance && initialAdvance.amountPaise > 0) {
+      const advDoc = await prepareBatchDoc(safeCompanyId, 'advances', initialAdvance);
+      batch.set(advDoc.ref, advDoc.payload);
+    }
+
+    const isActiveTripStatus = trip.status === 'DISPATCHED' || trip.status === 'IN_TRANSIT';
+    if (vehicle && isActiveTripStatus) {
+      const updatedVeh: Vehicle = {
+        ...vehicle,
+        status: 'IN_TRANSIT',
+        activeTripId: trip.id,
+        assignedDriverId: driver?.id || vehicle.assignedDriverId,
+        assignedDriverName: driver?.fullName || vehicle.assignedDriverName,
+      };
+      const vehDoc = await prepareBatchDoc(safeCompanyId, 'vehicles', updatedVeh);
+      batch.set(vehDoc.ref, vehDoc.payload);
+    }
+
+    if (driver && (isActiveTripStatus || (initialAdvance && initialAdvance.amountPaise > 0))) {
+      const advDelta = initialAdvance && initialAdvance.amountPaise > 0 ? initialAdvance.amountPaise : 0;
+      const updatedDrv: Driver = {
+        ...driver,
+        status: isActiveTripStatus ? 'ON_TRIP' : driver.status,
+        currentAdvanceBalancePaise: (driver.currentAdvanceBalancePaise || 0) + advDelta,
+      };
+      const drvDoc = await prepareBatchDoc(safeCompanyId, 'drivers', updatedDrv);
+      batch.set(drvDoc.ref, drvDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: tripDoc.isNew ? (isActiveTripStatus ? 'DISPATCH' : 'CREATE') : 'UPDATE',
+      entityType: 'TRIP',
+      entityId: trip.id,
+      summary: `${tripDoc.isNew ? 'Dispatched' : 'Updated'} trip ${trip.tripNumber} (${trip.vehicleReg})`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Atomic Trip Status Transition (DISPATCHED -> IN_TRANSIT -> DELIVERED -> COMPLETED / CANCELLED)
+ */
+export async function transitionTripStatusInFirestore(
+  companyId: string,
+  params: {
+    trip: Trip;
+    nextStatus: Trip['status'];
+    vehicle?: Vehicle;
+    driver?: Driver;
+    actualDeliveryDate?: string;
+    endOdometerKm?: number;
+    podReceived?: boolean;
+    podDocumentUrl?: string;
+    podRemarks?: string;
+    cancellationReason?: string;
+    cancelledBy?: string;
+  }
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const {
+    trip,
+    nextStatus,
+    vehicle,
+    driver,
+    actualDeliveryDate,
+    endOdometerKm,
+    podReceived,
+    podDocumentUrl,
+    podRemarks,
+    cancellationReason,
+    cancelledBy,
+  } = params;
+  const path = `companies/${safeCompanyId}/trips/${trip.id}`;
+
+  try {
+    const batch = writeBatch(db);
+    const updatedTrip: Trip = {
+      ...trip,
+      status: nextStatus,
+      actualDeliveryDate:
+        nextStatus === 'DELIVERED' || nextStatus === 'COMPLETED'
+          ? actualDeliveryDate || trip.actualDeliveryDate || new Date().toISOString().split('T')[0]
+          : trip.actualDeliveryDate,
+      endOdometerKm: endOdometerKm !== undefined ? endOdometerKm : trip.endOdometerKm,
+      podReceived: podReceived !== undefined ? podReceived : trip.podReceived,
+      podDocumentUrl: podDocumentUrl !== undefined ? podDocumentUrl : trip.podDocumentUrl,
+      podRemarks: podRemarks !== undefined ? podRemarks : trip.podRemarks,
+      cancellationReason: nextStatus === 'CANCELLED' ? cancellationReason || trip.cancellationReason : trip.cancellationReason,
+      cancelledAt: nextStatus === 'CANCELLED' ? new Date().toISOString() : trip.cancelledAt,
+      cancelledBy: nextStatus === 'CANCELLED' ? cancelledBy || trip.cancelledBy : trip.cancelledBy,
+    };
+
+    const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', updatedTrip);
+    batch.set(tripDoc.ref, tripDoc.payload);
+
+    const isBecomingActive = nextStatus === 'DISPATCHED' || nextStatus === 'IN_TRANSIT';
+    const isEndingTrip =
+      nextStatus === 'DELIVERED' ||
+      nextStatus === 'COMPLETED' ||
+      nextStatus === 'SETTLED' ||
+      nextStatus === 'CANCELLED';
+
+    if (vehicle) {
+      if (isBecomingActive) {
+        const vehDoc = await prepareBatchDoc(safeCompanyId, 'vehicles', {
+          ...vehicle,
+          status: 'IN_TRANSIT',
+          activeTripId: trip.id,
+        });
+        batch.set(vehDoc.ref, vehDoc.payload);
+      } else if (isEndingTrip) {
+        const vehDoc = await prepareBatchDoc(safeCompanyId, 'vehicles', {
+          ...vehicle,
+          status: vehicle.status === 'IN_TRANSIT' ? 'AVAILABLE' : vehicle.status,
+          activeTripId: vehicle.activeTripId === trip.id ? undefined : vehicle.activeTripId,
+          currentOdometerKm:
+            endOdometerKm !== undefined && endOdometerKm > (vehicle.currentOdometerKm || 0)
+              ? endOdometerKm
+              : vehicle.currentOdometerKm,
+        });
+        batch.set(vehDoc.ref, vehDoc.payload);
+      }
+    }
+
+    if (driver) {
+      if (isBecomingActive) {
+        const drvDoc = await prepareBatchDoc(safeCompanyId, 'drivers', {
+          ...driver,
+          status: 'ON_TRIP',
+        });
+        batch.set(drvDoc.ref, drvDoc.payload);
+      } else if (isEndingTrip) {
+        const wasDeliveredBefore =
+          trip.status === 'DELIVERED' || trip.status === 'COMPLETED' || trip.status === 'SETTLED';
+        const incrementTripCount =
+          (nextStatus === 'DELIVERED' || nextStatus === 'COMPLETED') && !wasDeliveredBefore ? 1 : 0;
+        const drvDoc = await prepareBatchDoc(safeCompanyId, 'drivers', {
+          ...driver,
+          status: driver.status === 'ON_TRIP' ? 'AVAILABLE' : driver.status,
+          totalTripsCompleted: (driver.totalTripsCompleted || 0) + incrementTripCount,
+        });
+        batch.set(drvDoc.ref, drvDoc.payload);
+      }
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'UPDATE',
+      entityType: 'TRIP',
+      entityId: trip.id,
+      summary: `Transitioned trip ${trip.tripNumber} status from ${trip.status} to ${nextStatus}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export async function deleteTripInFirestore(
+  companyId: string,
+  tripId: string,
+  tripNumber?: string
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  if (!isValidDocSegment(tripId)) return;
+  const path = `companies/${safeCompanyId}/trips/${tripId}`;
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'companies', safeCompanyId, 'trips', tripId.trim()));
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'DELETE',
+      entityType: 'TRIP',
+      entityId: tripId.trim(),
+      summary: `Deleted trip ${tripNumber || tripId}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Atomic Save / Delete Trip Expense + Recalculate Trip Expenses & Contribution
+ */
+export async function saveExpenseInFirestore(
+  companyId: string,
+  expense: TripExpense,
+  trip: Trip | undefined,
+  existingTripExpenses: TripExpense[]
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/expenses/${expense.id}`;
+  try {
+    const batch = writeBatch(db);
+    const expDoc = await prepareBatchDoc(safeCompanyId, 'expenses', expense);
+    batch.set(expDoc.ref, expDoc.payload);
+
+    if (trip) {
+      const merged = [
+        ...existingTripExpenses.filter((e) => e.id !== expense.id),
+        expense,
+      ];
+      const newTotalExpenses = merged.reduce((s, e) => s + (e.amountPaise || 0), 0);
+      const rev = trip.totalRevenuePaise || trip.freightAmountPaise || 0;
+      const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', {
+        ...trip,
+        totalExpensesPaise: newTotalExpenses,
+        tripContributionPaise: rev - newTotalExpenses,
+      });
+      batch.set(tripDoc.ref, tripDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: expDoc.isNew ? 'CREATE' : 'UPDATE',
+      entityType: 'EXPENSE',
+      entityId: expense.id,
+      summary: `${expDoc.isNew ? 'Logged' : 'Updated'} ${expense.category} expense of ₹${(
+        expense.amountPaise / 100
+      ).toFixed(2)}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteExpenseInFirestore(
+  companyId: string,
+  expense: TripExpense,
+  trip: Trip | undefined,
+  remainingTripExpenses: TripExpense[]
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/expenses/${expense.id}`;
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'companies', safeCompanyId, 'expenses', expense.id.trim()));
+
+    if (trip) {
+      const newTotalExpenses = remainingTripExpenses
+        .filter((e) => e.id !== expense.id)
+        .reduce((s, e) => s + (e.amountPaise || 0), 0);
+      const rev = trip.totalRevenuePaise || trip.freightAmountPaise || 0;
+      const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', {
+        ...trip,
+        totalExpensesPaise: newTotalExpenses,
+        tripContributionPaise: rev - newTotalExpenses,
+      });
+      batch.set(tripDoc.ref, tripDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'DELETE',
+      entityType: 'EXPENSE',
+      entityId: expense.id,
+      summary: `Deleted ${expense.category} expense of ₹${(expense.amountPaise / 100).toFixed(2)}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Atomic Create Driver Advance + Increment Trip totalAdvancesPaise + Driver currentAdvanceBalancePaise
+ */
+export async function createAdvanceInFirestore(
+  companyId: string,
+  advance: DriverAdvance,
+  trip: Trip | undefined,
+  driver: Driver | undefined
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/advances/${advance.id}`;
+  try {
+    const batch = writeBatch(db);
+    const advDoc = await prepareBatchDoc(safeCompanyId, 'advances', advance);
+    batch.set(advDoc.ref, advDoc.payload);
+
+    if (trip) {
+      const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', {
+        ...trip,
+        totalAdvancesPaise: (trip.totalAdvancesPaise || 0) + advance.amountPaise,
+      });
+      batch.set(tripDoc.ref, tripDoc.payload);
+    }
+
+    if (driver) {
+      const drvDoc = await prepareBatchDoc(safeCompanyId, 'drivers', {
+        ...driver,
+        currentAdvanceBalancePaise: (driver.currentAdvanceBalancePaise || 0) + advance.amountPaise,
+      });
+      batch.set(drvDoc.ref, drvDoc.payload);
+    }
+
+    // firestore.rules auditLog entityType enum allows TRIP/DRIVER (not ADVANCE)
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'CREATE',
+      entityType: 'TRIP',
+      entityId: trip?.id || advance.id,
+      summary: `Disbursed advance of ₹${(advance.amountPaise / 100).toFixed(2)} to ${
+        advance.driverName || driver?.fullName || 'driver'
+      }`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+/**
+ * Atomic Save / Finalize Driver Trip Settlement
+ */
+export async function saveSettlementInFirestore(
+  companyId: string,
+  settlement: TripSettlement,
+  trip: Trip | undefined,
+  driver: Driver | undefined,
+  advancesToMarkSettled: DriverAdvance[] = [],
+  expensesToMarkSettled: TripExpense[] = []
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/settlements/${settlement.id}`;
+  try {
+    const batch = writeBatch(db);
+    const stlDoc = await prepareBatchDoc(safeCompanyId, 'settlements', settlement);
+    batch.set(stlDoc.ref, stlDoc.payload);
+
+    const isFinalized = settlement.status === 'FINALIZED' || settlement.status === 'APPROVED_SETTLED';
+
+    if (trip) {
+      const nextTripStatus: Trip['status'] =
+        settlement.status === 'FINALIZED' ? 'SETTLED' : trip.status;
+      const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', {
+        ...trip,
+        isSettled: isFinalized,
+        status: nextTripStatus,
+      });
+      batch.set(tripDoc.ref, tripDoc.payload);
+    }
+
+    if (isFinalized) {
+      for (const adv of advancesToMarkSettled) {
+        if (!adv.isSettled) {
+          const advDoc = await prepareBatchDoc(safeCompanyId, 'advances', {
+            ...adv,
+            isSettled: true,
+            settlementId: settlement.id,
+          });
+          batch.set(advDoc.ref, advDoc.payload);
+        }
+      }
+
+      for (const exp of expensesToMarkSettled) {
+        if (!exp.isSettled) {
+          const expDoc = await prepareBatchDoc(safeCompanyId, 'expenses', {
+            ...exp,
+            isSettled: true,
+            settlementId: settlement.id,
+          });
+          batch.set(expDoc.ref, expDoc.payload);
+        }
+      }
+
+      if (driver) {
+        const settledAdvanceSum = advancesToMarkSettled
+          .filter((a) => !a.isSettled)
+          .reduce((s, a) => s + a.amountPaise, 0);
+        const remainingBal = Math.max(0, (driver.currentAdvanceBalancePaise || 0) - settledAdvanceSum);
+        const drvDoc = await prepareBatchDoc(safeCompanyId, 'drivers', {
+          ...driver,
+          currentAdvanceBalancePaise: remainingBal,
+        });
+        batch.set(drvDoc.ref, drvDoc.payload);
+      }
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'SETTLE',
+      entityType: 'SETTLEMENT',
+      entityId: settlement.id,
+      summary: `${settlement.status} settlement ${settlement.settlementNumber || settlement.id} for ${
+        settlement.driverName || 'driver'
+      }`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Atomic Create / Cancel Invoice + Update Trip & Customer Balances
+ */
+export async function createInvoiceInFirestore(
+  companyId: string,
+  invoice: Invoice,
+  trip: Trip | undefined,
+  customer: Customer | undefined
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/invoices/${invoice.id}`;
+  try {
+    const batch = writeBatch(db);
+    const invDoc = await prepareBatchDoc(safeCompanyId, 'invoices', invoice);
+    batch.set(invDoc.ref, invDoc.payload);
+
+    if (trip) {
+      const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', {
+        ...trip,
+        isInvoiced: true,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+      });
+      batch.set(tripDoc.ref, tripDoc.payload);
+    }
+
+    if (customer) {
+      const custDoc = await prepareBatchDoc(safeCompanyId, 'customers', {
+        ...customer,
+        currentOutstandingPaise:
+          (customer.currentOutstandingPaise || 0) + (invoice.balanceDuePaise ?? invoice.totalAmountPaise),
+        totalFreightBilledPaise:
+          (customer.totalFreightBilledPaise || 0) + invoice.totalAmountPaise,
+      });
+      batch.set(custDoc.ref, custDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'INVOICE',
+      entityType: 'INVOICE',
+      entityId: invoice.id,
+      summary: `Generated GST invoice ${invoice.invoiceNumber} for ₹${(
+        invoice.totalAmountPaise / 100
+      ).toFixed(2)}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export async function cancelInvoiceInFirestore(
+  companyId: string,
+  invoice: Invoice,
+  trip: Trip | undefined,
+  customer: Customer | undefined,
+  reason: string
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/invoices/${invoice.id}`;
+  try {
+    const batch = writeBatch(db);
+    const invDoc = await prepareBatchDoc(safeCompanyId, 'invoices', {
+      ...invoice,
+      status: 'CANCELLED',
+      paymentStatus: 'CANCELLED',
+      balanceDuePaise: 0,
+      cancelledAt: new Date().toISOString(),
+      cancellationReason: reason,
+    });
+    batch.set(invDoc.ref, invDoc.payload);
+
+    if (trip && trip.invoiceId === invoice.id) {
+      const tripDoc = await prepareBatchDoc(safeCompanyId, 'trips', {
+        ...trip,
+        isInvoiced: false,
+        invoiceId: undefined,
+        invoiceNumber: undefined,
+      });
+      batch.set(tripDoc.ref, tripDoc.payload);
+    }
+
+    if (customer) {
+      const deduction = invoice.balanceDuePaise ?? invoice.totalAmountPaise;
+      const custDoc = await prepareBatchDoc(safeCompanyId, 'customers', {
+        ...customer,
+        currentOutstandingPaise: Math.max(0, (customer.currentOutstandingPaise || 0) - deduction),
+      });
+      batch.set(custDoc.ref, custDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'UPDATE',
+      entityType: 'INVOICE',
+      entityId: invoice.id,
+      summary: `Cancelled invoice ${invoice.invoiceNumber}: ${reason}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+/**
+ * Atomic Record Customer Payment + Update Invoice Paid/Balance + Decrement Customer Outstanding
+ */
+export async function recordPaymentInFirestore(
+  companyId: string,
+  payment: Payment,
+  invoice: Invoice,
+  customer: Customer | undefined
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/payments/${payment.id}`;
+  try {
+    const batch = writeBatch(db);
+    const payDoc = await prepareBatchDoc(safeCompanyId, 'payments', payment);
+    batch.set(payDoc.ref, payDoc.payload);
+
+    const creditAmount = payment.amountPaise + (payment.tdsDeductedPaise || 0);
+    const newPaid = Math.min(invoice.totalAmountPaise, (invoice.amountPaidPaise || 0) + creditAmount);
+    const newBalance = Math.max(0, invoice.totalAmountPaise - newPaid);
+    const isFullyPaid = newBalance === 0;
+
+    const invDoc = await prepareBatchDoc(safeCompanyId, 'invoices', {
+      ...invoice,
+      amountPaidPaise: newPaid,
+      balanceDuePaise: newBalance,
+      status: isFullyPaid ? 'PAID' : 'PARTIALLY_PAID',
+      paymentStatus: isFullyPaid ? 'PAID' : 'PARTIALLY_PAID',
+    });
+    batch.set(invDoc.ref, invDoc.payload);
+
+    if (customer) {
+      const custDoc = await prepareBatchDoc(safeCompanyId, 'customers', {
+        ...customer,
+        currentOutstandingPaise: Math.max(0, (customer.currentOutstandingPaise || 0) - creditAmount),
+      });
+      batch.set(custDoc.ref, custDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'PAYMENT',
+      entityType: 'PAYMENT',
+      entityId: payment.id,
+      summary: `Recorded payment ₹${(payment.amountPaise / 100).toFixed(2)} against ${invoice.invoiceNumber}`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+/**
+ * Atomic Save / Delete Vehicle Compliance Document + Sync Inline Expiry on Vehicle
+ */
+export async function saveDocumentInFirestore(
+  companyId: string,
+  docItem: VehicleDocument,
+  vehicle?: Vehicle
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const path = `companies/${safeCompanyId}/documents/${docItem.id}`;
+  try {
+    const comp = calculateDocComplianceStatus(docItem.expiryDate);
+    const enrichedDoc: VehicleDocument = {
+      ...docItem,
+      daysUntilExpiry: comp.daysUntilExpiry,
+      status: comp.status,
+    };
+
+    const batch = writeBatch(db);
+    const docEntry = await prepareBatchDoc(safeCompanyId, 'documents', enrichedDoc);
+    batch.set(docEntry.ref, docEntry.payload);
+
+    if (vehicle) {
+      const updatedVeh = { ...vehicle };
+      if (docItem.docType === 'INSURANCE') {
+        updatedVeh.insuranceExpiry = docItem.expiryDate;
+        updatedVeh.insurancePolicyNumber = docItem.documentNumber;
+      } else if (docItem.docType === 'FITNESS') {
+        updatedVeh.fitnessExpiry = docItem.expiryDate;
+        updatedVeh.fitnessCertificateNumber = docItem.documentNumber;
+      } else if (docItem.docType === 'NATIONAL_PERMIT' || docItem.docType === 'STATE_PERMIT') {
+        updatedVeh.permitExpiry = docItem.expiryDate;
+        updatedVeh.permitNumber = docItem.documentNumber;
+        updatedVeh.permitType = docItem.docType === 'NATIONAL_PERMIT' ? 'NATIONAL' : 'STATE';
+      } else if (docItem.docType === 'PUC') {
+        updatedVeh.pucExpiry = docItem.expiryDate;
+        updatedVeh.pucNumber = docItem.documentNumber;
+      }
+      const vehDoc = await prepareBatchDoc(safeCompanyId, 'vehicles', updatedVeh);
+      batch.set(vehDoc.ref, vehDoc.payload);
+    }
+
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: docEntry.isNew ? 'CREATE' : 'UPDATE',
+      entityType: 'DOCUMENT',
+      entityId: docItem.id,
+      summary: `${docEntry.isNew ? 'Added' : 'Updated'} ${docItem.docType} (#${docItem.documentNumber})`,
+    });
+
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteDocumentInFirestore(
+  companyId: string,
+  docId: string,
+  label?: string
+): Promise<void> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  if (!isValidDocSegment(docId)) return;
+  const path = `companies/${safeCompanyId}/documents/${docId}`;
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'companies', safeCompanyId, 'documents', docId.trim()));
+    addAuditLogToBatch(batch, safeCompanyId, {
+      action: 'DELETE',
+      entityType: 'DOCUMENT',
+      entityId: docId.trim(),
+      summary: `Deleted compliance document ${label || docId}`,
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Adds or updates a staff member directly inside /companies/{companyId}/members/{memberId}
+ * in Firestore (requires OWNER or ADMIN role per firestore.rules).
+ */
+export async function inviteCompanyMemberInFirestore(
+  companyId: string,
+  input: { name: string; email: string; role: UserRole }
+): Promise<FirestoreCompanyMember> {
+  const safeCompanyId = await assertWritableFirestoreUser(companyId);
+  const cleanEmail = clipStr(input.email, 200)?.toLowerCase();
+  const cleanName = clipStr(input.name, 100);
+  if (!cleanEmail || !cleanName) {
+    throw new Error('Staff full name and valid email address are required.');
+  }
+  const allowedRoles: UserRole[] = ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'];
+  const role: UserRole = allowedRoles.includes(input.role) ? input.role : 'OPERATIONS';
+
+  const sanitizedSlug = cleanEmail.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+  const memberId = `mem_${sanitizedSlug}_${Date.now().toString(36)}`.slice(0, 128);
+  const path = `companies/${safeCompanyId}/members/${memberId}`;
+
+  try {
+    const memberRef = doc(db, 'companies', safeCompanyId, 'members', memberId);
+    await setDoc(
+      memberRef,
+      stripUndefined({
+        id: memberId,
+        userId: memberId,
+        companyId: safeCompanyId,
+        role,
+        name: cleanName,
+        email: cleanEmail,
+        status: 'ACTIVE',
+        joinedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    );
+
+    return {
+      id: memberId,
+      userId: memberId,
+      companyId: safeCompanyId,
+      role,
+      name: cleanName,
+      email: cleanEmail,
+      status: 'ACTIVE',
+      joinedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+    throw err;
+  }
+}
+

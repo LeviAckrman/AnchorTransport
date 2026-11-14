@@ -1,32 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import {
   X,
   Building2,
   FileText,
-  Phone,
-  Mail,
-  MapPin,
-  CreditCard,
-  AlertTriangle,
-  Clock,
-  CheckCircle2,
   Trash2,
   Edit,
-  ArrowRight,
-  ExternalLink,
-  ShieldCheck,
-  Calendar,
 } from 'lucide-react';
-import { Customer, Invoice, Trip, UserRole } from '../../types/tms';
+import { Customer, Invoice, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
-import { parseResponseJson } from '../../lib/safeFetch';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 
 interface CustomerDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   customerId: string | null;
-  token: string;
+  token?: string;
   userRole: UserRole;
   onEdit: (customer: Customer) => void;
   onDelete: (customer: Customer) => void;
@@ -36,51 +25,37 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
   isOpen,
   onClose,
   customerId,
-  token,
   userRole,
   onEdit,
   onDelete,
 }) => {
-  const [customer, setCustomer] = useState<Customer | null>(null);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [recentTrips, setRecentTrips] = useState<Trip[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { customers, invoices: allInvoices, trips: allTrips } = useFirestoreData();
 
   const canDelete = userRole === 'OWNER' || userRole === 'ADMIN';
 
-  useEffect(() => {
-    if (!isOpen || !customerId) return;
+  const customer = useMemo(
+    () => (customerId ? customers.find((c) => c.id === customerId) || null : null),
+    [customers, customerId]
+  );
 
-    const fetchCustomer = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (token) headers['Authorization'] = `Bearer ${token}`;
+  const invoices = useMemo(() => {
+    if (!customerId) return [];
+    return allInvoices
+      .filter((i) => i.customerId === customerId && i.status !== 'CANCELLED')
+      .sort((a, b) => new Date(b.issueDate || b.createdAt).getTime() - new Date(a.issueDate || a.createdAt).getTime());
+  }, [allInvoices, customerId]);
 
-        const res = await fetch(`/api/customers/${customerId}`, { headers });
-        const data = await parseResponseJson<any>(res);
-        if (!res.ok || !data || !data.success) {
-          throw new Error(data?.error || 'Failed to fetch customer profile.');
-        }
-
-        setCustomer(data.customer);
-        setInvoices(data.invoices || []);
-        setRecentTrips(data.recentTrips || []);
-      } catch (err: any) {
-        setError(err.message || 'Error loading customer details.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchCustomer();
-  }, [isOpen, customerId, token]);
+  const recentTrips = useMemo(() => {
+    if (!customerId) return [];
+    return allTrips
+      .filter((t) => t.customerId === customerId)
+      .sort((a, b) => new Date(b.dispatchDate || b.createdAt).getTime() - new Date(a.dispatchDate || a.createdAt).getTime())
+      .slice(0, 5);
+  }, [allTrips, customerId]);
 
   if (!isOpen) return null;
 
-  const getInvoiceBadge = (status: Invoice['paymentStatus']): { variant: BadgeVariant; label: string } => {
+  const getInvoiceBadge = (status: Invoice['paymentStatus'] | Invoice['status']): { variant: BadgeVariant; label: string } => {
     switch (status) {
       case 'PAID':
         return { variant: 'success', label: 'Paid in Full' };
@@ -89,6 +64,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
       case 'OVERDUE':
         return { variant: 'danger', label: 'Overdue' };
       case 'UNPAID':
+      case 'ISSUED':
         return { variant: 'purple', label: 'Unpaid / Pending' };
       default:
         return { variant: 'slate', label: status || 'Pending' };
@@ -117,7 +93,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
               </div>
               <p className="text-xs text-slate-400">
                 GSTIN: <span className="font-mono text-white">{customer?.gstin}</span> •{' '}
-                {customer?.city}, {customer?.state}
+                {[customer?.city, customer?.state].filter(Boolean).join(', ') || '—'}
               </p>
             </div>
           </div>
@@ -132,17 +108,11 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
 
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {loading ? (
-            <div className="py-16 text-center space-y-3">
-              <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-              <p className="text-xs text-slate-500 font-medium">Fetching customer account and ledger history...</p>
+          {!customer ? (
+            <div className="py-12 text-center text-xs text-slate-500">
+              Customer record not found in Firestore.
             </div>
-          ) : error ? (
-            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs sm:text-sm flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <p>{error}</p>
-            </div>
-          ) : customer ? (
+          ) : (
             <>
               {/* Financial Highlights */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -181,7 +151,9 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                   <span className="text-base sm:text-lg font-bold text-slate-900 mt-0.5 block">
                     {formatINR(customer.totalFreightBilledPaise)}
                   </span>
-                  <span className="text-[10px] text-slate-500">Lifetime volume</span>
+                  <span className="text-[10px] text-slate-500">
+                    {recentTrips.length > 0 ? `${recentTrips.length} recent trips` : 'Lifetime volume'}
+                  </span>
                 </div>
               </div>
 
@@ -251,7 +223,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                   <div className="sm:col-span-3 pt-2 border-t border-slate-100">
                     <span className="text-slate-500 block">Official Registered Billing Address</span>
                     <span className="text-slate-800">
-                      {customer.billingAddress}, {customer.city}, {customer.state} - {customer.pincode}
+                      {[customer.billingAddress, customer.city, customer.state, customer.pincode].filter(Boolean).join(', ') || 'Not specified'}
                     </span>
                   </div>
                 </div>
@@ -271,7 +243,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                 ) : (
                   <div className="space-y-2">
                     {invoices.map((inv) => {
-                      const badge = getInvoiceBadge(inv.paymentStatus);
+                      const badge = getInvoiceBadge(inv.paymentStatus || inv.status);
                       return (
                         <div
                           key={inv.id}
@@ -309,7 +281,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                 )}
               </div>
             </>
-          ) : null}
+          )}
         </div>
 
         {/* Footer */}

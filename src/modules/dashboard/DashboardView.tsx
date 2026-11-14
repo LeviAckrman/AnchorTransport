@@ -17,7 +17,7 @@
  * - Strict company-scoped data queries
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   TrendingUp,
   Fuel,
@@ -26,48 +26,48 @@ import {
   AlertTriangle,
   ArrowRight,
   Calendar,
-  RefreshCw,
   Plus,
-  Scale,
   FileText,
-  Clock,
   CheckCircle2,
   AlertCircle,
-  Database,
   Trash2,
-  ChevronRight,
   ShieldAlert,
 } from 'lucide-react';
-import { Trip, Vehicle, UserRole, CompanyDashboardMetrics, VehicleAttentionItem } from '../../types/tms';
+import { Trip, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { useAuth } from '../../context/AuthContext';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { parseResponseJson } from '../../lib/safeFetch';
 import { clearCompanyOperationalDataInFirestore } from '../../lib/firebase/firestoreService';
-import { clearStoreForNewCustomer } from '../../lib/storage';
+import { clearClientTmsCaches } from '../../lib/storage';
+import { computeDashboardMetrics, type DatePeriod } from '../../lib/tmsCalculations';
 
-export type DatePeriod = 'all' | 'today' | 'week' | 'month' | 'quarter' | 'custom';
+export type { DatePeriod };
 
 interface DashboardViewProps {
   onQuickDispatch: () => void;
   onNavigateTab: (tab: any) => void;
   userRole: UserRole;
-  localStoreTrips?: Trip[];
-  localStoreVehicles?: Vehicle[];
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   onQuickDispatch,
   onNavigateTab,
-  userRole,
-  localStoreTrips,
-  localStoreVehicles,
 }) => {
-  const { company, token: contextToken } = useAuth();
-  const getActiveToken = () => {
-    return contextToken || (typeof window !== 'undefined' ? (localStorage.getItem('token') || localStorage.getItem('onboarding_token') || '') : '');
-  };
+  const { permissions } = useAuth();
+  const {
+    company,
+    trips,
+    vehicles,
+    expenses,
+    invoices,
+    documents,
+    loading,
+    error: fsError,
+    clearError,
+  } = useFirestoreData();
+
   const companyId = company?.id || '';
 
   // Filter State
@@ -76,97 +76,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [customEnd, setCustomEnd] = useState<string>('');
   const [showCustomPicker, setShowCustomPicker] = useState<boolean>(false);
 
-  // Data Loading & Error States
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-  const [metrics, setMetrics] = useState<CompanyDashboardMetrics | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<boolean>(false);
   const [isClearDialogOpen, setIsClearDialogOpen] = useState<boolean>(false);
 
-  // Fetch metrics from company-scoped server API
-  const fetchMetrics = async (targetPeriod = period, start = customStart, end = customEnd) => {
-    if (!companyId) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
+  const error = localError || fsError;
 
-    try {
-      let url = `/api/dashboard/stats?period=${targetPeriod}`;
-      if (targetPeriod === 'custom' && start) {
-        url += `&startDate=${encodeURIComponent(start)}`;
-        if (end) url += `&endDate=${encodeURIComponent(end)}`;
-      }
-
-      const activeToken = getActiveToken();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(url, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch dashboard metrics.');
-      }
-
-      setMetrics(data.metrics);
-    } catch (err: any) {
-      console.warn('Dashboard metrics fetch notice:', err.message || err);
-      // Fallback gracefully to localStoreTrips if available so that the UI never breaks
-      if (localStoreTrips && localStoreTrips.length > 0) {
-        const activeTripsCount = localStoreTrips.filter((t) => t.status === 'IN_TRANSIT' || t.status === 'DISPATCHED' || t.status === 'PLANNED').length;
-        const completedTripsCount = localStoreTrips.filter((t) => t.status === 'DELIVERED' || t.status === 'SETTLED').length;
-        const totalFreight = localStoreTrips.reduce((sum, t) => sum + (t.totalRevenuePaise || 0), 0);
-        const totalExp = localStoreTrips.reduce((sum, t) => sum + (t.totalExpensesPaise || 0), 0);
-        const contr = totalFreight - totalExp;
-        const margin = totalFreight > 0 ? (contr / totalFreight) * 100 : 0;
-
-        setMetrics({
-          activeTripsCount,
-          completedTripsCount,
-          totalFreightRevenuePaise: totalFreight,
-          totalRecordedExpensesPaise: totalExp,
-          tripContributionPaise: contr,
-          contributionMarginPercent: Math.round(margin * 10) / 10,
-          outstandingInvoicesPaise: 0,
-          outstandingInvoicesCount: 0,
-          totalTripsCount: localStoreTrips.length,
-          totalVehiclesCount: localStoreVehicles?.length || 0,
-          activeVehiclesCount: localStoreVehicles?.filter((v) => v.status === 'IN_TRANSIT').length || 0,
-          recentTrips: localStoreTrips.slice(0, 5),
-          vehiclesRequiringAttention: [],
-          period: { type: targetPeriod, startDate: start, endDate: end },
-          hasData: true,
-        });
-      } else {
-        setError(err.message || 'Unable to load dashboard metrics. Check server connection.');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchMetrics();
-  }, [companyId, period]);
-
-  useEffect(() => {
-    const refreshHandler = () => fetchMetrics();
-    window.addEventListener('tms:firestore-hydrated', refreshHandler);
-    window.addEventListener('tms:trip-updated', refreshHandler);
-    window.addEventListener('tms:vehicle-updated', refreshHandler);
-    window.addEventListener('tms:expense-updated', refreshHandler);
-    window.addEventListener('tms:invoice-updated', refreshHandler);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', refreshHandler);
-      window.removeEventListener('tms:trip-updated', refreshHandler);
-      window.removeEventListener('tms:vehicle-updated', refreshHandler);
-      window.removeEventListener('tms:expense-updated', refreshHandler);
-      window.removeEventListener('tms:invoice-updated', refreshHandler);
-    };
-  }, [companyId, period]);
+  const metrics = useMemo(
+    () =>
+      computeDashboardMetrics({
+        trips,
+        vehicles,
+        expenses,
+        invoices,
+        documents,
+        period,
+        customStart,
+        customEnd,
+      }),
+    [trips, vehicles, expenses, invoices, documents, period, customStart, customEnd]
+  );
 
   const handlePeriodChange = (newPeriod: DatePeriod) => {
     setPeriod(newPeriod);
@@ -180,50 +110,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const handleApplyCustomDate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customStart) return;
-    fetchMetrics('custom', customStart, customEnd);
+    setPeriod('custom');
   };
 
-  // Clear data for clean slate
+  // Clear data for clean slate (OWNER / ADMIN only)
   const confirmClearData = async () => {
+    if (!companyId) return;
     setActionLoading(true);
+    setLocalError(null);
     try {
-      const activeToken = getActiveToken();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch('/api/dashboard/clear-data', {
-        method: 'POST',
-        headers,
-      });
-      const data = await parseResponseJson<any>(res);
       await clearCompanyOperationalDataInFirestore(companyId);
-      clearStoreForNewCustomer();
-      window.dispatchEvent(
-        new CustomEvent('tms:firestore-hydrated', {
-          detail: {
-            companyId,
-            bundle: {
-              vehicles: [],
-              drivers: [],
-              customers: [],
-              trips: [],
-              expenses: [],
-              advances: [],
-              settlements: [],
-              invoices: [],
-              payments: [],
-              documents: [],
-            },
-          },
-        })
-      );
-      if (data && data.success) {
-        setMetrics(data.metrics);
-        setActionSuccessMsg('Fleet records cleared. Viewing empty workspace.');
-        setTimeout(() => setActionSuccessMsg(null), 3500);
-      }
+      clearClientTmsCaches();
+      setActionSuccessMsg('Fleet records cleared in Firestore. Viewing empty workspace.');
+      setTimeout(() => setActionSuccessMsg(null), 3500);
     } catch (e: any) {
-      setError(e.message || 'Failed to clear data.');
+      setLocalError(e.message || 'Failed to clear data.');
     } finally {
       setActionLoading(false);
       setIsClearDialogOpen(false);
@@ -284,26 +185,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
           {/* Quick Actions */}
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => setIsClearDialogOpen(true)}
-              disabled={actionLoading}
-              className="px-3 py-2 border border-slate-200 bg-slate-50 text-slate-600 hover:text-rose-700 hover:border-rose-200 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50"
-              title="Clear all operational records for this company"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-              <span className="hidden sm:inline">Clear Fleet Data</span>
-              <span className="sm:hidden">Clear</span>
-            </button>
-
-            <button
-              onClick={() => fetchMetrics()}
-              disabled={loading}
-              className="p-2 border border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
-              title="Refresh Data"
-              aria-label="Refresh Data"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-indigo-600' : ''}`} />
-            </button>
+            {permissions?.canManageCompany && (
+              <button
+                onClick={() => setIsClearDialogOpen(true)}
+                disabled={actionLoading}
+                className="px-3 py-2 border border-slate-200 bg-slate-50 text-slate-600 hover:text-rose-700 hover:border-rose-200 text-xs font-medium rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                title="Clear all operational records for this company"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                <span className="hidden sm:inline">Clear Fleet Data</span>
+                <span className="sm:hidden">Clear</span>
+              </button>
+            )}
 
             <button
               onClick={onQuickDispatch}
@@ -401,20 +294,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
           <div className="flex-1">
-            <h4 className="text-sm font-bold text-rose-900">Failed to load dashboard data</h4>
+            <h4 className="text-sm font-bold text-rose-900">Firestore Sync Notice</h4>
             <p className="text-xs text-rose-700 mt-0.5">{error}</p>
             <button
-              onClick={() => fetchMetrics()}
+              onClick={() => {
+                setLocalError(null);
+                clearError();
+              }}
               className="mt-2 text-xs font-semibold text-rose-900 underline hover:text-rose-950"
             >
-              Try Again
+              Dismiss
             </button>
           </div>
         </div>
       )}
 
       {/* LOADING SKELETON STATE */}
-      {loading && !metrics && (
+      {loading ? (
         <div className="space-y-6 animate-pulse">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             {[...Array(6)].map((_, i) => (
@@ -428,10 +324,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="h-44 bg-white border border-slate-200 rounded-xl p-5" />
           <div className="h-64 bg-white border border-slate-200 rounded-xl p-5" />
         </div>
-      )}
-
-      {/* DATA VIEW (OR EMPTY STATE) */}
-      {metrics && (
+      ) : (
         <>
           {/* EMPTY STATE (When company has zero records) */}
           {!metrics.hasData ? (

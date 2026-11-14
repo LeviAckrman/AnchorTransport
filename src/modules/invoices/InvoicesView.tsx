@@ -1,24 +1,19 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   FileText,
   Plus,
   Search,
-  Filter,
   CreditCard,
-  Printer,
   ChevronLeft,
   ChevronRight,
   AlertTriangle,
-  Building2,
   Calendar,
   CheckCircle2,
   Clock,
-  TrendingUp,
   Receipt,
-  XCircle,
   Eye,
   BarChart3,
-  Layers,
+  X,
 } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -28,9 +23,9 @@ import { InvoiceDetailModal } from './InvoiceDetailModal';
 import { PaymentModal } from './PaymentModal';
 import { CustomerReceivablesReport } from './CustomerReceivablesReport';
 import { Invoice, Payment, InvoiceStatus, UserRole } from '../../types/tms';
-import { formatINR, paiseToRupees } from '../../lib/financialEngine';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { useAuth } from '../../context/AuthContext';
+import { formatINR } from '../../lib/financialEngine';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { isInvoiceUnpaid } from '../../lib/tmsCalculations';
 
 interface InvoicesViewProps {
   userRole: UserRole;
@@ -38,46 +33,25 @@ interface InvoicesViewProps {
 }
 
 export const InvoicesView: React.FC<InvoicesViewProps> = ({
-  userRole,
-  onNavigateTab,
+  userRole: _userRole,
+  onNavigateTab: _onNavigateTab,
 }) => {
-  const { token, company } = useAuth();
+  const { invoices: allInvoices, payments: allPayments, customers, loading, error } = useFirestoreData();
   const [activeTab, setActiveTab] = useState<'invoices' | 'receivables'>('invoices');
-
-  // Invoices list state
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<{
-    totalBilledPaise: number;
-    totalCollectedPaise: number;
-    totalOutstandingPaise: number;
-    totalOverduePaise: number;
-    overdueCount: number;
-    totalCount: number;
-  }>({
-    totalBilledPaise: 0,
-    totalCollectedPaise: 0,
-    totalOutstandingPaise: 0,
-    totalOverduePaise: 0,
-    overdueCount: 0,
-    totalCount: 0,
-  });
 
   // Filters & Pagination
   const [statusFilter, setStatusFilter] = useState<string>('');
+  const [customerIdFilter, setCustomerIdFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
   const limit = 15;
 
-  // Modals state
+  // Modals state (store IDs so modals reflect live Firestore updates)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
-  const [detailPayments, setDetailPayments] = useState<Payment[]>([]);
 
-  const [paymentInvoice, setPaymentInvoice] = useState<Invoice | null>(null);
+  const [paymentInvoiceId, setPaymentInvoiceId] = useState<string | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
 
   // Toast
@@ -88,102 +62,127 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
     setTimeout(() => setToastMsg(null), 4000);
   };
 
-  const fetchInvoices = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const todayStr = new Date().toISOString().split('T')[0];
 
-    try {
-      const params = new URLSearchParams({
-        page: currentPage.toString(),
-        limit: limit.toString(),
-      });
+  const isOverdueInvoice = (inv: Invoice): boolean => {
+    if (inv.status === 'CANCELLED' || inv.status === 'PAID') return false;
+    if (inv.status === 'OVERDUE' || inv.paymentStatus === 'OVERDUE') return true;
+    return isInvoiceUnpaid(inv) && Boolean(inv.dueDate) && inv.dueDate < todayStr;
+  };
 
-      if (statusFilter) params.append('status', statusFilter);
-      if (searchQuery.trim()) params.append('search', searchQuery.trim());
+  // Summary KPIs derived strictly from Firestore invoices
+  const summary = useMemo(() => {
+    const active = allInvoices.filter((inv) => inv.status !== 'CANCELLED');
+    const totalBilledPaise = active.reduce((s, inv) => s + (inv.totalAmountPaise || 0), 0);
+    const totalCollectedPaise = active.reduce((s, inv) => s + (inv.amountPaidPaise || 0), 0);
+    const totalOutstandingPaise = active.reduce((s, inv) => s + (inv.balanceDuePaise ?? 0), 0);
+    const overdueList = active.filter((inv) => isOverdueInvoice(inv));
+    const totalOverduePaise = overdueList.reduce((s, inv) => s + (inv.balanceDuePaise ?? 0), 0);
 
-      const res = await fetch(`/api/invoices?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${token || ''}` },
-      });
-
-      const data = await parseResponseJson(res);
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to fetch customer invoices');
-      }
-
-      setInvoices(data.data || []);
-      setTotalPages(data.pagination?.totalPages || 1);
-      if (data.summary) {
-        setSummary(data.summary);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Error loading invoices');
-    } finally {
-      setLoading(false);
-    }
-  }, [token, company?.id, currentPage, statusFilter, searchQuery]);
-
-  useEffect(() => {
-    if (activeTab === 'invoices') {
-      fetchInvoices();
-    }
-  }, [fetchInvoices, activeTab]);
-
-  useEffect(() => {
-    const handleRefresh = () => {
-      if (activeTab === 'invoices') {
-        fetchInvoices();
-      }
+    return {
+      totalBilledPaise,
+      totalCollectedPaise,
+      totalOutstandingPaise,
+      totalOverduePaise,
+      overdueCount: overdueList.length,
+      totalCount: active.length,
     };
-    window.addEventListener('tms:firestore-hydrated', handleRefresh);
-    window.addEventListener('tms:invoice-updated', handleRefresh);
-    window.addEventListener('tms:payment-updated', handleRefresh);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
-      window.removeEventListener('tms:invoice-updated', handleRefresh);
-      window.removeEventListener('tms:payment-updated', handleRefresh);
-    };
-  }, [fetchInvoices, activeTab]);
+  }, [allInvoices, todayStr]);
 
-  const handleOpenDetail = async (inv: Invoice) => {
-    setSelectedInvoice(inv);
+  // Filtered & sorted invoices
+  const filteredInvoices = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return [...allInvoices]
+      .filter((inv) => {
+        if (customerIdFilter && inv.customerId !== customerIdFilter) return false;
+
+        if (statusFilter === 'OVERDUE') {
+          if (!isOverdueInvoice(inv)) return false;
+        } else if (statusFilter) {
+          if (inv.status !== statusFilter) return false;
+        }
+
+        if (q) {
+          const hay = [
+            inv.invoiceNumber,
+            inv.customerName,
+            inv.customerGstin,
+            inv.lrNumber,
+            inv.tripNumber,
+            inv.originCity,
+            inv.destinationCity,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const da = new Date(b.issueDate || b.createdAt || 0).getTime();
+        const db = new Date(a.issueDate || a.createdAt || 0).getTime();
+        return da - db;
+      });
+  }, [allInvoices, statusFilter, customerIdFilter, searchQuery, todayStr]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredInvoices.length / limit));
+  const safePage = Math.min(currentPage, totalPages);
+  const invoices = useMemo(() => {
+    const start = (safePage - 1) * limit;
+    return filteredInvoices.slice(start, start + limit);
+  }, [filteredInvoices, safePage]);
+
+  const selectedInvoice = useMemo(
+    () => (selectedInvoiceId ? allInvoices.find((i) => i.id === selectedInvoiceId) || null : null),
+    [allInvoices, selectedInvoiceId]
+  );
+
+  const detailPayments = useMemo(
+    () =>
+      selectedInvoiceId
+        ? allPayments
+            .filter((p) => p.invoiceId === selectedInvoiceId)
+            .sort((a, b) => new Date(b.paymentDate || b.createdAt || 0).getTime() - new Date(a.paymentDate || a.createdAt || 0).getTime())
+        : [],
+    [allPayments, selectedInvoiceId]
+  );
+
+  const paymentInvoice = useMemo(
+    () => (paymentInvoiceId ? allInvoices.find((i) => i.id === paymentInvoiceId) || null : null),
+    [allInvoices, paymentInvoiceId]
+  );
+
+  const filteredCustomerName = useMemo(
+    () => (customerIdFilter ? customers.find((c) => c.id === customerIdFilter)?.name || 'Selected Customer' : ''),
+    [customers, customerIdFilter]
+  );
+
+  const handleOpenDetail = (inv: Invoice) => {
+    setSelectedInvoiceId(inv.id);
     setIsDetailModalOpen(true);
-
-    try {
-      const res = await fetch(`/api/invoices/${inv.id}`, {
-        headers: { Authorization: `Bearer ${token || ''}` },
-      });
-      const data = await parseResponseJson(res);
-      if (data.success) {
-        setSelectedInvoice(data.invoice);
-        setDetailPayments(data.payments || []);
-      }
-    } catch {
-      // Keep basic invoice
-    }
   };
 
   const handleOpenPayment = (inv: Invoice) => {
-    setPaymentInvoice(inv);
+    setPaymentInvoiceId(inv.id);
     setIsPaymentModalOpen(true);
   };
 
   const handlePaymentSuccess = (payment: Payment) => {
     showToast('success', `Recorded payment of ₹${(payment.amountPaise / 100).toLocaleString('en-IN')} (Ref: ${payment.referenceNumber}).`);
-    fetchInvoices();
   };
 
   const handleInvoiceCreated = (newInv: Invoice) => {
     showToast('success', `Issued Invoice ${newInv.invoiceNumber} for ${newInv.customerName}.`);
-    fetchInvoices();
   };
 
   const handleInvoiceCancelled = (cancelledInv: Invoice) => {
     showToast('success', `Cancelled Invoice ${cancelledInv.invoiceNumber}. Trip released for re-billing.`);
-    fetchInvoices();
   };
 
-  const getStatusBadge = (status: InvoiceStatus | string) => {
-    switch (status) {
+  const getStatusBadge = (inv: Invoice) => {
+    const displayStatus: InvoiceStatus | string = isOverdueInvoice(inv) ? 'OVERDUE' : inv.status;
+    switch (displayStatus) {
       case 'PAID':
         return <Badge variant="success">PAID</Badge>;
       case 'PARTIALLY_PAID':
@@ -197,7 +196,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       case 'CANCELLED':
         return <Badge variant="danger">CANCELLED</Badge>;
       default:
-        return <Badge variant="neutral">{status}</Badge>;
+        return <Badge variant="neutral">{displayStatus}</Badge>;
     }
   };
 
@@ -267,8 +266,9 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       {activeTab === 'receivables' && (
         <CustomerReceivablesReport
           onSelectCustomer={(custId) => {
+            setCustomerIdFilter(custId);
+            setCurrentPage(1);
             setActiveTab('invoices');
-            // Filter by customer if needed
           }}
         />
       )}
@@ -393,11 +393,26 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                 ))}
               </div>
             </div>
+
+            {customerIdFilter && (
+              <div className="flex items-center justify-between bg-indigo-50 border border-indigo-200 rounded-xl px-3 py-1.5 text-xs text-indigo-800">
+                <span>
+                  Filtered by customer: <strong>{filteredCustomerName}</strong>
+                </span>
+                <button
+                  onClick={() => setCustomerIdFilter('')}
+                  className="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Clear
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Invoices Data Table */}
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
-            {loading ? (
+            {loading && allInvoices.length === 0 ? (
               <div className="py-20 text-center text-xs text-slate-500 animate-pulse">
                 Loading customer invoices and receivables records...
               </div>
@@ -411,11 +426,11 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                 <Receipt className="w-10 h-10 mx-auto text-slate-300 mb-2" />
                 <h4 className="text-sm font-bold text-slate-800">No invoices found</h4>
                 <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1">
-                  {statusFilter || searchQuery
+                  {statusFilter || searchQuery || customerIdFilter
                     ? 'No invoices match your active search and status filters.'
                     : 'No customer transport invoices have been issued yet. Click "Generate Invoice" to bill a delivered trip.'}
                 </p>
-                {!statusFilter && !searchQuery && (
+                {!statusFilter && !searchQuery && !customerIdFilter && (
                   <Button
                     size="sm"
                     variant="primary"
@@ -502,7 +517,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                         </td>
 
                         <td className="py-3.5 px-3 text-center">
-                          {getStatusBadge(inv.status)}
+                          {getStatusBadge(inv)}
                         </td>
 
                         <td className="py-3.5 px-4 text-center">
@@ -538,13 +553,13 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
             {totalPages > 1 && (
               <div className="p-3 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
                 <span>
-                  Page <strong>{currentPage}</strong> of <strong>{totalPages}</strong>
+                  Page <strong>{safePage}</strong> of <strong>{totalPages}</strong>
                 </span>
                 <div className="flex items-center gap-1">
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={currentPage <= 1}
+                    disabled={safePage <= 1}
                     onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                   >
                     <ChevronLeft className="w-3.5 h-3.5" />
@@ -552,7 +567,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={currentPage >= totalPages}
+                    disabled={safePage >= totalPages}
                     onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                   >
                     <ChevronRight className="w-3.5 h-3.5" />
@@ -573,7 +588,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
 
       <InvoiceDetailModal
         isOpen={isDetailModalOpen}
-        onClose={() => setIsDetailModalOpen(false)}
+        onClose={() => {
+          setIsDetailModalOpen(false);
+          setSelectedInvoiceId(null);
+        }}
         invoice={selectedInvoice}
         payments={detailPayments}
         onOpenPaymentModal={(inv) => {
@@ -585,7 +603,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
 
       <PaymentModal
         isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
+        onClose={() => {
+          setIsPaymentModalOpen(false);
+          setPaymentInvoiceId(null);
+        }}
         invoice={paymentInvoice}
         onSuccess={handlePaymentSuccess}
       />

@@ -1,19 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Wallet,
-  IndianRupee,
-  Calendar,
   AlertCircle,
   CheckCircle2,
-  Navigation,
   User,
-  CreditCard,
 } from 'lucide-react';
-import { DriverAdvance, Trip, Driver, AdvanceType } from '../../types/tms';
+import { DriverAdvance, AdvanceType, PaymentMode } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
-import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { createAdvanceInFirestore } from '../../lib/firebase/firestoreService';
 
 interface DriverAdvanceModalProps {
   isOpen: boolean;
@@ -36,10 +31,9 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
   onSuccess,
   defaultTripId,
 }) => {
-  const { token, company } = useAuth();
-
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [loadingTrips, setLoadingTrips] = useState(false);
+  const { user, company: authCompany } = useAuth();
+  const { company: liveCompany, trips, drivers, loading: dataLoading } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
 
   const [tripId, setTripId] = useState(defaultTripId || '');
   const [amountRupees, setAmountRupees] = useState('');
@@ -60,27 +54,26 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
       setReference('');
       setNotes('');
       setError(null);
-
-      setLoadingTrips(true);
-      fetch('/api/trips?limit=100', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success) {
-            setTrips(data.data || []);
-          }
-        })
-        .catch((err) => console.warn('Failed to load trips for advance modal:', err))
-        .finally(() => setLoadingTrips(false));
     }
-  }, [isOpen, defaultTripId, token, company?.id]);
+  }, [isOpen, defaultTripId]);
 
   const selectedTrip = trips.find((t) => t.id === tripId);
+
+  const mapAdvancePaymentMode = (type: AdvanceType): PaymentMode => {
+    if (type === 'UPI_ONLINE') return 'UPI';
+    if (type === 'BANK_TRANSFER') return 'BANK_TRANSFER';
+    if (type === 'PUMP_DIESEL_SLIP') return 'PETRO_CARD';
+    return 'CASH';
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    if (!company?.id) {
+      setError('Active company profile is required to disburse an advance.');
+      return;
+    }
 
     const amount = Math.round(parseFloat(amountRupees) * 100);
     if (isNaN(amount) || amount <= 0) {
@@ -88,50 +81,46 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
       return;
     }
 
-    if (!tripId) {
+    if (!tripId || !selectedTrip) {
       setError('Please select an active trip for this advance disbursement.');
+      return;
+    }
+
+    if (!selectedTrip.driverId) {
+      setError('Selected trip does not have an assigned driver.');
       return;
     }
 
     setLoading(true);
 
     try {
-      const payload = {
-        tripId,
-        driverId: selectedTrip?.driverId,
+      const matchedDriver = drivers.find((d) => d.id === selectedTrip.driverId);
+      const cleanRef = reference.trim() ? reference.trim().slice(0, 100) : undefined;
+      const cleanNotes = notes.trim() ? notes.trim().slice(0, 300) : undefined;
+
+      const advance: DriverAdvance = {
+        id: `adv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        companyId: company.id,
+        tripId: selectedTrip.id,
+        tripNumber: selectedTrip.tripNumber,
+        driverId: selectedTrip.driverId,
+        driverName: (matchedDriver?.fullName || selectedTrip.driverName || 'Driver').slice(0, 100),
+        vehicleReg: selectedTrip.vehicleReg?.slice(0, 30),
         amountPaise: amount,
         advanceType,
+        paymentMode: mapAdvancePaymentMode(advanceType),
         date,
-        reference: reference.trim() || undefined,
-        notes: notes.trim() || undefined,
+        reference: cleanRef,
+        referenceNotes: cleanRef,
+        notes: cleanNotes,
+        disbursedBy: (user?.name || user?.email || 'Dispatcher').slice(0, 100),
+        isSettled: false,
+        createdAt: new Date().toISOString(),
       };
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+      await createAdvanceInFirestore(company.id, advance, selectedTrip, matchedDriver);
 
-      const res = await fetch('/api/advances', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to record driver cash advance.');
-      }
-
-      const activeCompanyId = company?.id || data.advance?.companyId;
-      if (activeCompanyId) {
-        if (data.advance) await syncEntityToFirestore(activeCompanyId, 'advances', data.advance);
-        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
-        if (data.driver) await syncEntityToFirestore(activeCompanyId, 'drivers', data.driver);
-      }
-
-      window.dispatchEvent(new CustomEvent('tms:advance-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
-
-      onSuccess(data.advance);
+      onSuccess(advance);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error occurred while recording advance.');
@@ -175,18 +164,20 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
             required
             className="w-full px-3 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
           >
-            {loadingTrips ? (
+            {dataLoading && trips.length === 0 ? (
               <option value="">Loading trips...</option>
             ) : trips.length === 0 ? (
               <option value="">No trips available</option>
             ) : (
               <>
                 <option value="">-- Choose Associated Trip --</option>
-                {trips.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.originCity} → {t.destinationCity}]
-                  </option>
-                ))}
+                {trips
+                  .filter((t) => t.status !== 'CANCELLED')
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.originCity} → {t.destinationCity}]
+                    </option>
+                  ))}
               </>
             )}
           </select>
@@ -213,7 +204,7 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
               <input
                 type="number"
                 step="1"
-                min="100"
+                min="1"
                 required
                 value={amountRupees}
                 onChange={(e) => setAmountRupees(e.target.value)}
@@ -302,14 +293,14 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
             type="button"
             onClick={onClose}
             disabled={loading}
-            className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 transition-colors"
+            className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={loading}
-            className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 flex items-center gap-2"
+            className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 flex items-center gap-2 cursor-pointer"
           >
             {loading ? (
               <span>Recording...</span>

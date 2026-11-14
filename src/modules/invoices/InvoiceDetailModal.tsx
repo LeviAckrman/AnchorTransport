@@ -1,27 +1,18 @@
 import React, { useState } from 'react';
 import {
   Printer,
-  Download,
   CreditCard,
   XCircle,
-  Truck,
-  Building,
-  Calendar,
   AlertTriangle,
-  CheckCircle2,
-  Clock,
-  ShieldCheck,
-  FileText,
-  FileCheck,
 } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
-import { Invoice, Payment, Trip, Customer, GTA_GST_DISCLAIMER } from '../../types/tms';
-import { formatINR, paiseToRupees } from '../../lib/financialEngine';
-import { parseResponseJson } from '../../lib/safeFetch';
+import { Invoice, Payment, GTA_GST_DISCLAIMER } from '../../types/tms';
+import { formatINR } from '../../lib/financialEngine';
 import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { cancelInvoiceInFirestore } from '../../lib/firebase/firestoreService';
 
 interface InvoiceDetailModalProps {
   isOpen: boolean;
@@ -40,7 +31,10 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
   onOpenPaymentModal,
   onInvoiceCancelled,
 }) => {
-  const { token, company } = useAuth();
+  const { company: authCompany } = useAuth();
+  const { company: liveCompany, trips, customers } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
+
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelling, setCancelling] = useState(false);
@@ -53,8 +47,14 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
   };
 
   const handleCancelInvoice = async () => {
-    if (!cancelReason.trim()) {
+    const trimmedReason = cancelReason.trim();
+    if (!trimmedReason) {
       setCancelError('Please provide a reason for cancelling this invoice.');
+      return;
+    }
+
+    if (!company?.id) {
+      setCancelError('Active company profile not loaded.');
       return;
     }
 
@@ -62,33 +62,27 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
     setCancelError(null);
 
     try {
-      const res = await fetch(`/api/invoices/${invoice.id}/cancel`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token || ''}`,
-        },
-        body: JSON.stringify({ cancellationReason: cancelReason.trim() }),
+      const matchedTrip = trips.find((t) => t.id === invoice.tripId);
+      const matchedCustomer = customers.find((c) => c.id === invoice.customerId);
+
+      await cancelInvoiceInFirestore(
+        company.id,
+        invoice,
+        matchedTrip,
+        matchedCustomer,
+        trimmedReason.slice(0, 300)
+      );
+
+      onInvoiceCancelled({
+        ...invoice,
+        status: 'CANCELLED',
+        paymentStatus: 'CANCELLED' as any,
+        balanceDuePaise: 0,
+        cancellationReason: trimmedReason,
+        cancelledAt: new Date().toISOString(),
       });
-
-      const data = await parseResponseJson(res);
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to cancel invoice');
-      }
-
-      const activeCompanyId = company?.id || data.invoice?.companyId;
-      if (activeCompanyId) {
-        if (data.invoice) await syncEntityToFirestore(activeCompanyId, 'invoices', data.invoice);
-        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
-        if (data.customer) await syncEntityToFirestore(activeCompanyId, 'customers', data.customer);
-      }
-
-      window.dispatchEvent(new CustomEvent('tms:invoice-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
-
-      onInvoiceCancelled(data.invoice);
       setShowCancelPrompt(false);
+      setCancelReason('');
       onClose();
     } catch (err: any) {
       setCancelError(err.message || 'Invoice cancellation failed');

@@ -1,58 +1,40 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Scale,
   Plus,
   Search,
-  RefreshCw,
   ChevronLeft,
   ChevronRight,
   AlertTriangle,
-  IndianRupee,
-  Calendar,
   CheckCircle2,
   Clock,
-  User,
-  Navigation,
-  FileText,
   ShieldCheck,
   Eye,
   Edit,
-  Printer,
 } from 'lucide-react';
 import { TripSettlement, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
-import { Badge } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { SettlementModal } from './SettlementModal';
 import { SettlementDetailModal } from './SettlementDetailModal';
-import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 
 interface SettlementsViewProps {
   userRole: UserRole;
   onNavigateTab?: (tab: any) => void;
 }
 
-export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNavigateTab }) => {
-  const { token, company } = useAuth();
-
-  const [settlements, setSettlements] = useState<TripSettlement[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export const SettlementsView: React.FC<SettlementsViewProps> = ({
+  userRole,
+  onNavigateTab: _onNavigateTab,
+}) => {
+  const { settlements: allSettlements, loading, error } = useFirestoreData();
 
   // Pagination & Filtering
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
+  const limit = 15;
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-
-  // Summary KPIs
-  const [summary, setSummary] = useState({
-    totalSettledAmountPaise: 0,
-    finalizedCount: 0,
-    pendingCount: 0,
-  });
 
   // Modals
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -60,69 +42,61 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
   const [selectedSettlementId, setSelectedSettlementId] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
-  const fetchSettlements = async (targetPage = page) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: '15',
-        search: searchQuery,
-      });
-
-      if (statusFilter) params.append('status', statusFilter);
-
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(`/api/settlements?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch settlements history.');
-      }
-
-      setSettlements(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages);
-      setTotalCount(data.pagination.total);
-      if (data.summary) {
-        setSummary(data.summary);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Error communicating with settlements API.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchSettlements(1);
-  }, [statusFilter, token, company?.id]);
-
-  useEffect(() => {
-    const handleRefresh = () => {
-      fetchSettlements(page);
-    };
-    window.addEventListener('tms:firestore-hydrated', handleRefresh);
-    window.addEventListener('tms:settlement-updated', handleRefresh);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
-      window.removeEventListener('tms:settlement-updated', handleRefresh);
-    };
-  }, [page, statusFilter, searchQuery, token, company?.id]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchSettlements(1);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
-
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMsg({ text, type });
     setTimeout(() => setToastMsg(null), 3500);
   };
+
+  const filteredSettlements = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return [...allSettlements]
+      .filter((s) => {
+        if (statusFilter === 'FINALIZED') {
+          if (s.status !== 'FINALIZED' && s.status !== 'APPROVED_SETTLED') return false;
+        } else if (statusFilter) {
+          if (s.status !== statusFilter) return false;
+        }
+        if (q) {
+          const hay = [s.settlementNumber, s.tripNumber, s.driverName, s.vehicleReg, s.settledBy]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => new Date(b.settledDate || b.createdAt || 0).getTime() - new Date(a.settledDate || a.createdAt || 0).getTime());
+  }, [allSettlements, statusFilter, searchQuery]);
+
+  const summary = useMemo(() => {
+    let totalSettledAmountPaise = 0;
+    let finalizedCount = 0;
+    let pendingCount = 0;
+
+    for (const s of filteredSettlements) {
+      totalSettledAmountPaise += Math.abs(s.netPayableToDriverPaise || 0);
+      if (s.status === 'FINALIZED' || s.status === 'APPROVED_SETTLED') {
+        finalizedCount += 1;
+      } else {
+        pendingCount += 1;
+      }
+    }
+
+    return {
+      totalSettledAmountPaise,
+      finalizedCount,
+      pendingCount,
+    };
+  }, [filteredSettlements]);
+
+  const totalCount = filteredSettlements.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+
+  const settlements = useMemo(() => {
+    const start = (safePage - 1) * limit;
+    return filteredSettlements.slice(start, start + limit);
+  }, [filteredSettlements, safePage]);
 
   const handleModalSuccess = (settlement: TripSettlement, isEdit: boolean) => {
     showNotification(
@@ -131,7 +105,6 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
         : `Reconciled settlement #${settlement.settlementNumber || settlement.id} for trip ${settlement.tripNumber}.`,
       'success'
     );
-    fetchSettlements(isEdit ? page : 1);
   };
 
   return (
@@ -234,7 +207,10 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
             type="text"
             placeholder="Search trip #, driver, settlement #..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setPage(1);
+            }}
             className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
           />
         </div>
@@ -242,7 +218,10 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
             className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
           >
             <option value="">All Audit States</option>
@@ -250,23 +229,14 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
             <option value="PENDING_APPROVAL">Pending Approval</option>
             <option value="DRAFT">Draft</option>
           </select>
-
-          <button
-            onClick={() => fetchSettlements(page)}
-            className="p-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl border border-slate-200"
-            title="Refresh Settlements"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
         </div>
       </div>
 
       {/* Main Settlements Table */}
       <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-        {loading ? (
+        {loading && allSettlements.length === 0 ? (
           <div className="py-20 text-center space-y-3">
-            <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
-            <p className="text-sm font-semibold text-slate-600">Loading settlements...</p>
+            <p className="text-sm font-semibold text-slate-600 animate-pulse">Loading settlements...</p>
           </div>
         ) : error ? (
           <div className="py-16 text-center space-y-3 px-4">
@@ -285,7 +255,7 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
                 setSettlementToEdit(null);
                 setIsModalOpen(true);
               }}
-              className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700"
+              className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
             >
               Reconcile Trip
             </button>
@@ -364,7 +334,7 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
                       <div className="flex items-center justify-center gap-1">
                         <button
                           onClick={() => setSelectedSettlementId(s.id)}
-                          className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg"
+                          className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                           title="View Settlement Dossier"
                         >
                           <Eye className="w-3.5 h-3.5" />
@@ -374,7 +344,7 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
                             setSettlementToEdit(s);
                             setIsModalOpen(true);
                           }}
-                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg"
+                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                           title="Review / Edit Settlement"
                         >
                           <Edit className="w-3.5 h-3.5" />
@@ -392,19 +362,19 @@ export const SettlementsView: React.FC<SettlementsViewProps> = ({ userRole, onNa
         {totalPages > 1 && (
           <div className="py-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
             <span className="text-slate-500">
-              Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({totalCount} dossiers)
+              Showing page <strong>{safePage}</strong> of <strong>{totalPages}</strong> ({totalCount} dossiers)
             </span>
             <div className="flex items-center gap-1">
               <button
-                disabled={page <= 1}
-                onClick={() => fetchSettlements(page - 1)}
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
                 className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50 text-slate-700 hover:bg-slate-100"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
               <button
-                disabled={page >= totalPages}
-                onClick={() => fetchSettlements(page + 1)}
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50 text-slate-700 hover:bg-slate-100"
               >
                 <ChevronRight className="w-3.5 h-3.5" />

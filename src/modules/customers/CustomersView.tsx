@@ -1,45 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Building2,
   Plus,
   Search,
-  Filter,
   AlertTriangle,
   CheckCircle2,
-  Clock,
   Eye,
   Edit,
   Trash2,
-  RefreshCw,
   ChevronLeft,
   ChevronRight,
-  CreditCard,
-  FileText,
-  MapPin,
 } from 'lucide-react';
 import { Customer, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
-import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { CustomerModal } from './CustomerModal';
 import { CustomerDetailModal } from './CustomerDetailModal';
-import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { deleteCustomerInFirestore } from '../../lib/firebase/firestoreService';
 
 interface CustomersViewProps {
   userRole: UserRole;
 }
 
 export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? (localStorage.getItem('token') || '') : '');
-
-  // Data states
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { company, customers: allCustomers, loading, error } = useFirestoreData();
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Filters & Search
@@ -49,8 +35,6 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
   // Pagination
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(8);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
 
   // Modals
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -58,53 +42,42 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
 
-  const fetchCustomers = async (targetPage = page) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: limit.toString(),
-        search: searchQuery,
-        balanceFilter: balanceFilter,
-      });
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/customers?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch customer accounts.');
-      }
-
-      setCustomers(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages || 1);
-      setTotalCount(data.pagination.total || 0);
-    } catch (err: any) {
-      console.warn('Customers fetch notice:', err);
-      setError(err.message || 'Unable to load company customers.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchCustomers(1);
-  }, [searchQuery, balanceFilter, limit, company?.id, activeToken]);
+    setPage(1);
+  }, [searchQuery, balanceFilter, limit]);
 
-  useEffect(() => {
-    const onHydrated = () => fetchCustomers(1);
-    window.addEventListener('tms:firestore-hydrated', onHydrated);
-    return () => window.removeEventListener('tms:firestore-hydrated', onHydrated);
-  }, [company?.id, activeToken]);
+  const filteredCustomers = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return [...allCustomers]
+      .filter((c) => {
+        if (q) {
+          const matches =
+            c.name.toLowerCase().includes(q) ||
+            (c.tradeName || '').toLowerCase().includes(q) ||
+            (c.gstin || '').toLowerCase().includes(q) ||
+            (c.city || '').toLowerCase().includes(q) ||
+            (c.contactPerson || '').toLowerCase().includes(q);
+          if (!matches) return false;
+        }
+        if (balanceFilter === 'OUTSTANDING' && (c.currentOutstandingPaise || 0) <= 0) return false;
+        if (balanceFilter === 'CLEARED' && (c.currentOutstandingPaise || 0) > 0) return false;
+        return true;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allCustomers, searchQuery, balanceFilter]);
+
+  const totalCount = filteredCustomers.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+
+  const customers = useMemo(() => {
+    const start = (safePage - 1) * limit;
+    return filteredCustomers.slice(start, start + limit);
+  }, [filteredCustomers, safePage, limit]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
     setPage(newPage);
-    fetchCustomers(newPage);
   };
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
@@ -114,34 +87,19 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
 
   const handleModalSuccess = (customer: Customer, isEdit: boolean) => {
     showNotification(
-      isEdit ? `Customer ${customer.name} updated successfully.` : `Customer ${customer.name} registered to company directory.`,
+      isEdit
+        ? `Customer ${customer.name} updated successfully.`
+        : `Customer ${customer.name} registered to company directory.`,
       'success'
     );
-    window.dispatchEvent(new CustomEvent('tms:customer-updated'));
-    fetchCustomers(isEdit ? page : 1);
   };
 
   const confirmDeleteCustomer = async () => {
-    if (!customerToDelete) return;
+    if (!customerToDelete || !company?.id) return;
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/customers/${customerToDelete.id}`, {
-        method: 'DELETE',
-        headers,
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to delete customer.');
-      }
-
-      await deleteEntityFromFirestore(company?.id, 'customers', customerToDelete.id);
+      await deleteCustomerInFirestore(company.id, customerToDelete.id, customerToDelete.name);
       showNotification(`Customer ${customerToDelete.name} deleted.`);
       setCustomerToDelete(null);
-      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
-      fetchCustomers(page);
     } catch (err: any) {
       showNotification(err.message || 'Error deleting customer.', 'error');
     }
@@ -204,14 +162,6 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
               </button>
             )}
           </div>
-
-          <button
-            onClick={() => fetchCustomers(page)}
-            title="Refresh customer accounts"
-            className="p-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors shrink-0"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
         </div>
 
         {/* Filter Pills */}
@@ -241,18 +191,12 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
       {loading ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
           <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-500 font-medium">Loading customer directory...</p>
+          <p className="text-xs text-slate-500 font-medium">Loading customer directory from Firestore...</p>
         </div>
       ) : error ? (
         <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
           <p className="text-sm font-semibold text-slate-800">{error}</p>
-          <button
-            onClick={() => fetchCustomers(1)}
-            className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800"
-          >
-            Retry Connection
-          </button>
         </div>
       ) : customers.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4">
@@ -474,18 +418,18 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
 
               <div className="flex items-center gap-1 ml-2">
                 <button
-                  onClick={() => handlePageChange(page - 1)}
-                  disabled={page <= 1}
+                  onClick={() => handlePageChange(safePage - 1)}
+                  disabled={safePage <= 1}
                   className="p-1.5 rounded border border-slate-300 hover:bg-white disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
                 <span className="px-2 font-medium text-slate-700">
-                  Page {page} of {totalPages}
+                  Page {safePage} of {totalPages}
                 </span>
                 <button
-                  onClick={() => handlePageChange(page + 1)}
-                  disabled={page >= totalPages}
+                  onClick={() => handlePageChange(safePage + 1)}
+                  disabled={safePage >= totalPages}
                   className="p-1.5 rounded border border-slate-300 hover:bg-white disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   <ChevronRight className="w-3.5 h-3.5" />
@@ -502,7 +446,6 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
           isOpen={isCreateOpen}
           onClose={() => setIsCreateOpen(false)}
           onSuccess={handleModalSuccess}
-          token={activeToken}
         />
       )}
 
@@ -513,7 +456,6 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
           onClose={() => setCustomerToEdit(null)}
           onSuccess={handleModalSuccess}
           customerToEdit={customerToEdit}
-          token={activeToken}
         />
       )}
 
@@ -523,7 +465,6 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
           isOpen={Boolean(selectedCustomerId)}
           onClose={() => setSelectedCustomerId(null)}
           customerId={selectedCustomerId}
-          token={activeToken}
           userRole={userRole}
           onEdit={(cust) => {
             setSelectedCustomerId(null);

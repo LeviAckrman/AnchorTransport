@@ -1,17 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { X, User, ShieldCheck, Lock, AlertCircle, FileText, CheckCircle2, Phone, CreditCard } from 'lucide-react';
+import { X, User, ShieldCheck, Lock, AlertCircle, FileText } from 'lucide-react';
 import { Driver, DriverStatus, Vehicle, UserRole } from '../../types/tms';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { saveDriverInFirestore } from '../../lib/firebase/firestoreService';
 
 interface DriverModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (driver: Driver, isEdit: boolean) => void;
   driverToEdit?: Driver | null;
-  vehicles: Vehicle[];
-  token: string;
+  vehicles?: Vehicle[];
+  token?: string;
   userRole: UserRole;
 }
 
@@ -20,13 +19,16 @@ export const DriverModal: React.FC<DriverModalProps> = ({
   onClose,
   onSuccess,
   driverToEdit,
-  vehicles,
-  token,
+  vehicles: propVehicles = [],
   userRole,
 }) => {
-  const { company } = useAuth();
+  const { company, drivers: allDrivers, vehicles: firestoreVehicles } = useFirestoreData();
+  const vehicles = firestoreVehicles.length > 0 ? firestoreVehicles : propVehicles;
+
   const isEdit = Boolean(driverToEdit);
   const canAccessSensitive = userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'ACCOUNTANT';
+  const canEditSensitive = userRole === 'OWNER' || userRole === 'ADMIN';
+  const sensitiveReadOnly = isEdit && canAccessSensitive && !canEditSensitive;
 
   // Basic Form States
   const [fullName, setFullName] = useState('');
@@ -42,7 +44,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
   const [perDayBata, setPerDayBata] = useState('');
   const [assignedVehicleReg, setAssignedVehicleReg] = useState('');
 
-  // Sensitive Personal Information (Owner / Admin / Accountant only)
+  // Sensitive Personal Information
   const [monthlySalary, setMonthlySalary] = useState('');
   const [aadharNumber, setAadharNumber] = useState('');
   const [panNumber, setPanNumber] = useState('');
@@ -69,7 +71,6 @@ export const DriverModal: React.FC<DriverModalProps> = ({
       setPerDayBata(driverToEdit.perDayBataPaise ? (driverToEdit.perDayBataPaise / 100).toString() : '');
       setAssignedVehicleReg(driverToEdit.assignedVehicleReg || '');
 
-      // Sensitive fields
       if (canAccessSensitive) {
         setMonthlySalary(driverToEdit.monthlySalaryPaise ? (driverToEdit.monthlySalaryPaise / 100).toString() : '');
         setAadharNumber(driverToEdit.aadharNumber || '');
@@ -111,6 +112,10 @@ export const DriverModal: React.FC<DriverModalProps> = ({
     setLoading(true);
 
     try {
+      if (!company?.id) {
+        throw new Error('Active company profile is required before saving a driver.');
+      }
+
       const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
       if (cleanPhone.length !== 10) {
         throw new Error('Please enter a valid 10-digit Indian mobile number for the driver.');
@@ -125,53 +130,65 @@ export const DriverModal: React.FC<DriverModalProps> = ({
         throw new Error('Driving license expiry date is required.');
       }
 
-      const payload: Record<string, any> = {
+      const duplicateDl = allDrivers.find(
+        (d) => d.id !== driverToEdit?.id && (d.licenseNumber || '').trim().toUpperCase() === cleanDl
+      );
+      if (duplicateDl) {
+        throw new Error(`Driving license ${cleanDl} is already registered to ${duplicateDl.fullName}.`);
+      }
+
+      const matchedVehicle = assignedVehicleReg
+        ? vehicles.find((v) => v.registrationNumber === assignedVehicleReg)
+        : undefined;
+
+      const driverId = driverToEdit?.id || `drv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const nowIso = new Date().toISOString();
+
+      const driverObj: Driver = {
+        id: driverId,
+        companyId: company.id,
         fullName: fullName.trim(),
         phone: cleanPhone,
         altPhone: altPhone.trim() || undefined,
         licenseNumber: cleanDl,
         licenseExpiry,
         badgeNumber: badgeNumber.trim() || undefined,
-        address: address.trim() || undefined,
-        emergencyContact: emergencyContact.trim() || undefined,
-        emergencyPhone: emergencyPhone.trim() || undefined,
+        address: address.trim() || 'Not specified',
+        emergencyContact: emergencyContact.trim() || 'Family',
+        emergencyPhone: emergencyPhone.trim() || cleanPhone,
         status,
+        currentAdvanceBalancePaise: driverToEdit?.currentAdvanceBalancePaise ?? 0,
+        totalTripsCompleted: driverToEdit?.totalTripsCompleted ?? 0,
         perDayBataPaise: Math.round((parseFloat(perDayBata) || 0) * 100),
+        assignedVehicleId: matchedVehicle?.id || undefined,
         assignedVehicleReg: assignedVehicleReg || undefined,
+        joinedDate: driverToEdit?.joinedDate || nowIso.split('T')[0],
+        createdAt: driverToEdit?.createdAt || nowIso,
+        updatedAt: nowIso,
+        // Respect firestore.rules: non-OWNER/ADMIN updates cannot mutate sensitive PII/salary fields
+        ...(canEditSensitive || !isEdit
+          ? {
+              monthlySalaryPaise: monthlySalary ? Math.round(parseFloat(monthlySalary) * 100) : undefined,
+              aadharNumber: aadharNumber.trim() || undefined,
+              panNumber: panNumber.trim().toUpperCase() || undefined,
+              bankAccount: bankAccount.trim() || undefined,
+              bankIfsc: bankIfsc.trim().toUpperCase() || undefined,
+              bankName: bankName.trim() || undefined,
+              bankBranch: bankBranch.trim() || undefined,
+            }
+          : {
+              monthlySalaryPaise: driverToEdit?.monthlySalaryPaise,
+              aadharNumber: driverToEdit?.aadharNumber,
+              panNumber: driverToEdit?.panNumber,
+              bankAccount: driverToEdit?.bankAccount,
+              bankIfsc: driverToEdit?.bankIfsc,
+              bankName: driverToEdit?.bankName,
+              bankBranch: driverToEdit?.bankBranch,
+            }),
       };
 
-      // Only attach sensitive fields if user is privileged
-      if (canAccessSensitive) {
-        payload.monthlySalaryPaise = monthlySalary ? Math.round(parseFloat(monthlySalary) * 100) : undefined;
-        payload.aadharNumber = aadharNumber.trim() || undefined;
-        payload.panNumber = panNumber.trim().toUpperCase() || undefined;
-        payload.bankAccount = bankAccount.trim() || undefined;
-        payload.bankIfsc = bankIfsc.trim().toUpperCase() || undefined;
-        payload.bankName = bankName.trim() || undefined;
-        payload.bankBranch = bankBranch.trim() || undefined;
-      }
-
-      const url = isEdit ? `/api/drivers/${driverToEdit!.id}` : '/api/drivers';
-      const method = isEdit ? 'PUT' : 'POST';
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to save driver profile.');
-      }
-
-      await syncEntityToFirestore(company?.id, 'drivers', data.driver);
-      onSuccess(data.driver, isEdit);
+      await saveDriverInFirestore(company.id, driverObj);
+      onSuccess(driverObj, isEdit);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error occurred while saving driver.');
@@ -432,7 +449,13 @@ export const DriverModal: React.FC<DriverModalProps> = ({
               </h4>
               <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full flex items-center gap-1">
                 <ShieldCheck className="w-3 h-3 text-amber-700" />
-                <span>{canAccessSensitive ? 'Authorized Access' : 'Restricted (Owner/Accountant Only)'}</span>
+                <span>
+                  {canEditSensitive
+                    ? 'Authorized Access'
+                    : sensitiveReadOnly
+                    ? 'Read-Only (Owner/Admin Edit)'
+                    : 'Restricted (Owner/Accountant Only)'}
+                </span>
               </span>
             </div>
 
@@ -448,10 +471,12 @@ export const DriverModal: React.FC<DriverModalProps> = ({
                     </span>
                     <input
                       type="number"
+                      readOnly={sensitiveReadOnly}
+                      disabled={sensitiveReadOnly}
                       value={monthlySalary}
                       onChange={(e) => setMonthlySalary(e.target.value)}
                       placeholder="24000"
-                      className="w-full pl-7 pr-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-semibold"
+                      className="w-full pl-7 pr-3 py-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-semibold disabled:bg-slate-100"
                     />
                   </div>
                 </div>
@@ -463,10 +488,12 @@ export const DriverModal: React.FC<DriverModalProps> = ({
                   <input
                     type="text"
                     maxLength={12}
+                    readOnly={sensitiveReadOnly}
+                    disabled={sensitiveReadOnly}
                     value={aadharNumber}
                     onChange={(e) => setAadharNumber(e.target.value.replace(/[^0-9]/g, ''))}
                     placeholder="489210948210"
-                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono tracking-wider"
+                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono tracking-wider disabled:bg-slate-100"
                   />
                 </div>
 
@@ -477,10 +504,12 @@ export const DriverModal: React.FC<DriverModalProps> = ({
                   <input
                     type="text"
                     maxLength={10}
+                    readOnly={sensitiveReadOnly}
+                    disabled={sensitiveReadOnly}
                     value={panNumber}
                     onChange={(e) => setPanNumber(e.target.value.toUpperCase())}
                     placeholder="CYPY9812A"
-                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono uppercase font-bold"
+                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono uppercase font-bold disabled:bg-slate-100"
                   />
                 </div>
 
@@ -490,10 +519,12 @@ export const DriverModal: React.FC<DriverModalProps> = ({
                   </label>
                   <input
                     type="text"
+                    readOnly={sensitiveReadOnly}
+                    disabled={sensitiveReadOnly}
                     value={bankAccount}
                     onChange={(e) => setBankAccount(e.target.value.trim())}
                     placeholder="302910492812"
-                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono"
+                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono disabled:bg-slate-100"
                   />
                 </div>
 
@@ -504,10 +535,12 @@ export const DriverModal: React.FC<DriverModalProps> = ({
                   <input
                     type="text"
                     maxLength={11}
+                    readOnly={sensitiveReadOnly}
+                    disabled={sensitiveReadOnly}
                     value={bankIfsc}
                     onChange={(e) => setBankIfsc(e.target.value.toUpperCase())}
                     placeholder="SBIN0001829"
-                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono font-bold"
+                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 font-mono font-bold disabled:bg-slate-100"
                   />
                 </div>
 
@@ -517,10 +550,12 @@ export const DriverModal: React.FC<DriverModalProps> = ({
                   </label>
                   <input
                     type="text"
+                    readOnly={sensitiveReadOnly}
+                    disabled={sensitiveReadOnly}
                     value={bankName}
                     onChange={(e) => setBankName(e.target.value)}
                     placeholder="SBI Uluberia Branch"
-                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900"
+                    className="w-full p-2 text-xs sm:text-sm border border-slate-300 rounded-lg bg-white text-slate-900 disabled:bg-slate-100"
                   />
                 </div>
               </div>

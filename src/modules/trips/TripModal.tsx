@@ -1,25 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Navigation,
   Truck,
-  Users,
   Building2,
-  Calendar,
-  IndianRupee,
   AlertTriangle,
   Scale,
-  Clock,
-  Sparkles,
-  HelpCircle,
   MapPin,
-  CheckCircle2,
 } from 'lucide-react';
-import { Trip, Vehicle, Driver, Customer, TripStatus } from '../../types/tms';
+import { Trip, Vehicle, Driver, Customer, TripStatus, DriverAdvance } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
-import { formatINR, rupeesToPaise, paiseToRupees } from '../../lib/currency';
+import { formatINR, rupeesToPaise } from '../../lib/currency';
 import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { getNextTripNumber, getNextLrNumber } from '../../lib/tmsCalculations';
+import { createOrUpdateTripInFirestore } from '../../lib/firebase/firestoreService';
 
 interface TripModalProps {
   isOpen: boolean;
@@ -40,15 +34,22 @@ export const TripModal: React.FC<TripModalProps> = ({
   localDrivers = [],
   localCustomers = [],
 }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
+  const { user } = useAuth();
+  const {
+    company,
+    trips: allTrips,
+    vehicles: firestoreVehicles,
+    drivers: firestoreDrivers,
+    customers: firestoreCustomers,
+  } = useFirestoreData();
+
+  const effectiveCustomers = firestoreCustomers.length > 0 ? firestoreCustomers : localCustomers;
+  const effectiveVehicles = firestoreVehicles.length > 0 ? firestoreVehicles : localVehicles;
+  const effectiveDrivers = firestoreDrivers.length > 0 ? firestoreDrivers : localDrivers;
 
   const [customerId, setCustomerId] = useState('');
   const [vehicleId, setVehicleId] = useState('');
   const [driverId, setDriverId] = useState('');
-  const [availableCustomers, setAvailableCustomers] = useState<Customer[]>(localCustomers);
-  const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>(localVehicles);
-  const [availableDrivers, setAvailableDrivers] = useState<Driver[]>(localDrivers);
   const [originCity, setOriginCity] = useState('');
   const [destinationCity, setDestinationCity] = useState('');
   const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -63,62 +64,16 @@ export const TripModal: React.FC<TripModalProps> = ({
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [autoTripNumber, setAutoTripNumber] = useState('');
-  const [autoLrNumber, setAutoLrNumber] = useState('');
 
-  // Live fetch / sync customers when modal opens so only added parties appear
-  useEffect(() => {
-    if (isOpen) {
-      fetch('/api/customers?limit=100', {
-        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success && Array.isArray(data.data)) {
-            setAvailableCustomers(data.data);
-          }
-        })
-        .catch(() => {
-          setAvailableCustomers(localCustomers);
-        });
-    }
-  }, [isOpen, localCustomers, activeToken]);
+  const computedTripNumber = useMemo(
+    () => (tripToEdit ? tripToEdit.tripNumber : getNextTripNumber(allTrips, company)),
+    [tripToEdit, allTrips, company]
+  );
 
-  // Live fetch / sync vehicles when modal opens so only added trucks appear
-  useEffect(() => {
-    if (isOpen) {
-      fetch('/api/vehicles?limit=100', {
-        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success && Array.isArray(data.data)) {
-            setAvailableVehicles(data.data);
-          }
-        })
-        .catch(() => {
-          setAvailableVehicles(localVehicles);
-        });
-    }
-  }, [isOpen, localVehicles, activeToken]);
-
-  // Live fetch / sync drivers when modal opens so only added drivers appear
-  useEffect(() => {
-    if (isOpen) {
-      fetch('/api/drivers?limit=100', {
-        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success && Array.isArray(data.data)) {
-            setAvailableDrivers(data.data);
-          }
-        })
-        .catch(() => {
-          setAvailableDrivers(localDrivers);
-        });
-    }
-  }, [isOpen, localDrivers, activeToken]);
+  const computedLrNumber = useMemo(
+    () => (tripToEdit ? tripToEdit.lrNumber : getNextLrNumber(allTrips, company)),
+    [tripToEdit, allTrips, company]
+  );
 
   const resetForm = () => {
     setCustomerId('');
@@ -140,28 +95,6 @@ export const TripModal: React.FC<TripModalProps> = ({
     setError(null);
   };
 
-  // Fetch unique next numbers when creating a new trip
-  useEffect(() => {
-    if (isOpen && !tripToEdit) {
-      fetch('/api/trips/next-numbers', {
-        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success) {
-            setAutoTripNumber(data.tripNumber);
-            setAutoLrNumber(data.lrNumber);
-          }
-        })
-        .catch(() => {
-          const year = new Date().getFullYear();
-          setAutoTripNumber(`TR-${year}-0001`);
-          setAutoLrNumber(`LR-${year}-0001`);
-        });
-    }
-  }, [isOpen, tripToEdit, activeToken]);
-
-  // Initialize or populate form
   useEffect(() => {
     if (isOpen) {
       if (tripToEdit) {
@@ -171,7 +104,9 @@ export const TripModal: React.FC<TripModalProps> = ({
         setOriginCity(tripToEdit.originCity);
         setDestinationCity(tripToEdit.destinationCity);
         setDispatchDate(tripToEdit.dispatchDate.split('T')[0]);
-        setExpectedDeliveryDate(tripToEdit.expectedDeliveryDate ? tripToEdit.expectedDeliveryDate.split('T')[0] : '');
+        setExpectedDeliveryDate(
+          tripToEdit.expectedDeliveryDate ? tripToEdit.expectedDeliveryDate.split('T')[0] : ''
+        );
         setGoodsType(tripToEdit.goodsType);
         setWeightTonnes(tripToEdit.weightTonnes.toString());
         setRatePerTonneRupees((tripToEdit.ratePerTonnePaise / 100).toString());
@@ -179,11 +114,8 @@ export const TripModal: React.FC<TripModalProps> = ({
         setInitialAdvanceRupees('0');
         setStatus(tripToEdit.status);
         setNotes(tripToEdit.notes || '');
-        setAutoTripNumber(tripToEdit.tripNumber);
-        setAutoLrNumber(tripToEdit.lrNumber);
         setError(null);
       } else {
-        // Guaranteed clean reset: never prefill mock data for new commercial dispatches
         resetForm();
       }
     }
@@ -191,15 +123,10 @@ export const TripModal: React.FC<TripModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Selected entities for conflict warnings & validation
-  const effectiveCustomers = availableCustomers.length > 0 ? availableCustomers : localCustomers;
-  const effectiveVehicles = availableVehicles.length > 0 ? availableVehicles : localVehicles;
-  const effectiveDrivers = availableDrivers.length > 0 ? availableDrivers : localDrivers;
   const selectedVehicle = effectiveVehicles.find((v) => v.id === vehicleId);
   const selectedDriver = effectiveDrivers.find((d) => d.id === driverId);
   const selectedCustomer = effectiveCustomers.find((c) => c.id === customerId);
 
-  // Computed financial figures
   const weight = parseFloat(weightTonnes) || 0;
   const rateRupees = parseFloat(ratePerTonneRupees) || 0;
   const otherRupees = parseFloat(otherChargesRupees) || 0;
@@ -207,10 +134,13 @@ export const TripModal: React.FC<TripModalProps> = ({
   const computedFreightRupees = weight * rateRupees;
   const totalRevenueRupees = computedFreightRupees + otherRupees;
 
-  // Conflict Warnings
-  const isVehicleBusy = selectedVehicle?.status === 'IN_TRANSIT' && (!tripToEdit || tripToEdit.vehicleId !== selectedVehicle.id);
+  const isVehicleBusy =
+    selectedVehicle?.status === 'IN_TRANSIT' &&
+    (!tripToEdit || tripToEdit.vehicleId !== selectedVehicle.id);
   const isVehicleInGarage = selectedVehicle?.status === 'UNDER_MAINTENANCE';
-  const isDriverBusy = selectedDriver?.status === 'ON_TRIP' && (!tripToEdit || tripToEdit.driverId !== selectedDriver.id);
+  const isDriverBusy =
+    selectedDriver?.status === 'ON_TRIP' &&
+    (!tripToEdit || tripToEdit.driverId !== selectedDriver.id);
   const isOverweight = selectedVehicle && weight > selectedVehicle.capacityTonnes;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -219,13 +149,16 @@ export const TripModal: React.FC<TripModalProps> = ({
     setLoading(true);
 
     try {
-      if (!customerId) {
+      if (!company?.id) {
+        throw new Error('Active company profile is not loaded yet.');
+      }
+      if (!customerId || !selectedCustomer) {
         throw new Error('Please select a Customer / Consignor for this dispatch.');
       }
-      if (!vehicleId) {
+      if (!vehicleId || !selectedVehicle) {
         throw new Error('Please select an assigned Vehicle / Commercial Truck.');
       }
-      if (!driverId) {
+      if (!driverId || !selectedDriver) {
         throw new Error('Please select an assigned Commercial Driver.');
       }
       if (!originCity.trim() || !destinationCity.trim()) {
@@ -241,65 +174,89 @@ export const TripModal: React.FC<TripModalProps> = ({
         throw new Error('Freight rate per tonne must be greater than zero.');
       }
 
-      const finalExpectedDelivery = expectedDeliveryDate || new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
+      const finalExpectedDelivery =
+        expectedDeliveryDate ||
+        new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
 
-      const payload = {
-        tripNumber: autoTripNumber,
-        lrNumber: autoLrNumber,
-        customerId,
-        vehicleId,
-        driverId,
+      const freightAmountPaise = rupeesToPaise(computedFreightRupees);
+      const otherChargesPaise = rupeesToPaise(otherRupees);
+      const totalRevenuePaise = freightAmountPaise + otherChargesPaise;
+      const initialAdvancePaise = !tripToEdit ? rupeesToPaise(Math.max(0, advanceRupees)) : 0;
+
+      const tripId =
+        tripToEdit?.id || `trp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+      const existingExpensesPaise = tripToEdit?.totalExpensesPaise || 0;
+      const existingAdvancesPaise = tripToEdit?.totalAdvancesPaise || 0;
+
+      const tripPayload: Trip = {
+        ...(tripToEdit || {}),
+        id: tripId,
+        companyId: company.id,
+        tripNumber: computedTripNumber,
+        lrNumber: computedLrNumber,
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+        customerGstin: selectedCustomer.gstin || '',
+        vehicleId: selectedVehicle.id,
+        vehicleReg: selectedVehicle.registrationNumber,
+        driverId: selectedDriver.id,
+        driverName: selectedDriver.fullName,
+        driverPhone: selectedDriver.phone || '',
         originCity: originCity.trim(),
         destinationCity: destinationCity.trim(),
-        dispatchDate,
-        expectedDeliveryDate: finalExpectedDelivery,
         goodsType: goodsType.trim(),
         weightTonnes: weight,
         ratePerTonnePaise: rupeesToPaise(rateRupees),
-        freightAmountPaise: rupeesToPaise(computedFreightRupees),
-        otherChargesPaise: rupeesToPaise(otherRupees),
-        initialAdvancePaise: rupeesToPaise(advanceRupees),
+        freightAmountPaise,
+        otherChargesPaise,
+        totalRevenuePaise,
+        dispatchDate,
+        expectedDeliveryDate: finalExpectedDelivery,
         status,
-        notes: notes.trim(),
+        startOdometerKm:
+          tripToEdit?.startOdometerKm ?? selectedVehicle.currentOdometerKm ?? 0,
+        podReceived: tripToEdit?.podReceived ?? false,
+        totalExpensesPaise: existingExpensesPaise,
+        totalAdvancesPaise: tripToEdit ? existingAdvancesPaise : initialAdvancePaise,
+        tripContributionPaise: totalRevenuePaise - existingExpensesPaise,
+        isSettled: tripToEdit?.isSettled ?? false,
+        isInvoiced: tripToEdit?.isInvoiced ?? false,
+        notes: notes.trim() || undefined,
+        createdAt: tripToEdit?.createdAt || new Date().toISOString(),
       };
 
-      const url = tripToEdit ? `/api/trips/${tripToEdit.id}` : '/api/trips';
-      const method = tripToEdit ? 'PUT' : 'POST';
+      const initialAdvance: DriverAdvance | null =
+        !tripToEdit && initialAdvancePaise > 0
+          ? {
+              id: `adv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              companyId: company.id,
+              tripId,
+              tripNumber: computedTripNumber,
+              driverId: selectedDriver.id,
+              driverName: selectedDriver.fullName,
+              vehicleReg: selectedVehicle.registrationNumber,
+              amountPaise: initialAdvancePaise,
+              advanceType: 'CASH_DISPATCH',
+              date: dispatchDate,
+              referenceNotes: 'Initial cash advance at trip dispatch',
+              disbursedBy: user?.name || user?.email || 'Dispatcher',
+              isSettled: false,
+            }
+          : null;
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(payload),
+      await createOrUpdateTripInFirestore(company.id, {
+        trip: tripPayload,
+        vehicle: selectedVehicle,
+        driver: selectedDriver,
+        initialAdvance,
       });
 
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to save trip booking.');
-      }
-
-      await Promise.all([
-        syncEntityToFirestore(company?.id, 'trips', data.trip),
-        syncEntityToFirestore(company?.id, 'vehicles', data.vehicle),
-        syncEntityToFirestore(company?.id, 'vehicles', data.oldVehicle),
-        syncEntityToFirestore(company?.id, 'vehicles', data.newVehicle),
-        syncEntityToFirestore(company?.id, 'drivers', data.driver),
-        syncEntityToFirestore(company?.id, 'advances', data.advance),
-      ]);
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
-      if (data.advance) {
-        window.dispatchEvent(new CustomEvent('tms:advance-updated'));
-      }
-
-      onSuccess(data.trip, Boolean(tripToEdit));
+      onSuccess(tripPayload, Boolean(tripToEdit));
       resetForm();
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Error occurred while saving trip.');
+      setError(err.message || 'Error occurred while saving trip to Firestore.');
     } finally {
       setLoading(false);
     }
@@ -325,12 +282,12 @@ export const TripModal: React.FC<TripModalProps> = ({
           <div className="flex items-center gap-3">
             <div>
               <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Trip Number</span>
-              <span className="font-mono font-bold text-slate-900 text-sm">{autoTripNumber || 'Auto-generated'}</span>
+              <span className="font-mono font-bold text-slate-900 text-sm">{computedTripNumber || 'Auto-generated'}</span>
             </div>
             <div className="h-6 w-px bg-slate-200" />
             <div>
               <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">LR / Bilty Number</span>
-              <span className="font-mono font-bold text-indigo-700 text-sm">{autoLrNumber || 'Auto-generated'}</span>
+              <span className="font-mono font-bold text-indigo-700 text-sm">{computedLrNumber || 'Auto-generated'}</span>
             </div>
           </div>
 
@@ -484,7 +441,6 @@ export const TripModal: React.FC<TripModalProps> = ({
                 </div>
               )}
 
-              {/* Vehicle Warnings */}
               {isVehicleBusy && (
                 <div className="mt-1 flex items-center gap-1 text-[11px] text-amber-700 font-medium">
                   <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -628,7 +584,6 @@ export const TripModal: React.FC<TripModalProps> = ({
             </div>
           </div>
 
-          {/* Revenue Calculation Summary Card */}
           <div className="bg-emerald-50/80 p-3 rounded-xl border border-emerald-200 flex items-center justify-between">
             <div>
               <span className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider block">

@@ -1,31 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import {
   X,
   Truck,
-  ShieldCheck,
-  Calendar,
-  CreditCard,
-  User,
-  Wrench,
   AlertTriangle,
   Clock,
-  CheckCircle2,
   FileText,
   Trash2,
   Edit,
   ArrowRight,
-  ExternalLink,
 } from 'lucide-react';
-import { Vehicle, Driver, Trip, UserRole } from '../../types/tms';
+import { Vehicle, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
-import { parseResponseJson } from '../../lib/safeFetch';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 
 interface VehicleDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   vehicleId: string | null;
-  token: string;
   userRole: UserRole;
   onEdit: (vehicle: Vehicle) => void;
   onDelete: (vehicle: Vehicle) => void;
@@ -35,45 +27,33 @@ export const VehicleDetailModal: React.FC<VehicleDetailModalProps> = ({
   isOpen,
   onClose,
   vehicleId,
-  token,
   userRole,
   onEdit,
   onDelete,
 }) => {
-  const [vehicle, setVehicle] = useState<Vehicle | null>(null);
-  const [driver, setDriver] = useState<Driver | null>(null);
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { vehicles, drivers, trips: allTrips, loading } = useFirestoreData();
 
-  useEffect(() => {
-    if (!isOpen || !vehicleId) return;
+  const vehicle = useMemo(
+    () => (vehicleId ? vehicles.find((v) => v.id === vehicleId) || null : null),
+    [vehicles, vehicleId]
+  );
 
-    const fetchDetails = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (token) headers['Authorization'] = `Bearer ${token}`;
+  const driver = useMemo(
+    () => (vehicle?.assignedDriverId ? drivers.find((d) => d.id === vehicle.assignedDriverId) || null : null),
+    [drivers, vehicle?.assignedDriverId]
+  );
 
-        const res = await fetch(`/api/vehicles/${vehicleId}`, { headers });
-        const data = await parseResponseJson<any>(res);
-        if (!res.ok || !data || !data.success) {
-          throw new Error(data?.error || 'Failed to load vehicle details.');
-        }
+  const trips = useMemo(
+    () =>
+      vehicleId
+        ? allTrips
+            .filter((t) => t.vehicleId === vehicleId)
+            .sort((a, b) => new Date(b.dispatchDate || b.createdAt).getTime() - new Date(a.dispatchDate || a.createdAt).getTime())
+        : [],
+    [allTrips, vehicleId]
+  );
 
-        setVehicle(data.vehicle);
-        setDriver(data.driver);
-        setTrips(data.trips || []);
-      } catch (err: any) {
-        setError(err.message || 'Error fetching vehicle details.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDetails();
-  }, [isOpen, vehicleId, token]);
+  const error = !loading && isOpen && vehicleId && !vehicle ? 'Vehicle record not found in Firestore.' : null;
 
   if (!isOpen) return null;
 

@@ -1,19 +1,15 @@
 /**
- * AnchorTransport TMS - Reports & Analytics Engine (Phase 9)
- * 
- * Provides:
- * 1. Trip Report (Trip number, Customer, Vehicle, Driver, Freight revenue, Expenses, Trip contribution, Status)
- * 2. Vehicle Performance Report (Registration, Total trips, Freight revenue, Recorded expenses, Trip contribution, Maintenance costs)
- * 3. Expense Analysis Report (Category, Amount, Date, Vehicle, Trip, Payment method)
- * 4. Customer Receivables Report (Customer, Invoices, Total invoiced, Total paid, Outstanding balance, Overdue balance)
- * 5. Monthly Performance Report (Freight revenue, Expenses, Trip contribution, Completed trips, Active vehicles, Outstanding invoices)
- * 
- * Global Filtering: Date range (From / To), Vehicle, Driver, Customer, Status
- * Company-scoped CSV Exports for every report
- * Clear gross operational margin disclosure
+ * AnchorTransport TMS - Reports & Analytics Engine
+ *
+ * Computes all operational & financial reports directly from live Firestore data:
+ * 1. Trip Report
+ * 2. Vehicle Performance Report
+ * 3. Expense Analysis Report
+ * 4. Customer Receivables Report
+ * 5. Monthly Performance Report
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   FileText,
   Truck,
@@ -22,23 +18,21 @@ import {
   TrendingUp,
   Download,
   Filter,
-  Calendar,
   AlertTriangle,
-  RotateCcw,
-  CheckCircle2,
-  Clock,
-  ArrowUpRight,
-  ArrowDownRight,
-  DollarSign,
-  Fuel,
-  Wrench,
-  Search,
 } from 'lucide-react';
-import { useAuth } from '../../context/AuthContext';
 import { PageHeader } from '../../components/layout/PageHeader';
-import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { formatRupees, paiseToRupees } from '../../lib/financialEngine';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import {
+  computeTripReport,
+  computeVehicleReport,
+  computeExpenseReport,
+  computeReceivablesReport,
+  computeMonthlyPerformanceReport,
+  exportRowsToCsv,
+  REPORT_ACCOUNTING_DISCLAIMER,
+} from '../../lib/tmsCalculations';
 
 export type ReportType = 'trips' | 'vehicles' | 'expenses' | 'receivables' | 'monthly';
 
@@ -47,8 +41,22 @@ export interface ReportsViewProps {
   initialReport?: ReportType;
 }
 
-export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS', initialReport = 'trips' }) => {
-  const { token, company } = useAuth();
+export const ReportsView: React.FC<ReportsViewProps> = ({
+  userRole: _userRole = 'OPERATIONS',
+  initialReport = 'trips',
+}) => {
+  const {
+    vehicles,
+    drivers,
+    customers,
+    trips,
+    expenses,
+    invoices,
+    maintenance,
+    loading,
+    error,
+  } = useFirestoreData();
+
   const [activeReport, setActiveReport] = useState<ReportType>(initialReport);
 
   // Filters state
@@ -61,86 +69,30 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('');
 
-  // Data state
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [reportData, setReportData] = useState<any>(null);
+  const reportData = useMemo(() => {
+    const filters = {
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+      vehicleId: selectedVehicleId || undefined,
+      driverId: selectedDriverId || undefined,
+      customerId: selectedCustomerId || undefined,
+      status: selectedTripStatus || undefined,
+      category: selectedCategory || undefined,
+      paymentMethod: selectedPaymentMethod || undefined,
+    };
 
-  // Filter option entities
-  const [vehicles, setVehicles] = useState<any[]>([]);
-  const [drivers, setDrivers] = useState<any[]>([]);
-  const [customers, setCustomers] = useState<any[]>([]);
-
-  // Load filter options on mount & hydration
-  const loadOptions = async () => {
-    try {
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const [vRes, dRes, cRes] = await Promise.all([
-        fetch('/api/vehicles?limit=100', { credentials: 'include', headers }),
-        fetch('/api/drivers?limit=100', { credentials: 'include', headers }),
-        fetch('/api/customers?limit=100', { credentials: 'include', headers }),
-      ]);
-
-      if (vRes.ok) {
-        const vd = await vRes.json();
-        setVehicles(vd.data || vd.vehicles || []);
-      }
-      if (dRes.ok) {
-        const dd = await dRes.json();
-        setDrivers(dd.data || dd.drivers || []);
-      }
-      if (cRes.ok) {
-        const cd = await cRes.json();
-        setCustomers(cd.data || cd.customers || []);
-      }
-    } catch (e) {
-      console.warn('Failed to load filter options:', e);
+    switch (activeReport) {
+      case 'trips':
+        return computeTripReport({ trips, vehicles, drivers, customers, expenses }, filters);
+      case 'vehicles':
+        return computeVehicleReport({ vehicles, trips, expenses, maintenance }, filters);
+      case 'expenses':
+        return computeExpenseReport({ expenses, vehicles, trips }, filters);
+      case 'receivables':
+        return computeReceivablesReport({ customers, invoices }, filters);
+      case 'monthly':
+        return computeMonthlyPerformanceReport({ trips, expenses, invoices }, 6);
     }
-  };
-
-  useEffect(() => {
-    loadOptions();
-  }, [token, company?.id]);
-
-  // Load report data
-  const fetchReport = async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const params = new URLSearchParams();
-      if (startDate) params.set('startDate', startDate);
-      if (endDate) params.set('endDate', endDate);
-      if (selectedVehicleId) params.set('vehicleId', selectedVehicleId);
-      if (selectedDriverId) params.set('driverId', selectedDriverId);
-      if (selectedCustomerId) params.set('customerId', selectedCustomerId);
-      if (selectedTripStatus) params.set('status', selectedTripStatus);
-      if (selectedCategory) params.set('category', selectedCategory);
-      if (selectedPaymentMethod) params.set('paymentMethod', selectedPaymentMethod);
-
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      let endpoint = `/api/reports/${activeReport}?${params.toString()}`;
-      const res = await fetch(endpoint, { credentials: 'include', headers });
-
-      if (!res.ok) {
-        throw new Error(`Failed to load report (status ${res.status})`);
-      }
-
-      const data = await res.json();
-      setReportData(data);
-    } catch (err: any) {
-      setError(err.message || 'Error loading report');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchReport();
   }, [
     activeReport,
     startDate,
@@ -151,36 +103,129 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
     selectedTripStatus,
     selectedCategory,
     selectedPaymentMethod,
-    token,
-    company?.id,
+    trips,
+    vehicles,
+    drivers,
+    customers,
+    expenses,
+    invoices,
+    maintenance,
   ]);
 
-  useEffect(() => {
-    const handleHydration = () => {
-      loadOptions();
-      fetchReport();
-    };
-    window.addEventListener('tms:firestore-hydrated', handleHydration);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', handleHydration);
-    };
-  }, [token, company?.id, activeReport]);
-
-  // Handle CSV export download
   const handleExportCsv = () => {
-    const params = new URLSearchParams();
-    if (startDate) params.set('startDate', startDate);
-    if (endDate) params.set('endDate', endDate);
-    if (selectedVehicleId) params.set('vehicleId', selectedVehicleId);
-    if (selectedDriverId) params.set('driverId', selectedDriverId);
-    if (selectedCustomerId) params.set('customerId', selectedCustomerId);
-    if (selectedTripStatus) params.set('status', selectedTripStatus);
-    if (selectedCategory) params.set('category', selectedCategory);
-    if (selectedPaymentMethod) params.set('paymentMethod', selectedPaymentMethod);
-    params.set('format', 'csv');
+    const dateSuffix = new Date().toISOString().split('T')[0];
 
-    const downloadUrl = `/api/reports/${activeReport}?${params.toString()}`;
-    window.location.href = downloadUrl;
+    if (activeReport === 'trips' && 'trips' in reportData) {
+      const headers = [
+        'Trip #',
+        'LR #',
+        'Customer',
+        'Vehicle',
+        'Driver',
+        'Dispatch Date',
+        'Status',
+        'Freight Revenue (INR)',
+        'Direct Expenses (INR)',
+        'Trip Contribution (INR)',
+        'Margin %',
+      ];
+      const rows = reportData.trips.map((r) => [
+        r.tripNumber,
+        r.lrNumber,
+        r.customerName,
+        r.vehicleRegistration,
+        r.driverName,
+        r.dispatchDate?.slice(0, 10),
+        r.status,
+        paiseToRupees(r.freightRevenuePaise).toFixed(2),
+        paiseToRupees(r.totalExpensesPaise).toFixed(2),
+        paiseToRupees(r.tripContributionPaise).toFixed(2),
+        `${r.marginPercentage}%`,
+      ]);
+      exportRowsToCsv(`trip-report-${dateSuffix}.csv`, headers, rows, `# ${REPORT_ACCOUNTING_DISCLAIMER}`);
+    } else if (activeReport === 'vehicles' && 'vehicles' in reportData) {
+      const headers = [
+        'Registration',
+        'Model',
+        'Type',
+        'Status',
+        'Total Trips',
+        'Freight Revenue (INR)',
+        'Recorded Expenses (INR)',
+        'Maintenance Costs (INR)',
+        'Trip Contribution (INR)',
+        'FASTag Balance (INR)',
+      ];
+      const rows = reportData.vehicles.map((r) => [
+        r.registrationNumber,
+        r.makeModel,
+        r.vehicleType,
+        r.status,
+        r.totalTrips,
+        paiseToRupees(r.freightRevenuePaise).toFixed(2),
+        paiseToRupees(r.recordedExpensesPaise).toFixed(2),
+        paiseToRupees(r.maintenanceCostsPaise).toFixed(2),
+        paiseToRupees(r.tripContributionPaise).toFixed(2),
+        paiseToRupees(r.fastagBalancePaise).toFixed(2),
+      ]);
+      exportRowsToCsv(`vehicle-performance-${dateSuffix}.csv`, headers, rows, `# ${REPORT_ACCOUNTING_DISCLAIMER}`);
+    } else if (activeReport === 'expenses' && 'expenses' in reportData) {
+      const headers = ['Date', 'Category', 'Vehicle', 'Trip #', 'Payment Method', 'Notes', 'Amount (INR)'];
+      const rows = reportData.expenses.map((r) => [
+        r.date?.slice(0, 10),
+        r.category,
+        r.vehicleRegistration,
+        r.tripNumber,
+        r.paymentMethod,
+        r.notes,
+        paiseToRupees(r.amountPaise).toFixed(2),
+      ]);
+      exportRowsToCsv(`expense-report-${dateSuffix}.csv`, headers, rows);
+    } else if (activeReport === 'receivables' && 'customers' in reportData) {
+      const headers = [
+        'Customer',
+        'Contact',
+        'Phone',
+        'Credit Terms (Days)',
+        'Invoices',
+        'Total Invoiced (INR)',
+        'Total Paid (INR)',
+        'Outstanding Balance (INR)',
+        'Overdue Balance (INR)',
+      ];
+      const rows = reportData.customers.map((r) => [
+        r.customerName,
+        r.contactPerson,
+        r.phone,
+        r.paymentTermsDays,
+        r.invoiceCount,
+        paiseToRupees(r.totalInvoicedPaise).toFixed(2),
+        paiseToRupees(r.totalPaidPaise).toFixed(2),
+        paiseToRupees(r.outstandingBalancePaise).toFixed(2),
+        paiseToRupees(r.overdueBalancePaise).toFixed(2),
+      ]);
+      exportRowsToCsv(`customer-receivables-${dateSuffix}.csv`, headers, rows);
+    } else if (activeReport === 'monthly' && 'months' in reportData) {
+      const headers = [
+        'Billing Month',
+        'Completed Trips',
+        'Active Vehicles',
+        'Freight Revenue (INR)',
+        'Trip Expenses (INR)',
+        'Trip Contribution (INR)',
+        'Outstanding Invoices (INR)',
+      ];
+      const rows = reportData.months.map((r) => [
+        r.monthLabel,
+        r.completedTripsCount,
+        r.activeVehiclesCount,
+        paiseToRupees(r.freightRevenuePaise).toFixed(2),
+        paiseToRupees(r.recordedExpensesPaise).toFixed(2),
+        paiseToRupees(r.tripContributionPaise).toFixed(2),
+        paiseToRupees(r.outstandingInvoicesPaise).toFixed(2),
+      ]);
+      exportRowsToCsv(`monthly-performance-${dateSuffix}.csv`, headers, rows, `# ${REPORT_ACCOUNTING_DISCLAIMER}`);
+    }
   };
 
   const handleResetFilters = () => {
@@ -194,6 +239,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
     setSelectedPaymentMethod('');
   };
 
+  const tripsReport = activeReport === 'trips' && 'trips' in reportData ? reportData : null;
+  const vehiclesReport = activeReport === 'vehicles' && 'vehicles' in reportData ? reportData : null;
+  const expensesReport = activeReport === 'expenses' && 'expenses' in reportData ? reportData : null;
+  const receivablesReport = activeReport === 'receivables' && 'customers' in reportData ? reportData : null;
+  const monthlyReport = activeReport === 'monthly' && 'months' in reportData ? reportData : null;
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -205,21 +256,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
               variant="outline"
               size="sm"
               onClick={handleExportCsv}
-              disabled={loading || !reportData}
+              disabled={loading}
               className="flex items-center gap-1.5"
             >
               <Download className="w-4 h-4 text-slate-600" />
               <span>Export CSV</span>
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={fetchReport}
-              loading={loading}
-              className="flex items-center gap-1.5"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>Refresh</span>
             </Button>
           </div>
         }
@@ -238,7 +279,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
         <button
           onClick={() => setActiveReport('trips')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
             activeReport === 'trips'
               ? 'bg-indigo-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -250,7 +291,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
 
         <button
           onClick={() => setActiveReport('vehicles')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
             activeReport === 'vehicles'
               ? 'bg-indigo-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -262,7 +303,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
 
         <button
           onClick={() => setActiveReport('expenses')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
             activeReport === 'expenses'
               ? 'bg-indigo-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -274,7 +315,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
 
         <button
           onClick={() => setActiveReport('receivables')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
             activeReport === 'receivables'
               ? 'bg-indigo-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -286,7 +327,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
 
         <button
           onClick={() => setActiveReport('monthly')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
             activeReport === 'monthly'
               ? 'bg-indigo-600 text-white shadow-xs'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -306,7 +347,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
           </div>
           <button
             onClick={handleResetFilters}
-            className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+            className="text-xs text-indigo-600 hover:text-indigo-800 font-medium cursor-pointer"
           >
             Reset Filters
           </button>
@@ -353,7 +394,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
           </div>
 
           {/* Driver Filter */}
-          {(activeReport === 'trips') && (
+          {activeReport === 'trips' && (
             <div>
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">Driver</label>
               <select
@@ -364,7 +405,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                 <option value="">All Drivers</option>
                 {drivers.map((d) => (
                   <option key={d.id} value={d.id}>
-                    {d.fullName || d.name}
+                    {d.fullName}
                   </option>
                 ))}
               </select>
@@ -421,17 +462,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                 className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="">All Categories</option>
-                <option value="DIESEL">Fuel / Diesel</option>
-                <option value="TOLL">Toll (FASTag/Cash)</option>
+                <option value="FUEL">Fuel</option>
+                <option value="DIESEL">Diesel</option>
+                <option value="TOLL">Toll</option>
+                <option value="TOLL_FASTAG">Toll (FASTag)</option>
                 <option value="PARKING">Parking / Border Check</option>
                 <option value="DRIVER_ALLOWANCE">Driver Allowance</option>
+                <option value="DRIVER_BATA">Driver Bata</option>
                 <option value="LOADING">Loading Charges</option>
                 <option value="UNLOADING">Unloading Charges</option>
                 <option value="REPAIR">Repair & Maintenance</option>
                 <option value="EN_ROUTE_REPAIR">En-Route Repair</option>
                 <option value="TYRE_PUNCTURE">Tyre & Puncture</option>
-                <option value="POLICE_RTO">RTO / Transit Fees</option>
-                <option value="MISC">Miscellaneous</option>
+                <option value="RTO_POLICE">RTO / Transit Fees</option>
+                <option value="OTHER">Other</option>
               </select>
             </div>
           )}
@@ -439,41 +483,38 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
       </div>
 
       {/* Loading & Error States */}
-      {loading && (
+      {loading && trips.length === 0 && vehicles.length === 0 && (
         <div className="py-16 text-center">
           <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-          <p className="text-xs font-medium text-slate-500">Querying transactional database records...</p>
+          <p className="text-xs font-medium text-slate-500">Synchronizing Firestore records...</p>
         </div>
       )}
 
-      {error && !loading && (
+      {error && (
         <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium">
           {error}
         </div>
       )}
 
       {/* REPORT CONTENT VIEWS */}
-      {!loading && !error && reportData && (
+      {!error && (
         <div className="space-y-6">
-          {/* ========================================================= */}
           {/* 1. TRIP REPORT */}
-          {/* ========================================================= */}
-          {activeReport === 'trips' && (
+          {tripsReport && (
             <div className="space-y-4">
-              {/* Summary KPIs */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
                     Total Filtered Trips
                   </span>
-                  <span className="text-2xl font-bold text-slate-900">{reportData.summary?.totalTrips || 0}</span>
+                  <span className="text-2xl font-bold text-slate-900">{tripsReport.summary.totalTrips}</span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
                     Freight Revenue
                   </span>
                   <span className="text-2xl font-bold text-emerald-700">
-                    {formatRupees(reportData.summary?.totalFreightRevenuePaise || 0)}
+                    {formatRupees(tripsReport.summary.totalFreightRevenuePaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
@@ -481,7 +522,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Recorded Direct Expenses
                   </span>
                   <span className="text-2xl font-bold text-rose-700">
-                    {formatRupees(reportData.summary?.totalExpensesPaise || 0)}
+                    {formatRupees(tripsReport.summary.totalExpensesPaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-indigo-200 bg-indigo-50/40 shadow-xs">
@@ -490,21 +531,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                       Trip Contribution
                     </span>
                     <span className="text-xs font-bold text-indigo-700">
-                      {reportData.summary?.overallMarginPercentage}%
+                      {tripsReport.summary.overallMarginPercentage}%
                     </span>
                   </div>
                   <span className="text-2xl font-bold text-indigo-900">
-                    {formatRupees(reportData.summary?.totalTripContributionPaise || 0)}
+                    {formatRupees(tripsReport.summary.totalTripContributionPaise)}
                   </span>
                   <span className="text-[10px] text-indigo-700 block mt-0.5 font-medium">Gross Operational Margin</span>
                 </div>
               </div>
 
-              {/* Data Table */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                   <h3 className="text-sm font-bold text-slate-900">Trip Performance Breakdown</h3>
-                  <span className="text-xs text-slate-500">{reportData.trips?.length || 0} records</span>
+                  <span className="text-xs text-slate-500">{tripsReport.trips.length} records</span>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -524,8 +564,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {reportData.trips && reportData.trips.length > 0 ? (
-                        reportData.trips.map((row: any) => (
+                      {tripsReport.trips.length > 0 ? (
+                        tripsReport.trips.map((row) => (
                           <tr key={row.tripId} className="hover:bg-slate-50/70 transition-colors">
                             <td className="py-3 px-4 font-mono font-medium text-slate-900">
                               {row.tripNumber}
@@ -540,7 +580,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                             <td className="py-3 px-4">
                               <span
                                 className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                  row.status === 'COMPLETED' || row.status === 'DELIVERED'
+                                  row.status === 'COMPLETED' || row.status === 'DELIVERED' || row.status === 'SETTLED'
                                     ? 'bg-emerald-100 text-emerald-800'
                                     : row.status === 'IN_TRANSIT'
                                     ? 'bg-blue-100 text-blue-800'
@@ -580,25 +620,22 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
             </div>
           )}
 
-          {/* ========================================================= */}
           {/* 2. VEHICLE PERFORMANCE REPORT */}
-          {/* ========================================================= */}
-          {activeReport === 'vehicles' && (
+          {vehiclesReport && (
             <div className="space-y-4">
-              {/* Summary KPIs */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
                     Fleet Vehicles Analyzed
                   </span>
-                  <span className="text-2xl font-bold text-slate-900">{reportData.summary?.totalVehicles || 0}</span>
+                  <span className="text-2xl font-bold text-slate-900">{vehiclesReport.summary.totalVehicles}</span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
                     Freight Generated
                   </span>
                   <span className="text-2xl font-bold text-emerald-700">
-                    {formatRupees(reportData.summary?.totalFreightRevenuePaise || 0)}
+                    {formatRupees(vehiclesReport.summary.totalFreightRevenuePaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
@@ -606,7 +643,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Maintenance & Repairs
                   </span>
                   <span className="text-2xl font-bold text-rose-700">
-                    {formatRupees(reportData.summary?.totalMaintenanceCostsPaise || 0)}
+                    {formatRupees(vehiclesReport.summary.totalMaintenanceCostsPaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-indigo-200 bg-indigo-50/40 shadow-xs">
@@ -614,17 +651,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Fleet Trip Contribution
                   </span>
                   <span className="text-2xl font-bold text-indigo-900">
-                    {formatRupees(reportData.summary?.totalTripContributionPaise || 0)}
+                    {formatRupees(vehiclesReport.summary.totalTripContributionPaise)}
                   </span>
                   <span className="text-[10px] text-indigo-700 block mt-0.5 font-medium">Gross Operational Margin</span>
                 </div>
               </div>
 
-              {/* Data Table */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                   <h3 className="text-sm font-bold text-slate-900">Vehicle Utilization & Unit Economics</h3>
-                  <span className="text-xs text-slate-500">{reportData.vehicles?.length || 0} trucks</span>
+                  <span className="text-xs text-slate-500">{vehiclesReport.vehicles.length} trucks</span>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -643,8 +679,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {reportData.vehicles && reportData.vehicles.length > 0 ? (
-                        reportData.vehicles.map((row: any) => (
+                      {vehiclesReport.vehicles.length > 0 ? (
+                        vehiclesReport.vehicles.map((row) => (
                           <tr key={row.vehicleId} className="hover:bg-slate-50/70 transition-colors">
                             <td className="py-3 px-4 font-mono font-bold text-slate-900">
                               {row.registrationNumber}
@@ -697,14 +733,11 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
             </div>
           )}
 
-          {/* ========================================================= */}
           {/* 3. EXPENSE REPORT */}
-          {/* ========================================================= */}
-          {activeReport === 'expenses' && (
+          {expensesReport && (
             <div className="space-y-4">
-              {/* Category Breakdown Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                {Object.entries(reportData.summary?.categoryTotals || {}).map(([cat, amt]: [string, any]) => (
+                {Object.entries(expensesReport.summary.categoryTotals).map(([cat, amt]) => (
                   <div key={cat} className="p-3 rounded-xl bg-white border border-slate-200 shadow-xs">
                     <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-0.5">
                       {cat.replace(/_/g, ' ')}
@@ -714,13 +747,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                 ))}
               </div>
 
-              {/* Data Table */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                   <div>
                     <h3 className="text-sm font-bold text-slate-900">Direct Expense Ledger</h3>
                     <span className="text-xs text-slate-500">
-                      Total: {formatRupees(reportData.summary?.totalExpensePaise || 0)} ({reportData.expenses?.length || 0} entries)
+                      Total: {formatRupees(expensesReport.summary.totalExpensePaise)} ({expensesReport.expenses.length} entries)
                     </span>
                   </div>
                 </div>
@@ -739,8 +771,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {reportData.expenses && reportData.expenses.length > 0 ? (
-                        reportData.expenses.map((row: any) => (
+                      {expensesReport.expenses.length > 0 ? (
+                        expensesReport.expenses.map((row) => (
                           <tr key={row.id} className="hover:bg-slate-50/70 transition-colors">
                             <td className="py-3 px-4 text-slate-600">{row.date?.slice(0, 10)}</td>
                             <td className="py-3 px-4">
@@ -771,19 +803,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
             </div>
           )}
 
-          {/* ========================================================= */}
           {/* 4. CUSTOMER RECEIVABLES REPORT */}
-          {/* ========================================================= */}
-          {activeReport === 'receivables' && (
+          {receivablesReport && (
             <div className="space-y-4">
-              {/* Summary KPIs */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
                     Total Invoiced
                   </span>
                   <span className="text-2xl font-bold text-slate-900">
-                    {formatRupees(reportData.summary?.totalInvoicedPaise || 0)}
+                    {formatRupees(receivablesReport.summary.totalInvoicedPaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
@@ -791,7 +820,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Total Collections Received
                   </span>
                   <span className="text-2xl font-bold text-emerald-700">
-                    {formatRupees(reportData.summary?.totalPaidPaise || 0)}
+                    {formatRupees(receivablesReport.summary.totalPaidPaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
@@ -799,7 +828,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Outstanding Balance
                   </span>
                   <span className="text-2xl font-bold text-amber-700">
-                    {formatRupees(reportData.summary?.totalOutstandingBalancePaise || 0)}
+                    {formatRupees(receivablesReport.summary.totalOutstandingBalancePaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-rose-50/50 border border-rose-200 shadow-xs">
@@ -807,17 +836,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Overdue Balance
                   </span>
                   <span className="text-2xl font-bold text-rose-700">
-                    {formatRupees(reportData.summary?.totalOverdueBalancePaise || 0)}
+                    {formatRupees(receivablesReport.summary.totalOverdueBalancePaise)}
                   </span>
                   <span className="text-[10px] text-rose-600 block mt-0.5 font-medium">Exceeded Customer Credit Terms</span>
                 </div>
               </div>
 
-              {/* Data Table */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                   <h3 className="text-sm font-bold text-slate-900">Customer Balance Aging Ledger</h3>
-                  <span className="text-xs text-slate-500">{reportData.customers?.length || 0} clients</span>
+                  <span className="text-xs text-slate-500">{receivablesReport.customers.length} clients</span>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -835,8 +863,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {reportData.customers && reportData.customers.length > 0 ? (
-                        reportData.customers.map((row: any) => (
+                      {receivablesReport.customers.length > 0 ? (
+                        receivablesReport.customers.map((row) => (
                           <tr key={row.customerId} className="hover:bg-slate-50/70 transition-colors">
                             <td className="py-3 px-4 font-bold text-slate-900">{row.customerName}</td>
                             <td className="py-3 px-4 text-slate-600">
@@ -875,19 +903,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
             </div>
           )}
 
-          {/* ========================================================= */}
           {/* 5. MONTHLY PERFORMANCE REPORT */}
-          {/* ========================================================= */}
-          {activeReport === 'monthly' && (
+          {monthlyReport && (
             <div className="space-y-4">
-              {/* Summary KPIs */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
                     Total Freight Revenue
                   </span>
                   <span className="text-2xl font-bold text-emerald-700">
-                    {formatRupees(reportData.summary?.totalFreightRevenuePaise || 0)}
+                    {formatRupees(monthlyReport.summary.totalFreightRevenuePaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 shadow-xs">
@@ -895,7 +920,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Total Direct Expenses
                   </span>
                   <span className="text-2xl font-bold text-rose-700">
-                    {formatRupees(reportData.summary?.totalTripExpensesPaise || 0)}
+                    {formatRupees(monthlyReport.summary.totalTripExpensesPaise)}
                   </span>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-indigo-200 bg-indigo-50/40 shadow-xs">
@@ -903,7 +928,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Total Trip Contribution
                   </span>
                   <span className="text-2xl font-bold text-indigo-900">
-                    {formatRupees(reportData.summary?.totalTripContributionPaise || 0)}
+                    {formatRupees(monthlyReport.summary.totalTripContributionPaise)}
                   </span>
                   <span className="text-[10px] text-indigo-700 block mt-0.5 font-medium">Gross Operational Margin</span>
                 </div>
@@ -912,16 +937,15 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                     Completed Trips
                   </span>
                   <span className="text-2xl font-bold text-slate-900">
-                    {reportData.summary?.totalCompletedTrips || 0}
+                    {monthlyReport.summary.totalCompletedTrips}
                   </span>
                 </div>
               </div>
 
-              {/* Data Table */}
               <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
                 <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                   <h3 className="text-sm font-bold text-slate-900">Monthly Operational & Margin Trends</h3>
-                  <span className="text-xs text-slate-500">{reportData.months?.length || 0} months period</span>
+                  <span className="text-xs text-slate-500">{monthlyReport.months.length} months period</span>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -938,8 +962,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ userRole = 'OPERATIONS
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {reportData.months && reportData.months.length > 0 ? (
-                        reportData.months.map((row: any) => (
+                      {monthlyReport.months.length > 0 ? (
+                        monthlyReport.months.map((row) => (
                           <tr key={row.monthKey} className="hover:bg-slate-50/70 transition-colors">
                             <td className="py-3 px-4 font-bold text-slate-900">{row.monthLabel}</td>
                             <td className="py-3 px-4 text-center font-semibold text-slate-800">

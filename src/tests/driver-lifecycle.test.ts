@@ -1,18 +1,16 @@
 /**
  * AnchorTransport TMS - Driver Lifecycle & Zero-Default Verification Suite
- * 
+ *
  * Verifies:
  * 1. Default system state starts with 0 drivers for a company until user explicitly registers one.
- * 2. Client storage initialization and legacy purge strips mock drivers.
- * 3. Adding a new driver in Drivers (/api/drivers) stores it and makes it available.
- * 4. Trip dispatch selectors start with 0 drivers and only offer drivers after addition.
- * 5. Strict multi-tenant isolation prevents Company A drivers from appearing in Company B.
+ * 2. Client cache clearing strips ephemeral local keys without touching Firestore operational data.
+ * 3. Adding a new driver stores it in company scope and makes it available.
+ * 4. Strict multi-tenant isolation prevents Company A drivers from appearing in Company B.
  */
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-// Polyfill localStorage for node CLI testing environment
 if (typeof globalThis.localStorage === 'undefined') {
   const store = new Map<string, string>();
   globalThis.localStorage = {
@@ -28,9 +26,12 @@ if (typeof globalThis.localStorage === 'undefined') {
     },
   } as any;
 }
+if (typeof (globalThis as any).window === 'undefined') {
+  (globalThis as any).window = { localStorage: globalThis.localStorage };
+}
 
 import { serverFleetStore } from '../server/store';
-import { loadStore, saveStore, getInitialStore, clearStoreForNewCustomer } from '../lib/storage';
+import { EMPTY_COMPANY, clearClientTmsCaches, TMS_STORAGE_KEY } from '../lib/storage';
 import { Driver } from '../types/tms';
 
 describe('Driver Lifecycle & Zero-Default Verification', () => {
@@ -38,74 +39,30 @@ describe('Driver Lifecycle & Zero-Default Verification', () => {
   const companyB = 'comp_driver_test_002';
 
   test('1. System starts with 0 default drivers for a new company', () => {
-    // Clear company context
     serverFleetStore.clearCompanyData(companyA);
     const companyDrivers = serverFleetStore.drivers.filter((d) => d.companyId === companyA);
     assert.strictEqual(companyDrivers.length, 0, 'New company must have 0 default drivers');
   });
 
-  test('2. Client initial store initializes with empty drivers list', () => {
-    const freshStore = clearStoreForNewCustomer();
-    assert.deepStrictEqual(freshStore.drivers, [], 'Initial store drivers must be empty array');
+  test('2. Client EMPTY_COMPANY default has empty id and no mock driver records', () => {
+    assert.strictEqual(EMPTY_COMPANY.id, '', 'Empty company placeholder must have blank ID');
   });
 
-  test('3. Client loadStore automatically purges legacy mock driver records', () => {
-    // Simulate legacy storage containing mock drivers
-    const legacyState = {
-      ...clearStoreForNewCustomer(),
-      drivers: [
-        {
-          id: 'drv_01',
-          companyId: companyA,
-          fullName: 'Rajesh Yadav',
-          phone: '+91 97321 44501',
-          licenseNumber: 'WB1920140029182',
-          licenseExpiry: '2028-09-14',
-          status: 'AVAILABLE',
-        },
-        {
-          id: 'drv_user_real_99',
-          companyId: companyA,
-          fullName: 'Bimal Sen',
-          phone: '+91 98300 12345',
-          licenseNumber: 'WB1920200012345',
-          licenseExpiry: '2030-01-01',
-          status: 'AVAILABLE',
-        },
-      ],
-    };
-
-    saveStore(legacyState as any);
-    const cleansed = loadStore();
-
-    // drv_01 / Rajesh Yadav should be purged; drv_user_real_99 preserved
-    assert.strictEqual(
-      cleansed.drivers.some((d) => d.fullName === 'Rajesh Yadav'),
-      false,
-      'Legacy mock driver Rajesh Yadav must be purged'
-    );
-    assert.strictEqual(
-      cleansed.drivers.some((d) => d.id === 'drv_01'),
-      false,
-      'Legacy mock id drv_01 must be purged'
-    );
-    assert.strictEqual(
-      cleansed.drivers.some((d) => d.id === 'drv_user_real_99'),
-      true,
-      'User-added real driver drv_user_real_99 must be preserved'
-    );
+  test('3. clearClientTmsCaches removes local cache keys cleanly', () => {
+    globalThis.localStorage.setItem(TMS_STORAGE_KEY, 'stale');
+    globalThis.localStorage.setItem('token', 'stale_tok');
+    clearClientTmsCaches();
+    assert.strictEqual(globalThis.localStorage.getItem(TMS_STORAGE_KEY), null);
+    assert.strictEqual(globalThis.localStorage.getItem('token'), null);
   });
 
   test('4. Adding a real driver makes them available for commercial trip dispatch', () => {
     serverFleetStore.clearCompanyData(companyA);
-
-    // Initial check: 0 drivers
     assert.strictEqual(
       serverFleetStore.drivers.filter((d) => d.companyId === companyA).length,
       0
     );
 
-    // Operator adds a commercial driver in Drivers
     const newDriver: Driver = {
       id: `drv_user_${Date.now()}`,
       companyId: companyA,
@@ -126,7 +83,6 @@ describe('Driver Lifecycle & Zero-Default Verification', () => {
 
     serverFleetStore.drivers.unshift(newDriver);
 
-    // Verify driver now exists in company fleet
     const companyDrivers = serverFleetStore.drivers.filter((d) => d.companyId === companyA);
     assert.strictEqual(companyDrivers.length, 1);
     assert.strictEqual(companyDrivers[0].fullName, 'Prabir Bhattacharya');

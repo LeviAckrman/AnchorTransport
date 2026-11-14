@@ -1,27 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Receipt,
   Plus,
   Search,
-  Filter,
   AlertTriangle,
-  IndianRupee,
   Fuel,
-  RefreshCw,
   ChevronLeft,
   ChevronRight,
   Eye,
   Edit,
   Trash2,
-  Calendar,
   CheckCircle2,
   TrendingDown,
-  FileText,
   ShieldCheck,
   CreditCard,
   Truck,
 } from 'lucide-react';
-import { TripExpense, ExpenseCategory, PaymentMode, UserRole } from '../../types/tms';
+import { TripExpense, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
@@ -29,117 +24,142 @@ import { ExpenseModal } from './ExpenseModal';
 import { ExpenseDetailModal } from './ExpenseDetailModal';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { deleteEntityFromFirestore, syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { deleteExpenseInFirestore } from '../../lib/firebase/firestoreService';
+import { getExpenseDate } from '../../lib/tmsCalculations';
 
 interface ExpensesViewProps {
   userRole: UserRole;
   onNavigateTab?: (tab: any) => void;
 }
 
-export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigateTab }) => {
-  const { token, company } = useAuth();
-
-  // State
-  const [expenses, setExpenses] = useState<TripExpense[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigateTab: _onNavigateTab }) => {
+  const { company: authCompany } = useAuth();
+  const { company: liveCompany, expenses: allExpenses, trips, loading, error } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
 
   // Pagination & Filtering
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
+  const limit = 15;
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [paymentModeFilter, setPaymentModeFilter] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
 
-  // Summary KPIs
-  const [summary, setSummary] = useState({
-    totalAmountPaise: 0,
-    fuelAmountPaise: 0,
-    tollAmountPaise: 0,
-    otherAmountPaise: 0,
-    count: 0,
-  });
-
   // Modals
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [expenseToEdit, setExpenseToEdit] = useState<TripExpense | null>(null);
-  const [selectedExpenseForDetail, setSelectedExpenseForDetail] = useState<TripExpense | null>(null);
+  const [selectedExpenseId, setSelectedExpenseId] = useState<string | null>(null);
   const [expenseToDelete, setExpenseToDelete] = useState<TripExpense | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
-
-  const fetchExpenses = async (targetPage = page) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: '15',
-        search: searchQuery,
-      });
-
-      if (categoryFilter) params.append('category', categoryFilter);
-      if (paymentModeFilter) params.append('paymentMode', paymentModeFilter);
-      if (startDate) params.append('startDate', startDate);
-      if (endDate) params.append('endDate', endDate);
-
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(`/api/expenses?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch trip expense records.');
-      }
-
-      setExpenses(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages);
-      setTotalCount(data.pagination.total);
-      if (data.summary) {
-        setSummary(data.summary);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Error loading expense ledger.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchExpenses(1);
-  }, [categoryFilter, paymentModeFilter, startDate, endDate, token, company?.id]);
-
-  // Listen for Firestore hydration & cross-view expense changes
-  useEffect(() => {
-    const handleRefresh = () => {
-      fetchExpenses(page);
-    };
-    window.addEventListener('tms:firestore-hydrated', handleRefresh);
-    window.addEventListener('tms:expense-updated', handleRefresh);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
-      window.removeEventListener('tms:expense-updated', handleRefresh);
-    };
-  }, [page, categoryFilter, paymentModeFilter, startDate, endDate, searchQuery, token, company?.id]);
-
-  // Debounced search
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchExpenses(1);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMsg({ text, type });
     setTimeout(() => setToastMsg(null), 3500);
   };
+
+  const tripMap = useMemo(() => new Map(trips.map((t) => [t.id, t])), [trips]);
+
+  const enrichedExpenses = useMemo(() => {
+    return allExpenses.map((exp) => {
+      const trip = exp.tripId ? tripMap.get(exp.tripId) : undefined;
+      return {
+        ...exp,
+        tripNumber: exp.tripNumber || trip?.tripNumber,
+        vehicleReg: exp.vehicleReg || trip?.vehicleReg,
+        driverName: exp.driverName || trip?.driverName,
+      };
+    });
+  }, [allExpenses, tripMap]);
+
+  const matchesCategoryFilter = (cat: string, filter: string): boolean => {
+    if (!filter) return true;
+    if (filter === 'FUEL') return cat === 'FUEL' || cat === 'DIESEL';
+    if (filter === 'TOLL') return cat === 'TOLL' || cat === 'TOLL_FASTAG';
+    if (filter === 'DRIVER_ALLOWANCE') return cat === 'DRIVER_ALLOWANCE' || cat === 'DRIVER_BATA';
+    if (filter === 'REPAIR') return cat === 'REPAIR' || cat === 'EN_ROUTE_REPAIR' || cat === 'TYRE_PUNCTURE';
+    return cat === filter;
+  };
+
+  const filteredExpenses = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return [...enrichedExpenses]
+      .filter((exp) => {
+        if (!matchesCategoryFilter(exp.category, categoryFilter)) return false;
+        if (paymentModeFilter && exp.paymentMode !== paymentModeFilter) return false;
+        const dt = getExpenseDate(exp).slice(0, 10);
+        if (startDate && dt && dt < startDate) return false;
+        if (endDate && dt && dt > endDate) return false;
+        if (q) {
+          const hay = [
+            exp.tripNumber,
+            exp.vehicleReg,
+            exp.driverName,
+            exp.petrolPumpName,
+            exp.pumpName,
+            exp.voucherNumber,
+            exp.receiptNumber,
+            exp.description,
+            exp.notes,
+            exp.category,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const da = new Date(getExpenseDate(b) || 0).getTime();
+        const db = new Date(getExpenseDate(a) || 0).getTime();
+        return da - db;
+      });
+  }, [enrichedExpenses, categoryFilter, paymentModeFilter, startDate, endDate, searchQuery]);
+
+  // Summary KPIs derived from filtered/live Firestore expenses
+  const summary = useMemo(() => {
+    let totalAmountPaise = 0;
+    let fuelAmountPaise = 0;
+    let tollAmountPaise = 0;
+    let otherAmountPaise = 0;
+
+    for (const exp of filteredExpenses) {
+      const amt = exp.amountPaise || 0;
+      totalAmountPaise += amt;
+      if (exp.category === 'FUEL' || exp.category === 'DIESEL') {
+        fuelAmountPaise += amt;
+      } else if (exp.category === 'TOLL' || exp.category === 'TOLL_FASTAG') {
+        tollAmountPaise += amt;
+      } else {
+        otherAmountPaise += amt;
+      }
+    }
+
+    return {
+      totalAmountPaise,
+      fuelAmountPaise,
+      tollAmountPaise,
+      otherAmountPaise,
+      count: filteredExpenses.length,
+    };
+  }, [filteredExpenses]);
+
+  const totalCount = filteredExpenses.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+
+  const expenses = useMemo(() => {
+    const start = (safePage - 1) * limit;
+    return filteredExpenses.slice(start, start + limit);
+  }, [filteredExpenses, safePage]);
+
+  const selectedExpenseForDetail = useMemo(
+    () => (selectedExpenseId ? enrichedExpenses.find((e) => e.id === selectedExpenseId) || null : null),
+    [enrichedExpenses, selectedExpenseId]
+  );
 
   const handleModalSuccess = (savedExpense: TripExpense, isEdit: boolean) => {
     showNotification(
@@ -148,39 +168,27 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
         : `Recorded ${savedExpense.category} expense of ${formatINR(savedExpense.amountPaise)}.`,
       'success'
     );
-    fetchExpenses(isEdit ? page : 1);
   };
 
   const handleDeleteExpense = async (expense: TripExpense) => {
+    const activeCompanyId = company?.id || expense.companyId;
+    if (!activeCompanyId) {
+      showNotification('Company context unavailable.', 'error');
+      return;
+    }
+
     setIsDeleting(true);
     try {
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const trip = expense.tripId ? tripMap.get(expense.tripId) : undefined;
+      const remainingTripExpenses = allExpenses.filter(
+        (e) => e.tripId === expense.tripId && e.id !== expense.id
+      );
 
-      const res = await fetch(`/api/expenses/${expense.id}`, {
-        method: 'DELETE',
-        headers,
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to delete expense voucher.');
-      }
-
-      const activeCompanyId = company?.id || expense.companyId;
-      if (activeCompanyId) {
-        await deleteEntityFromFirestore(activeCompanyId, 'expenses', expense.id);
-        if (data.trip) {
-          await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
-        }
-      }
-
-      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
+      await deleteExpenseInFirestore(activeCompanyId, expense, trip, remainingTripExpenses);
 
       showNotification(`Expense voucher #${expense.voucherNumber || expense.id} removed.`);
       setExpenseToDelete(null);
-      fetchExpenses(page);
+      if (selectedExpenseId === expense.id) setSelectedExpenseId(null);
     } catch (err: any) {
       showNotification(err.message || 'Error removing expense.', 'error');
     } finally {
@@ -198,6 +206,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
         return 'blue';
       case 'REPAIR':
       case 'EN_ROUTE_REPAIR':
+      case 'TYRE_PUNCTURE':
         return 'amber';
       case 'DRIVER_ALLOWANCE':
       case 'DRIVER_BATA':
@@ -328,7 +337,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
               type="text"
               placeholder="Search trip #, vehicle, pump, voucher..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(1);
+              }}
               className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
             />
           </div>
@@ -336,7 +348,10 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
           {/* Category Filter */}
           <select
             value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
+            onChange={(e) => {
+              setCategoryFilter(e.target.value);
+              setPage(1);
+            }}
             className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
           >
             <option value="">All Categories</option>
@@ -347,13 +362,17 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
             <option value="LOADING">Loading Charges</option>
             <option value="UNLOADING">Unloading Charges</option>
             <option value="REPAIR">En-route Repair / Tyre</option>
+            <option value="RTO_POLICE">RTO / Police Fees</option>
             <option value="OTHER">Other Expenses</option>
           </select>
 
           {/* Payment Mode Filter */}
           <select
             value={paymentModeFilter}
-            onChange={(e) => setPaymentModeFilter(e.target.value)}
+            onChange={(e) => {
+              setPaymentModeFilter(e.target.value);
+              setPage(1);
+            }}
             className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
           >
             <option value="">All Payment Modes</option>
@@ -365,7 +384,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
             <option value="DRIVER_POCKET">Driver Pocket</option>
           </select>
 
-          {/* Refresh & Clear Filters */}
+          {/* Clear Filters */}
           <div className="flex items-center gap-2">
             <button
               onClick={() => {
@@ -374,17 +393,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                 setPaymentModeFilter('');
                 setStartDate('');
                 setEndDate('');
+                setPage(1);
               }}
-              className="px-3 py-2 text-xs font-semibold rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-200 flex-1"
+              className="px-3 py-2 text-xs font-semibold rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 border border-slate-200 flex-1 cursor-pointer"
             >
               Reset Filters
-            </button>
-            <button
-              onClick={() => fetchExpenses(page)}
-              className="p-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl border border-slate-200"
-              title="Refresh Expenses"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
           </div>
         </div>
@@ -392,21 +405,14 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
 
       {/* Main Expense Table */}
       <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-        {loading ? (
+        {loading && allExpenses.length === 0 ? (
           <div className="py-20 text-center space-y-3">
-            <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
-            <p className="text-sm font-semibold text-slate-600">Loading trip expenses...</p>
+            <p className="text-sm font-semibold text-slate-600 animate-pulse">Loading trip expenses...</p>
           </div>
         ) : error ? (
           <div className="py-16 text-center space-y-3 px-4">
             <AlertTriangle className="w-10 h-10 text-rose-500 mx-auto" />
             <p className="text-sm font-bold text-slate-800">{error}</p>
-            <button
-              onClick={() => fetchExpenses(page)}
-              className="px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700"
-            >
-              Retry
-            </button>
           </div>
         ) : expenses.length === 0 ? (
           <div className="py-20 text-center space-y-3 px-4">
@@ -420,7 +426,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                 setExpenseToEdit(null);
                 setIsModalOpen(true);
               }}
-              className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700"
+              className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
             >
               Record First Expense
             </button>
@@ -444,7 +450,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                   <tr
                     key={exp.id}
                     className="hover:bg-slate-50/80 transition-colors group cursor-pointer"
-                    onClick={() => setSelectedExpenseForDetail(exp)}
+                    onClick={() => setSelectedExpenseId(exp.id)}
                   >
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-2">
@@ -515,8 +521,8 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                     <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-center gap-1">
                         <button
-                          onClick={() => setSelectedExpenseForDetail(exp)}
-                          className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg"
+                          onClick={() => setSelectedExpenseId(exp.id)}
+                          className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                           title="View Details"
                         >
                           <Eye className="w-3.5 h-3.5" />
@@ -526,7 +532,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                             setExpenseToEdit(exp);
                             setIsModalOpen(true);
                           }}
-                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg"
+                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                           title="Edit Voucher"
                         >
                           <Edit className="w-3.5 h-3.5" />
@@ -534,7 +540,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                         {!exp.isSettled && (
                           <button
                             onClick={() => setExpenseToDelete(exp)}
-                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-lg"
+                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                             title="Delete Voucher"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -553,19 +559,19 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
         {totalPages > 1 && (
           <div className="py-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
             <span className="text-slate-500">
-              Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({totalCount} items)
+              Showing page <strong>{safePage}</strong> of <strong>{totalPages}</strong> ({totalCount} items)
             </span>
             <div className="flex items-center gap-1">
               <button
-                disabled={page <= 1}
-                onClick={() => fetchExpenses(page - 1)}
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
                 className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50 text-slate-700 hover:bg-slate-100"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
               <button
-                disabled={page >= totalPages}
-                onClick={() => fetchExpenses(page + 1)}
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50 text-slate-700 hover:bg-slate-100"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
@@ -586,11 +592,11 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
       {/* Expense Detail Modal */}
       <ExpenseDetailModal
         isOpen={Boolean(selectedExpenseForDetail)}
-        onClose={() => setSelectedExpenseForDetail(null)}
+        onClose={() => setSelectedExpenseId(null)}
         expense={selectedExpenseForDetail}
         userRole={userRole}
         onEdit={(exp) => {
-          setSelectedExpenseForDetail(null);
+          setSelectedExpenseId(null);
           setExpenseToEdit(exp);
           setIsModalOpen(true);
         }}

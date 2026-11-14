@@ -1,33 +1,26 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Users,
   Plus,
   Search,
-  Filter,
   AlertTriangle,
   CheckCircle2,
-  Clock,
   Eye,
   Edit,
   Trash2,
-  RefreshCw,
   ChevronLeft,
   ChevronRight,
-  ShieldCheck,
-  Lock,
   Phone,
-  Truck,
 } from 'lucide-react';
-import { Driver, Vehicle, UserRole, DriverStatus } from '../../types/tms';
+import { Driver, Vehicle, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { DriverModal } from './DriverModal';
 import { DriverDetailModal } from './DriverDetailModal';
-import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { deleteDriverInFirestore } from '../../lib/firebase/firestoreService';
 
 interface DriversViewProps {
   userRole: UserRole;
@@ -35,14 +28,9 @@ interface DriversViewProps {
 }
 
 export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicles = [] }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? (localStorage.getItem('token') || '') : '');
+  const { company, drivers: allDrivers, vehicles: firestoreVehicles, loading, error } = useFirestoreData();
+  const vehicles = firestoreVehicles.length > 0 ? firestoreVehicles : localVehicles;
 
-  // Data states
-  const [drivers, setDrivers] = useState<Driver[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>(localVehicles);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Filters & Search
@@ -53,8 +41,6 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
   // Pagination
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(8);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
 
   // Modals
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -62,77 +48,50 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
   const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
   const [driverToDelete, setDriverToDelete] = useState<Driver | null>(null);
 
-  const fetchVehicles = async () => {
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-      const res = await fetch('/api/vehicles?limit=100', { headers });
-      const data = await parseResponseJson<any>(res);
-      if (data && data.success && data.data) {
-        setVehicles(data.data);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const fetchDrivers = async (targetPage = page) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: limit.toString(),
-        search: searchQuery,
-        status: statusFilter,
-        licenseFilter: licenseFilter,
-      });
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/drivers?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch driver records.');
-      }
-
-      setDrivers(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages || 1);
-      setTotalCount(data.pagination.total || 0);
-    } catch (err: any) {
-      console.warn('Drivers fetch notice:', err);
-      setError(err.message || 'Unable to load company drivers.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    fetchDrivers(1);
-    fetchVehicles();
-  }, [searchQuery, statusFilter, licenseFilter, limit, company?.id, activeToken]);
+    setPage(1);
+  }, [searchQuery, statusFilter, licenseFilter, limit]);
 
-  useEffect(() => {
-    const onVehicleUpdated = () => fetchVehicles();
-    const onHydrated = () => {
-      fetchDrivers(1);
-      fetchVehicles();
-    };
-    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    window.addEventListener('tms:firestore-hydrated', onHydrated);
-    return () => {
-      window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-      window.removeEventListener('tms:firestore-hydrated', onHydrated);
-    };
-  }, [company?.id, activeToken]);
+  const filteredDrivers = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const today = new Date().toISOString().split('T')[0];
+    const thirtyDays = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    return [...allDrivers]
+      .filter((d) => {
+        if (q) {
+          const matches =
+            d.fullName.toLowerCase().includes(q) ||
+            (d.phone || '').toLowerCase().includes(q) ||
+            (d.licenseNumber || '').toLowerCase().includes(q) ||
+            (d.assignedVehicleReg || '').toLowerCase().includes(q);
+          if (!matches) return false;
+        }
+        if (statusFilter !== 'ALL' && d.status !== statusFilter) return false;
+        if (licenseFilter === 'EXPIRED' && !(d.licenseExpiry && d.licenseExpiry < today)) return false;
+        if (
+          licenseFilter === 'EXPIRING_SOON' &&
+          !(d.licenseExpiry && d.licenseExpiry >= today && d.licenseExpiry <= thirtyDays)
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => a.fullName.localeCompare(b.fullName));
+  }, [allDrivers, searchQuery, statusFilter, licenseFilter]);
+
+  const totalCount = filteredDrivers.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+
+  const drivers = useMemo(() => {
+    const start = (safePage - 1) * limit;
+    return filteredDrivers.slice(start, start + limit);
+  }, [filteredDrivers, safePage, limit]);
 
   const handlePageChange = (newPage: number) => {
     if (newPage < 1 || newPage > totalPages) return;
     setPage(newPage);
-    fetchDrivers(newPage);
   };
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
@@ -142,36 +101,19 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
 
   const handleModalSuccess = (driver: Driver, isEdit: boolean) => {
     showNotification(
-      isEdit ? `Driver ${driver.fullName} updated successfully.` : `Driver ${driver.fullName} onboarded to company directory.`,
+      isEdit
+        ? `Driver ${driver.fullName} updated successfully.`
+        : `Driver ${driver.fullName} onboarded to company directory.`,
       'success'
     );
-    fetchDrivers(isEdit ? page : 1);
-    // Broadcast event across modules
-    window.dispatchEvent(new CustomEvent('tms:driver-updated'));
   };
 
   const confirmDeleteDriver = async () => {
-    if (!driverToDelete) return;
+    if (!driverToDelete || !company?.id) return;
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/drivers/${driverToDelete.id}`, {
-        method: 'DELETE',
-        headers,
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to delete driver.');
-      }
-
-      await deleteEntityFromFirestore(company?.id, 'drivers', driverToDelete.id);
+      await deleteDriverInFirestore(company.id, driverToDelete.id, driverToDelete.fullName);
       showNotification(`Driver ${driverToDelete.fullName} removed from company directory.`);
       setDriverToDelete(null);
-      fetchDrivers(page);
-      // Broadcast event across modules
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
     } catch (err: any) {
       showNotification(err.message || 'Error deleting driver.', 'error');
     }
@@ -262,14 +204,6 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
               </button>
             )}
           </div>
-
-          <button
-            onClick={() => fetchDrivers(page)}
-            title="Refresh driver list"
-            className="p-2 border border-slate-300 rounded-xl text-slate-600 hover:bg-slate-50 transition-colors shrink-0"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
         </div>
 
         {/* Filter Pills */}
@@ -314,18 +248,12 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
       {loading ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
           <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs text-slate-500 font-medium">Loading driver directory...</p>
+          <p className="text-xs text-slate-500 font-medium">Loading driver directory from Firestore...</p>
         </div>
       ) : error ? (
         <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
           <p className="text-sm font-semibold text-slate-800">{error}</p>
-          <button
-            onClick={() => fetchDrivers(1)}
-            className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800"
-          >
-            Retry Connection
-          </button>
         </div>
       ) : drivers.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4">
@@ -362,7 +290,7 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden flex flex-col">
-          {/* Desktop Table View */}
+          {/* Desktop Table */}
           <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
@@ -567,18 +495,18 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
 
               <div className="flex items-center gap-1 ml-2">
                 <button
-                  onClick={() => handlePageChange(page - 1)}
-                  disabled={page <= 1}
+                  onClick={() => handlePageChange(safePage - 1)}
+                  disabled={safePage <= 1}
                   className="p-1.5 rounded border border-slate-300 hover:bg-white disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
                 <span className="px-2 font-medium text-slate-700">
-                  Page {page} of {totalPages}
+                  Page {safePage} of {totalPages}
                 </span>
                 <button
-                  onClick={() => handlePageChange(page + 1)}
-                  disabled={page >= totalPages}
+                  onClick={() => handlePageChange(safePage + 1)}
+                  disabled={safePage >= totalPages}
                   className="p-1.5 rounded border border-slate-300 hover:bg-white disabled:opacity-40 disabled:pointer-events-none transition-colors"
                 >
                   <ChevronRight className="w-3.5 h-3.5" />
@@ -596,7 +524,6 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
           onClose={() => setIsCreateOpen(false)}
           onSuccess={handleModalSuccess}
           vehicles={vehicles}
-          token={activeToken}
           userRole={userRole}
         />
       )}
@@ -609,7 +536,6 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
           onSuccess={handleModalSuccess}
           driverToEdit={driverToEdit}
           vehicles={vehicles}
-          token={activeToken}
           userRole={userRole}
         />
       )}
@@ -620,7 +546,6 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
           isOpen={Boolean(selectedDriverId)}
           onClose={() => setSelectedDriverId(null)}
           driverId={selectedDriverId}
-          token={activeToken}
           userRole={userRole}
           onEdit={(drv) => {
             setSelectedDriverId(null);

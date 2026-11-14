@@ -1,9 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CreditCard,
   Building,
   Calendar,
-  FileText,
   AlertTriangle,
   CheckCircle2,
   Lock,
@@ -12,9 +10,9 @@ import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
 import { Invoice, Payment } from '../../types/tms';
 import { formatINR, paiseToRupees, rupeesToPaise } from '../../lib/financialEngine';
-import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { recordPaymentInFirestore } from '../../lib/firebase/firestoreService';
 
 interface PaymentModalProps {
   isOpen: boolean;
@@ -29,7 +27,10 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   invoice,
   onSuccess,
 }) => {
-  const { token, company } = useAuth();
+  const { user, company: authCompany } = useAuth();
+  const { company: liveCompany, customers } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
+
   const defaultBankAccount = company?.bankName
     ? `${company.bankName}${company.accountNumber ? ` (A/C ...${company.accountNumber.slice(-4)})` : ''}`
     : '';
@@ -66,15 +67,21 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     e.preventDefault();
     setError(null);
 
+    if (!company?.id) {
+      setError('Active company profile is required to record payment.');
+      return;
+    }
+
     const enteredAmount = parseFloat(amountRupees);
     if (isNaN(enteredAmount) || enteredAmount <= 0) {
       setError('Please enter a valid positive payment amount.');
       return;
     }
 
-    if (enteredAmount > maxBalanceRupees + 0.001) {
+    const tdsEntered = tdsRupees ? parseFloat(tdsRupees) || 0 : 0;
+    if (enteredAmount + tdsEntered > maxBalanceRupees + 0.001) {
       setError(
-        `Payment amount (₹${enteredAmount.toLocaleString('en-IN')}) cannot exceed current outstanding balance (₹${maxBalanceRupees.toLocaleString('en-IN')}). Overpayments are blocked.`
+        `Total credit (₹${(enteredAmount + tdsEntered).toLocaleString('en-IN')}) cannot exceed current outstanding balance (₹${maxBalanceRupees.toLocaleString('en-IN')}). Overpayments are blocked.`
       );
       return;
     }
@@ -89,42 +96,31 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     try {
       const amountPaise = rupeesToPaise(enteredAmount);
       const tdsPaise = tdsRupees ? rupeesToPaise(parseFloat(tdsRupees) || 0) : 0;
+      const nowIso = new Date().toISOString();
+      const paymentId = `pay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-      const res = await fetch('/api/payments', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token || ''}`,
-        },
-        body: JSON.stringify({
-          invoiceId: invoice.id,
-          amountPaise,
-          paymentDate,
-          paymentMode,
-          referenceNumber: referenceNumber.trim(),
-          tdsDeductedPaise: tdsPaise,
-          bankAccount: bankAccount.trim(),
-          notes: notes.trim(),
-        }),
-      });
+      const payment: Payment = {
+        id: paymentId,
+        companyId: company.id,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        customerId: invoice.customerId,
+        customerName: invoice.customerName,
+        amountPaise,
+        paymentDate,
+        paymentMode,
+        referenceNumber: referenceNumber.trim().slice(0, 100),
+        tdsDeductedPaise: tdsPaise > 0 ? tdsPaise : undefined,
+        bankAccount: bankAccount.trim() ? bankAccount.trim().slice(0, 80) : undefined,
+        recordedBy: (user?.name || user?.email || 'Accountant').slice(0, 100),
+        notes: notes.trim() ? notes.trim().slice(0, 400) : undefined,
+        createdAt: nowIso,
+      };
 
-      const data = await parseResponseJson(res);
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to record payment');
-      }
+      const matchedCustomer = customers.find((c) => c.id === invoice.customerId);
+      await recordPaymentInFirestore(company.id, payment, invoice, matchedCustomer);
 
-      const activeCompanyId = company?.id || data.payment?.companyId;
-      if (activeCompanyId) {
-        if (data.payment) await syncEntityToFirestore(activeCompanyId, 'payments', data.payment);
-        if (data.invoice) await syncEntityToFirestore(activeCompanyId, 'invoices', data.invoice);
-        if (data.customer) await syncEntityToFirestore(activeCompanyId, 'customers', data.customer);
-      }
-
-      window.dispatchEvent(new CustomEvent('tms:payment-updated'));
-      window.dispatchEvent(new CustomEvent('tms:invoice-updated'));
-      window.dispatchEvent(new CustomEvent('tms:customer-updated'));
-
-      onSuccess(data.payment);
+      onSuccess(payment);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Payment submission failed');
@@ -199,7 +195,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               <button
                 type="button"
                 onClick={() => setAmountRupees(maxBalanceRupees.toString())}
-                className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 transition-colors"
+                className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
               >
                 Pay Full (₹{maxBalanceRupees.toLocaleString('en-IN')})
               </button>

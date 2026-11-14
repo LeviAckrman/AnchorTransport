@@ -1,22 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Receipt,
-  Truck,
-  IndianRupee,
   Calendar,
   Fuel,
-  Upload,
-  FileText,
   AlertTriangle,
-  Building,
   CheckCircle2,
-  Navigation,
 } from 'lucide-react';
-import { TripExpense, ExpenseCategory, PaymentMode, Trip } from '../../types/tms';
+import { TripExpense, ExpenseCategory, PaymentMode } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
-import { parseResponseJson } from '../../lib/safeFetch';
 import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { saveExpenseInFirestore } from '../../lib/firebase/firestoreService';
 
 interface ExpenseModalProps {
   isOpen: boolean;
@@ -53,12 +46,11 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   expenseToEdit,
   defaultTripId,
 }) => {
-  const { token, role, company } = useAuth();
-  const isEdit = Boolean(expenseToEdit);
+  const { user, role, company: authCompany } = useAuth();
+  const { company: liveCompany, trips, expenses: allExpenses, loading: dataLoading } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
 
-  // Trips list for selection
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [loadingTrips, setLoadingTrips] = useState(false);
+  const isEdit = Boolean(expenseToEdit);
 
   // Form states
   const [tripId, setTripId] = useState(defaultTripId || '');
@@ -84,43 +76,36 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch available trips
-  useEffect(() => {
-    if (isOpen) {
-      setLoadingTrips(true);
-      fetch('/api/trips?limit=100', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success) {
-            setTrips(data.data || []);
-          }
-        })
-        .catch((err) => console.warn('Failed to load trips for expense modal:', err))
-        .finally(() => setLoadingTrips(false));
-    }
-  }, [isOpen, token, company?.id]);
-
-  // Populate form if editing
+  // Populate form if editing or reset on open
   useEffect(() => {
     if (!isOpen) return;
+    setError(null);
     if (expenseToEdit) {
       setTripId(expenseToEdit.tripId);
       setCategory(expenseToEdit.category);
       setAmountRupees((expenseToEdit.amountPaise / 100).toString());
-      setExpenseDate((expenseToEdit.expenseDate || expenseToEdit.date || '').split('T')[0] || new Date().toISOString().split('T')[0]);
+      setExpenseDate(
+        (expenseToEdit.expenseDate || expenseToEdit.date || '').split('T')[0] ||
+          new Date().toISOString().split('T')[0]
+      );
       setPaymentMode(expenseToEdit.paymentMode);
-      setLitres(expenseToEdit.litres ? expenseToEdit.litres.toString() : '');
-      setRatePerLitreRupees(expenseToEdit.ratePerLitrePaise ? (expenseToEdit.ratePerLitrePaise / 100).toString() : '');
-      setPetrolPumpName(expenseToEdit.petrolPumpName || '');
+      setLitres((expenseToEdit.litres ?? expenseToEdit.litresFuel)?.toString() || '');
+      setRatePerLitreRupees(
+        expenseToEdit.ratePerLitrePaise ? (expenseToEdit.ratePerLitrePaise / 100).toString() : ''
+      );
+      setPetrolPumpName(expenseToEdit.petrolPumpName || expenseToEdit.pumpName || '');
       setLocation(expenseToEdit.location || '');
       setOdometerReading(expenseToEdit.odometerReading ? expenseToEdit.odometerReading.toString() : '');
       setVoucherNumber(expenseToEdit.voucherNumber || '');
       setReceiptNumber(expenseToEdit.receiptNumber || '');
-      setReceiptUrl(expenseToEdit.receiptUrl || '');
-      setNotes(expenseToEdit.notes || '');
-      setIsDriverDisbursed(expenseToEdit.isDriverDisbursed ?? (expenseToEdit.paymentMode === 'CASH'));
+      setReceiptUrl(expenseToEdit.receiptUrl || expenseToEdit.receiptAttachmentUrl || '');
+      setNotes(expenseToEdit.notes || expenseToEdit.description || '');
+      setIsDriverDisbursed(
+        expenseToEdit.isDriverDisbursed ??
+          (expenseToEdit.paymentMode === 'CASH' || expenseToEdit.paymentMode === 'DRIVER_POCKET')
+      );
+      setIsAuthorizedCorrection(false);
+      setCorrectionReason('');
     } else {
       setTripId(defaultTripId || '');
       setCategory('FUEL');
@@ -139,11 +124,9 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setIsDriverDisbursed(true);
       setIsAuthorizedCorrection(false);
       setCorrectionReason('');
-      setError(null);
     }
   }, [expenseToEdit, defaultTripId, isOpen]);
 
-  // Auto-compute fuel amount when litres & rate change
   const handleLitresChange = (val: string) => {
     setLitres(val);
     const l = parseFloat(val);
@@ -168,6 +151,11 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     e.preventDefault();
     setError(null);
 
+    if (!company?.id) {
+      setError('Active company profile is required to record expenses.');
+      return;
+    }
+
     const amount = Math.round(parseFloat(amountRupees) * 100);
     if (isNaN(amount) || amount <= 0) {
       setError('Please provide a valid positive expense amount.');
@@ -187,57 +175,58 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     setLoading(true);
 
     try {
-      const payload = {
+      const isFuel = category === 'FUEL' || category === 'DIESEL';
+      const parsedLitres = isFuel && litres ? parseFloat(litres) : undefined;
+      const parsedRate = isFuel && ratePerLitreRupees ? Math.round(parseFloat(ratePerLitreRupees) * 100) : undefined;
+      const cleanPump = petrolPumpName.trim() ? petrolPumpName.trim().slice(0, 120) : undefined;
+      const cleanNotes = [
+        notes.trim(),
+        expenseToEdit?.isSettled && isAuthorizedCorrection && correctionReason.trim()
+          ? `[Audit Correction: ${correctionReason.trim()}]`
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .slice(0, 400);
+
+      const savedExpense: TripExpense = {
+        ...(expenseToEdit || {}),
+        id: expenseToEdit?.id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        companyId: company.id,
         tripId,
+        tripNumber: selectedTrip?.tripNumber || expenseToEdit?.tripNumber,
+        vehicleId: selectedTrip?.vehicleId || expenseToEdit?.vehicleId,
+        vehicleReg: selectedTrip?.vehicleReg || expenseToEdit?.vehicleReg,
+        driverId: selectedTrip?.driverId || expenseToEdit?.driverId,
+        driverName: selectedTrip?.driverName || expenseToEdit?.driverName,
         category,
         amountPaise: amount,
         paymentMode,
+        date: expenseDate,
         expenseDate,
-        litres: category === 'FUEL' || category === 'DIESEL' ? (litres ? parseFloat(litres) : undefined) : undefined,
-        ratePerLitrePaise: category === 'FUEL' || category === 'DIESEL' ? (ratePerLitreRupees ? Math.round(parseFloat(ratePerLitreRupees) * 100) : undefined) : undefined,
-        petrolPumpName: petrolPumpName.trim() || undefined,
-        location: location.trim() || undefined,
+        description: cleanNotes ? cleanNotes.slice(0, 300) : undefined,
+        litres: parsedLitres,
+        litresFuel: parsedLitres,
+        ratePerLitrePaise: parsedRate,
+        petrolPumpName: cleanPump,
+        pumpName: cleanPump,
+        location: location.trim() ? location.trim().slice(0, 120) : undefined,
         odometerReading: odometerReading ? parseInt(odometerReading, 10) : undefined,
-        receiptNumber: receiptNumber.trim() || undefined,
-        voucherNumber: voucherNumber.trim() || undefined,
-        receiptUrl: receiptUrl.trim() || undefined,
-        notes: notes.trim() || undefined,
+        receiptNumber: receiptNumber.trim() ? receiptNumber.trim().slice(0, 60) : undefined,
+        voucherNumber: voucherNumber.trim() ? voucherNumber.trim().slice(0, 60) : undefined,
+        receiptUrl: receiptUrl.trim() ? receiptUrl.trim().slice(0, 500) : undefined,
+        notes: cleanNotes || undefined,
+        recordedBy: expenseToEdit?.recordedBy || (user?.name || user?.email || 'Dispatcher').slice(0, 100),
         isDriverDisbursed,
-        isAuthorizedCorrection,
-        correctionReason: correctionReason.trim() || undefined,
+        isSettled: expenseToEdit?.isSettled ?? false,
+        settlementId: expenseToEdit?.settlementId,
+        createdAt: expenseToEdit?.createdAt || new Date().toISOString(),
       };
 
-      const url = isEdit ? `/api/expenses/${expenseToEdit!.id}` : '/api/expenses';
-      const method = isEdit ? 'PUT' : 'POST';
+      const existingTripExpenses = allExpenses.filter((exp) => exp.tripId === tripId);
+      await saveExpenseInFirestore(company.id, savedExpense, selectedTrip, existingTripExpenses);
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to save expense record.');
-      }
-
-      const activeCompanyId = company?.id || data.expense?.companyId;
-      if (activeCompanyId) {
-        if (data.expense) await syncEntityToFirestore(activeCompanyId, 'expenses', data.expense);
-        if (data.trip) await syncEntityToFirestore(activeCompanyId, 'trips', data.trip);
-        if (data.vehicle) await syncEntityToFirestore(activeCompanyId, 'vehicles', data.vehicle);
-      }
-
-      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      if (data.vehicle) {
-        window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-      }
-
-      onSuccess(data.expense, isEdit);
+      onSuccess(savedExpense, isEdit);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error occurred while saving expense.');
@@ -306,11 +295,11 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             <select
               value={tripId}
               onChange={(e) => setTripId(e.target.value)}
-              disabled={isEdit && !isAuthorizedCorrection}
+              disabled={isEdit}
               required
               className="w-full pl-3 pr-10 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-100"
             >
-              {loadingTrips ? (
+              {dataLoading && trips.length === 0 ? (
                 <option value="">Loading active trips...</option>
               ) : trips.length === 0 ? (
                 <option value="">No trips available</option>
@@ -348,7 +337,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                 type="button"
                 key={cat.id}
                 onClick={() => setCategory(cat.id)}
-                className={`flex items-center gap-2 p-2.5 rounded-xl border text-left text-xs font-semibold transition-all ${
+                className={`flex items-center gap-2 p-2.5 rounded-xl border text-left text-xs font-semibold transition-all cursor-pointer ${
                   category === cat.id
                     ? 'border-indigo-600 bg-indigo-50/70 text-indigo-900 shadow-xs'
                     : 'border-slate-200 hover:border-slate-300 text-slate-700 bg-white'
@@ -559,14 +548,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             type="button"
             onClick={onClose}
             disabled={loading}
-            className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 transition-colors"
+            className="px-4 py-2.5 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={loading || (Boolean(expenseToEdit?.isSettled) && !isAuthorizedCorrection)}
-            className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 transition-colors disabled:opacity-50 flex items-center gap-2"
+            className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 transition-colors disabled:opacity-50 flex items-center gap-2 cursor-pointer"
           >
             {loading ? (
               <span>Saving...</span>

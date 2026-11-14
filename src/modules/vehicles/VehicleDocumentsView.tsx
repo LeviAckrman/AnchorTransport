@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   FileText,
   Plus,
   Search,
-  Filter,
   AlertTriangle,
   Clock,
   CheckCircle2,
@@ -11,20 +10,17 @@ import {
   Truck,
   RotateCcw,
   Trash2,
-  Edit,
   ExternalLink,
   ShieldAlert,
-  Building,
-  Calendar,
   X,
 } from 'lucide-react';
-import { VehicleDocument, Vehicle, DocumentType, UserRole } from '../../types/tms';
+import { VehicleDocument, DocumentType, UserRole } from '../../types/tms';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { syncEntityToFirestore, deleteEntityFromFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { saveDocumentInFirestore, deleteDocumentInFirestore } from '../../lib/firebase/firestoreService';
+import { calculateDocComplianceStatus } from '../../lib/tmsCalculations';
 
 interface VehicleDocumentsViewProps {
   userRole: UserRole;
@@ -42,15 +38,7 @@ const DOCUMENT_TYPES: { type: DocumentType; label: string }[] = [
 ];
 
 export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ userRole }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
-
-  // State
-  const [documents, setDocuments] = useState<VehicleDocument[]>([]);
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState({ total: 0, expired: 0, expiringSoon: 0, valid: 0 });
+  const { company, documents: rawDocuments, vehicles, loading, error } = useFirestoreData();
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState('');
@@ -88,121 +76,83 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
     setTimeout(() => setToastMsg(null), 3500);
   };
 
-  const fetchDocuments = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
+  const enrichedDocs = useMemo(() => {
+    return rawDocuments
+      .map((d) => {
+        const comp = calculateDocComplianceStatus(d.expiryDate);
+        const veh = vehicles.find((v) => v.id === d.vehicleId);
+        return {
+          ...d,
+          vehicleReg: veh?.registrationNumber || d.vehicleReg || '',
+          daysUntilExpiry: comp.daysUntilExpiry,
+          status: comp.status,
+        };
+      })
+      .sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
+  }, [rawDocuments, vehicles]);
 
-      const params = new URLSearchParams();
-      if (vehicleFilter !== 'ALL') params.set('vehicleId', vehicleFilter);
-      if (docTypeFilter !== 'ALL') params.set('docType', docTypeFilter);
-      if (statusFilter !== 'ALL') params.set('status', statusFilter);
-      if (searchQuery.trim()) params.set('search', searchQuery.trim());
+  const summary = useMemo(() => {
+    return {
+      total: enrichedDocs.length,
+      expired: enrichedDocs.filter((d) => d.status === 'EXPIRED').length,
+      expiringSoon: enrichedDocs.filter((d) => d.status === 'EXPIRING_SOON').length,
+      valid: enrichedDocs.filter((d) => d.status === 'VALID').length,
+    };
+  }, [enrichedDocs]);
 
-      const res = await fetch(`/api/fleet/documents?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch compliance documents');
+  const documents = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return enrichedDocs.filter((d) => {
+      if (vehicleFilter !== 'ALL' && d.vehicleId !== vehicleFilter) return false;
+      if (docTypeFilter !== 'ALL' && d.docType !== docTypeFilter) return false;
+      if (statusFilter !== 'ALL' && d.status !== statusFilter) return false;
+      if (q) {
+        const hay = `${d.vehicleReg} ${d.documentNumber} ${d.docType} ${d.issuingAuthority || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
       }
-
-      setDocuments(data.documents || []);
-      if (data.summary) setSummary(data.summary);
-    } catch (err: any) {
-      setError(err.message || 'Error fetching documents');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchVehicles = async () => {
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch('/api/vehicles?limit=100', { headers });
-      const data = await parseResponseJson<any>(res);
-      if (res.ok && data?.success && Array.isArray(data.data)) {
-        setVehicles(data.data);
-      }
-    } catch {
-      // Fallback
-    }
-  };
-
-  useEffect(() => {
-    fetchDocuments();
-    fetchVehicles();
-  }, [vehicleFilter, docTypeFilter, statusFilter, searchQuery, company?.id, activeToken]);
-
-  useEffect(() => {
-    const onVehicleUpdated = () => {
-      fetchDocuments();
-      fetchVehicles();
-    };
-    const onHydrated = () => {
-      fetchDocuments();
-      fetchVehicles();
-    };
-    window.addEventListener('tms:vehicle-updated', onVehicleUpdated);
-    window.addEventListener('tms:document-updated', onHydrated);
-    window.addEventListener('tms:firestore-hydrated', onHydrated);
-    return () => {
-      window.removeEventListener('tms:vehicle-updated', onVehicleUpdated);
-      window.removeEventListener('tms:document-updated', onHydrated);
-      window.removeEventListener('tms:firestore-hydrated', onHydrated);
-    };
-  }, [company?.id, activeToken]);
+      return true;
+    });
+  }, [enrichedDocs, vehicleFilter, docTypeFilter, statusFilter, searchQuery]);
 
   const handleCreateDocument = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!company?.id) return;
     if (!formVehicleId || !formDocNumber.trim() || !formExpiryDate) {
       showToast('error', 'Please fill in required fields (Truck, Certificate No., Expiry Date).');
       return;
     }
 
+    const matchingVehicle = vehicles.find((v) => v.id === formVehicleId);
+    if (!matchingVehicle) {
+      showToast('error', 'Selected vehicle could not be found.');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      const res = await fetch('/api/fleet/documents', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${activeToken}`,
-        },
-        body: JSON.stringify({
-          vehicleId: formVehicleId,
-          docType: formDocType,
-          documentNumber: formDocNumber.trim().toUpperCase(),
-          issuingAuthority: formAuthority.trim() || undefined,
-          issueDate: formIssueDate,
-          expiryDate: formExpiryDate,
-          documentUrl: formDocUrl.trim() || undefined,
-        }),
-      });
+      const docObj: VehicleDocument = {
+        id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        companyId: company.id,
+        vehicleId: matchingVehicle.id,
+        vehicleReg: matchingVehicle.registrationNumber,
+        docType: formDocType,
+        documentNumber: formDocNumber.trim().toUpperCase(),
+        issuingAuthority: formAuthority.trim() || 'Regional Transport Office',
+        issueDate: formIssueDate || new Date().toISOString().split('T')[0],
+        expiryDate: formExpiryDate,
+        documentUrl: formDocUrl.trim() || undefined,
+        daysUntilExpiry: 0,
+        status: 'VALID',
+      };
 
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data?.success) {
-        throw new Error(data?.error || 'Failed to record document');
-      }
+      await saveDocumentInFirestore(company.id, docObj, matchingVehicle);
 
-      if (data.document) {
-        await syncEntityToFirestore(company?.id, 'documents', data.document);
-      }
-      if (data.vehicle) {
-        await syncEntityToFirestore(company?.id, 'vehicles', data.vehicle);
-      }
-      window.dispatchEvent(new CustomEvent('tms:document-updated'));
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-
-      showToast('success', data.message || 'Document recorded successfully.');
+      showToast('success', 'Document saved to Firestore.');
       setIsCreateOpen(false);
       setFormVehicleId('');
       setFormDocNumber('');
       setFormExpiryDate('');
       setFormDocUrl('');
-      fetchDocuments();
     } catch (err: any) {
       showToast('error', err.message || 'Failed to record document');
     } finally {
@@ -221,41 +171,22 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
 
   const handleRenewDocument = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedDoc || !renewExpiryDate) return;
+    if (!selectedDoc || !renewExpiryDate || !company?.id) return;
+
+    const matchingVehicle = vehicles.find((v) => v.id === selectedDoc.vehicleId);
 
     setSubmitting(true);
     try {
-      const res = await fetch(`/api/fleet/documents/${selectedDoc.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${activeToken}`,
-        },
-        body: JSON.stringify({
-          documentNumber: renewDocNumber.trim().toUpperCase(),
-          issuingAuthority: renewAuthority.trim(),
-          expiryDate: renewExpiryDate,
-          documentUrl: renewDocUrl.trim() || undefined,
-        }),
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data?.success) {
-        throw new Error(data?.error || 'Failed to update document');
-      }
-
-      if (data.document) {
-        await syncEntityToFirestore(company?.id, 'documents', data.document);
-      }
-      if (data.vehicle) {
-        await syncEntityToFirestore(company?.id, 'vehicles', data.vehicle);
-      }
-      window.dispatchEvent(new CustomEvent('tms:document-updated'));
-      window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-
-      showToast('success', data.message || 'Document renewed successfully.');
+      const updatedDoc: VehicleDocument = {
+        ...selectedDoc,
+        documentNumber: renewDocNumber.trim().toUpperCase(),
+        issuingAuthority: renewAuthority.trim() || selectedDoc.issuingAuthority,
+        expiryDate: renewExpiryDate,
+        documentUrl: renewDocUrl.trim() || undefined,
+      };
+      await saveDocumentInFirestore(company.id, updatedDoc, matchingVehicle);
+      showToast('success', 'Document renewed in Firestore.');
       setIsRenewOpen(false);
-      fetchDocuments();
     } catch (err: any) {
       showToast('error', err.message || 'Failed to renew document');
     } finally {
@@ -264,24 +195,14 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
   };
 
   const handleDeleteConfirm = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget || !company?.id) return;
     try {
-      const res = await fetch(`/api/fleet/documents/${deleteTarget.id}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${activeToken}`,
-        },
-      });
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data?.success) {
-        throw new Error(data?.error || 'Failed to delete document');
-      }
-
-      await deleteEntityFromFirestore(company?.id, 'documents', deleteTarget.id);
-      window.dispatchEvent(new CustomEvent('tms:document-updated'));
-
-      showToast('success', data.message || 'Document removed from vault.');
-      fetchDocuments();
+      await deleteDocumentInFirestore(
+        company.id,
+        deleteTarget.id,
+        `${deleteTarget.docType} (${deleteTarget.documentNumber})`
+      );
+      showToast('success', 'Document removed from Firestore.');
     } catch (err: any) {
       showToast('error', err.message || 'Failed to delete document');
     } finally {
@@ -459,13 +380,6 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
           <div className="p-8 text-center space-y-3">
             <AlertTriangle className="w-8 h-8 text-rose-600 mx-auto" />
             <p className="text-sm font-semibold text-rose-800">{error}</p>
-            <button
-              type="button"
-              onClick={fetchDocuments}
-              className="px-4 py-2 bg-indigo-50 text-indigo-700 text-xs font-semibold rounded-lg hover:bg-indigo-100"
-            >
-              Retry
-            </button>
           </div>
         ) : documents.length === 0 ? (
           <div className="py-20 px-4 text-center space-y-3">

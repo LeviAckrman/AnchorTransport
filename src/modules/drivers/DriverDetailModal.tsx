@@ -1,32 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import {
   X,
   User,
-  ShieldCheck,
-  Calendar,
-  CreditCard,
-  Truck,
-  Phone,
   Lock,
-  AlertTriangle,
   Clock,
-  CheckCircle2,
   FileText,
   Trash2,
   Edit,
   ArrowRight,
-  Wallet,
 } from 'lucide-react';
-import { Driver, Trip, DriverAdvance, UserRole } from '../../types/tms';
+import { Driver, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
-import { parseResponseJson } from '../../lib/safeFetch';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 
 interface DriverDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   driverId: string | null;
-  token: string;
+  token?: string;
   userRole: UserRole;
   onEdit: (driver: Driver) => void;
   onDelete: (driver: Driver) => void;
@@ -36,48 +28,33 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
   isOpen,
   onClose,
   driverId,
-  token,
   userRole,
   onEdit,
   onDelete,
 }) => {
-  const [driver, setDriver] = useState<Driver | null>(null);
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [advances, setAdvances] = useState<DriverAdvance[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { drivers, trips: allTrips, advances: allAdvances } = useFirestoreData();
 
   const canAccessSensitive = userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'ACCOUNTANT';
   const canDelete = userRole === 'OWNER' || userRole === 'ADMIN';
 
-  useEffect(() => {
-    if (!isOpen || !driverId) return;
+  const driver = useMemo(
+    () => (driverId ? drivers.find((d) => d.id === driverId) || null : null),
+    [drivers, driverId]
+  );
 
-    const fetchDetails = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (token) headers['Authorization'] = `Bearer ${token}`;
+  const trips = useMemo(() => {
+    if (!driverId) return [];
+    return allTrips
+      .filter((t) => t.driverId === driverId)
+      .sort((a, b) => new Date(b.dispatchDate || b.createdAt).getTime() - new Date(a.dispatchDate || a.createdAt).getTime());
+  }, [allTrips, driverId]);
 
-        const res = await fetch(`/api/drivers/${driverId}`, { headers });
-        const data = await parseResponseJson<any>(res);
-        if (!res.ok || !data || !data.success) {
-          throw new Error(data?.error || 'Failed to load driver details.');
-        }
-
-        setDriver(data.driver);
-        setTrips(data.trips || []);
-        setAdvances(data.advances || []);
-      } catch (err: any) {
-        setError(err.message || 'Error fetching driver record.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDetails();
-  }, [isOpen, driverId, token]);
+  const advances = useMemo(() => {
+    if (!driverId) return [];
+    return allAdvances
+      .filter((a) => a.driverId === driverId)
+      .sort((a, b) => new Date(b.date || b.createdAt || 0).getTime() - new Date(a.date || a.createdAt || 0).getTime());
+  }, [allAdvances, driverId]);
 
   if (!isOpen) return null;
 
@@ -159,17 +136,11 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
 
         {/* Scrollable Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {loading ? (
-            <div className="py-16 text-center space-y-3">
-              <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-              <p className="text-xs text-slate-500 font-medium">Fetching driver dossier & trip logs...</p>
+          {!driver ? (
+            <div className="py-12 text-center text-xs text-slate-500">
+              Driver record not found in Firestore.
             </div>
-          ) : error ? (
-            <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs sm:text-sm flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <p>{error}</p>
-            </div>
-          ) : driver ? (
+          ) : (
             <>
               {/* Metric Highlights */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -288,31 +259,33 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
                   <div>
                     <span className="text-slate-500 block">12-digit Aadhaar</span>
                     <span className="font-mono font-bold text-slate-900 tracking-wider">
-                      {driver.aadharNumber || '•••• •••• ••••'}
+                      {canAccessSensitive ? (driver.aadharNumber || 'Not recorded') : '•••• •••• ••••'}
                     </span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">Income Tax PAN</span>
                     <span className="font-mono font-bold text-slate-900 uppercase">
-                      {driver.panNumber || '••••••••••'}
+                      {canAccessSensitive ? (driver.panNumber || 'Not recorded') : '••••••••••'}
                     </span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">Bank Account No.</span>
                     <span className="font-mono font-semibold text-slate-900">
-                      {driver.bankAccount || '••••••••••••'}
+                      {canAccessSensitive ? (driver.bankAccount || 'Not recorded') : '••••••••••••'}
                     </span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">IFSC & Branch</span>
                     <span className="font-mono font-semibold text-slate-900 block">
-                      {driver.bankIfsc || '••••••••'}
+                      {canAccessSensitive ? (driver.bankIfsc || 'Not recorded') : '••••••••'}
                     </span>
                     <span className="text-[10px] text-slate-500 block truncate">
-                      {driver.bankName ? `${driver.bankName} (${driver.bankBranch || ''})` : ''}
+                      {canAccessSensitive && driver.bankName
+                        ? `${driver.bankName}${driver.bankBranch ? ` (${driver.bankBranch})` : ''}`
+                        : ''}
                     </span>
                   </div>
                 </div>
@@ -331,6 +304,9 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
                     <Clock className="w-3.5 h-3.5 text-indigo-600" />
                     <span>Assigned Operational Trips ({trips.length})</span>
                   </div>
+                  <span className="text-[11px] font-medium text-slate-500">
+                    {advances.length} advances logged
+                  </span>
                 </h4>
 
                 {trips.length === 0 ? (
@@ -363,7 +339,7 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
                 )}
               </div>
             </>
-          ) : null}
+          )}
         </div>
 
         {/* Footer */}

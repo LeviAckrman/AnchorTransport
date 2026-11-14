@@ -426,7 +426,7 @@ export interface AuditLog {
   userId: string;
   userName: string;
   action: 'CREATE' | 'UPDATE' | 'DELETE' | 'DISPATCH' | 'SETTLE' | 'INVOICE' | 'PAYMENT';
-  entityType: 'TRIP' | 'VEHICLE' | 'DRIVER' | 'SETTLEMENT' | 'INVOICE' | 'PAYMENT' | 'EXPENSE';
+  entityType: 'TRIP' | 'VEHICLE' | 'DRIVER' | 'SETTLEMENT' | 'INVOICE' | 'PAYMENT' | 'EXPENSE' | 'CUSTOMER' | 'DOCUMENT';
   entityId: string;
   summary: string;
   timestamp: string;

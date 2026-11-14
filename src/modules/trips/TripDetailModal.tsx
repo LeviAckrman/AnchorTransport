@@ -1,37 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Navigation,
   Truck,
   Users,
   Building2,
-  Calendar,
-  IndianRupee,
   AlertTriangle,
-  Scale,
-  Clock,
   MapPin,
   CheckCircle2,
   FileText,
   Fuel,
-  Receipt,
   Plus,
-  ArrowRight,
-  TrendingUp,
-  ShieldCheck,
   Phone,
-  FileCheck2,
-  Gauge,
   XCircle,
   CreditCard,
 } from 'lucide-react';
-import { Trip, Vehicle, Driver, Customer, TripExpense, DriverAdvance, TripStatus, UserRole } from '../../types/tms';
+import {
+  TripExpense,
+  DriverAdvance,
+  TripStatus,
+  UserRole,
+} from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { formatINR, paiseToRupees } from '../../lib/currency';
 import { TripStatusTransitionModal } from './TripStatusTransitionModal';
 import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import {
+  transitionTripStatusInFirestore,
+  saveExpenseInFirestore,
+  createAdvanceInFirestore,
+} from '../../lib/firebase/firestoreService';
 
 interface TripDetailModalProps {
   isOpen: boolean;
@@ -46,81 +44,109 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
   onClose,
   tripId,
   onTripUpdated,
-  userRole = 'OWNER',
 }) => {
-  const { token, company } = useAuth();
-  const activeToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || '' : '');
-
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<{
-    trip: Trip;
-    vehicle: Vehicle | null;
-    driver: Driver | null;
-    customer: Customer | null;
-    expenses: TripExpense[];
-    advances: DriverAdvance[];
-    financials: {
-      totalRevenuePaise: number;
-      totalExpensesPaise: number;
-      totalAdvancesPaise: number;
-      tripContributionPaise: number;
-      profitMarginPercent: number;
-      fuelExpensesPaise: number;
-      tollExpensesPaise: number;
-      otherExpensesPaise: number;
-    };
-    allowedNextStatuses: TripStatus[];
-  } | null>(null);
+  const { user } = useAuth();
+  const {
+    company,
+    trips,
+    vehicles,
+    drivers,
+    customers,
+    expenses,
+    advances,
+    loading,
+  } = useFirestoreData();
 
   const [activeTab, setActiveTab] = useState<'overview' | 'expenses' | 'advances' | 'workflow'>('overview');
   const [targetStatusToChange, setTargetStatusToChange] = useState<TripStatus | null>(null);
 
   // Quick Expense Modal State
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
-  const [expenseCategory, setExpenseCategory] = useState<'DIESEL' | 'TOLL_FASTAG' | 'DRIVER_BATA' | 'LOADING_UNLOADING' | 'OTHER'>('DIESEL');
+  const [expenseCategory, setExpenseCategory] = useState<
+    'DIESEL' | 'TOLL_FASTAG' | 'DRIVER_BATA' | 'LOADING_UNLOADING' | 'OTHER'
+  >('DIESEL');
   const [expenseAmountRupees, setExpenseAmountRupees] = useState('');
-  const [expensePaymentMode, setExpensePaymentMode] = useState<'CASH' | 'FASTAG' | 'PETRO_CARD' | 'DRIVER_POCKET'>('CASH');
+  const [expensePaymentMode, setExpensePaymentMode] = useState<
+    'CASH' | 'FASTAG' | 'PETRO_CARD' | 'DRIVER_POCKET'
+  >('CASH');
   const [expensePumpName, setExpensePumpName] = useState('');
   const [expenseLitres, setExpenseLitres] = useState('');
   const [expenseNotes, setExpenseNotes] = useState('');
   const [expenseError, setExpenseError] = useState<string | null>(null);
+  const [savingExpense, setSavingExpense] = useState(false);
 
   // Quick Advance Modal State
   const [isAddAdvanceOpen, setIsAddAdvanceOpen] = useState(false);
   const [advanceAmountRupees, setAdvanceAmountRupees] = useState('');
   const [advanceNotes, setAdvanceNotes] = useState('');
   const [advanceError, setAdvanceError] = useState<string | null>(null);
-
-  const fetchTripDetails = async () => {
-    if (!tripId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const headers: Record<string, string> = {};
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-      const res = await fetch(`/api/trips/${tripId}`, { headers });
-      const json = await parseResponseJson<any>(res);
-      if (!res.ok || !json || !json.success) {
-        throw new Error(json?.error || 'Failed to fetch trip details.');
-      }
-      setData(json);
-    } catch (err: any) {
-      setError(err.message || 'Error loading trip dossier.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [savingAdvance, setSavingAdvance] = useState(false);
 
   useEffect(() => {
-    if (isOpen && tripId) {
-      fetchTripDetails();
-    } else {
-      setData(null);
+    if (!isOpen) {
       setActiveTab('overview');
     }
-  }, [isOpen, tripId]);
+  }, [isOpen]);
+
+  const data = useMemo(() => {
+    if (!tripId) return null;
+    const trip = trips.find((t) => t.id === tripId);
+    if (!trip) return null;
+
+    const vehicle = vehicles.find((v) => v.id === trip.vehicleId) || null;
+    const driver = drivers.find((d) => d.id === trip.driverId) || null;
+    const customer = customers.find((c) => c.id === trip.customerId) || null;
+    const tripExpenses = expenses.filter((e) => e.tripId === trip.id);
+    const tripAdvances = advances.filter((a) => a.tripId === trip.id);
+
+    const totalRevenuePaise =
+      trip.totalRevenuePaise || (trip.freightAmountPaise || 0) + (trip.otherChargesPaise || 0);
+    const totalExpensesPaise =
+      tripExpenses.length > 0
+        ? tripExpenses.reduce((sum, e) => sum + (e.amountPaise || 0), 0)
+        : trip.totalExpensesPaise || 0;
+    const totalAdvancesPaise =
+      tripAdvances.length > 0
+        ? tripAdvances.reduce((sum, a) => sum + (a.amountPaise || 0), 0)
+        : trip.totalAdvancesPaise || 0;
+    const tripContributionPaise = totalRevenuePaise - totalExpensesPaise;
+    const profitMarginPercent =
+      totalRevenuePaise > 0 ? Math.round((tripContributionPaise / totalRevenuePaise) * 100) : 0;
+
+    const fuelExpensesPaise = tripExpenses
+      .filter((e) => e.category === 'FUEL' || e.category === 'DIESEL')
+      .reduce((sum, e) => sum + (e.amountPaise || 0), 0);
+    const tollExpensesPaise = tripExpenses
+      .filter((e) => e.category === 'TOLL' || e.category === 'TOLL_FASTAG')
+      .reduce((sum, e) => sum + (e.amountPaise || 0), 0);
+    const otherExpensesPaise = totalExpensesPaise - fuelExpensesPaise - tollExpensesPaise;
+
+    let allowedNextStatuses: TripStatus[] = [];
+    if (trip.status === 'PLANNED') allowedNextStatuses = ['DISPATCHED', 'CANCELLED'];
+    else if (trip.status === 'DISPATCHED') allowedNextStatuses = ['IN_TRANSIT', 'DELIVERED', 'CANCELLED'];
+    else if (trip.status === 'IN_TRANSIT') allowedNextStatuses = ['DELIVERED', 'CANCELLED'];
+    else if (trip.status === 'DELIVERED') allowedNextStatuses = ['COMPLETED'];
+
+    return {
+      trip,
+      vehicle,
+      driver,
+      customer,
+      expenses: tripExpenses,
+      advances: tripAdvances,
+      financials: {
+        totalRevenuePaise,
+        totalExpensesPaise,
+        totalAdvancesPaise,
+        tripContributionPaise,
+        profitMarginPercent,
+        fuelExpensesPaise,
+        tollExpensesPaise,
+        otherExpensesPaise,
+      },
+      allowedNextStatuses,
+    };
+  }, [tripId, trips, vehicles, drivers, customers, expenses, advances]);
 
   if (!isOpen) return null;
 
@@ -152,154 +178,134 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
     podReceived?: boolean;
     podRemarks?: string;
   }) => {
-    if (!tripId) return;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
-
-    const res = await fetch(`/api/trips/${tripId}/status`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        status: transitionData.targetStatus,
-        cancellationReason: transitionData.cancellationReason,
-        actualDeliveryDate: transitionData.actualDeliveryDate,
-        endOdometerKm: transitionData.endOdometerKm,
-        podReceived: transitionData.podReceived,
-        podRemarks: transitionData.podRemarks,
-      }),
+    if (!data || !company?.id) return;
+    await transitionTripStatusInFirestore(company.id, {
+      trip: data.trip,
+      nextStatus: transitionData.targetStatus,
+      vehicle: data.vehicle || undefined,
+      driver: data.driver || undefined,
+      actualDeliveryDate: transitionData.actualDeliveryDate,
+      endOdometerKm: transitionData.endOdometerKm,
+      podReceived: transitionData.podReceived,
+      podRemarks: transitionData.podRemarks,
+      cancellationReason: transitionData.cancellationReason,
+      cancelledBy: user?.email || user?.name || 'System',
     });
-
-    const json = await parseResponseJson<any>(res);
-    if (!res.ok || !json || !json.success) {
-      throw new Error(json?.error || 'Failed to transition status.');
-    }
-
-    await Promise.all([
-      syncEntityToFirestore(company?.id, 'trips', json.trip),
-      syncEntityToFirestore(company?.id, 'vehicles', json.vehicle),
-      syncEntityToFirestore(company?.id, 'drivers', json.driver),
-    ]);
-    window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-    window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
-    window.dispatchEvent(new CustomEvent('tms:driver-updated'));
-
-    await fetchTripDetails();
     if (onTripUpdated) onTripUpdated();
   };
 
   const handleCreateExpense = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tripId) return;
+    if (!data || !company?.id) return;
     setExpenseError(null);
+    setSavingExpense(true);
     try {
       const amountPaise = Math.round(parseFloat(expenseAmountRupees) * 100);
       if (isNaN(amountPaise) || amountPaise <= 0) {
         throw new Error('Please enter a valid expense amount.');
       }
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
+      const todayStr = new Date().toISOString().split('T')[0];
+      const newExpense: TripExpense = {
+        id: `exp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        companyId: company.id,
+        tripId: data.trip.id,
+        tripNumber: data.trip.tripNumber,
+        vehicleId: data.trip.vehicleId,
+        vehicleReg: data.trip.vehicleReg,
+        driverId: data.trip.driverId,
+        driverName: data.trip.driverName,
+        category: expenseCategory,
+        amountPaise,
+        paymentMode: expensePaymentMode,
+        date: todayStr,
+        expenseDate: todayStr,
+        litres: expenseLitres ? parseFloat(expenseLitres) : undefined,
+        petrolPumpName: expensePumpName.trim() || undefined,
+        notes: expenseNotes.trim() || undefined,
+        recordedBy: user?.name || user?.email || 'System',
+        isDriverDisbursed:
+          expensePaymentMode === 'CASH' || expensePaymentMode === 'DRIVER_POCKET',
+        isSettled: false,
+      };
 
-      const res = await fetch(`/api/trips/${tripId}/expenses`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          category: expenseCategory,
-          amountPaise,
-          paymentMode: expensePaymentMode,
-          litres: expenseLitres ? parseFloat(expenseLitres) : undefined,
-          petrolPumpName: expensePumpName,
-          notes: expenseNotes,
-        }),
-      });
-
-      const json = await parseResponseJson<any>(res);
-      if (!res.ok || !json || !json.success) {
-        throw new Error(json?.error || 'Failed to record expense.');
-      }
-
-      await Promise.all([
-        syncEntityToFirestore(company?.id, 'expenses', json.expense),
-        syncEntityToFirestore(company?.id, 'trips', json.trip),
-        syncEntityToFirestore(company?.id, 'vehicles', json.vehicle),
-      ]);
-      window.dispatchEvent(new CustomEvent('tms:expense-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      if (json.vehicle) window.dispatchEvent(new CustomEvent('tms:vehicle-updated'));
+      await saveExpenseInFirestore(company.id, newExpense, data.trip, data.expenses);
 
       setIsAddExpenseOpen(false);
       setExpenseAmountRupees('');
       setExpenseNotes('');
       setExpensePumpName('');
       setExpenseLitres('');
-      await fetchTripDetails();
       if (onTripUpdated) onTripUpdated();
     } catch (err: any) {
-      setExpenseError(err.message || 'Error recording expense.');
+      setExpenseError(err.message || 'Error recording expense in Firestore.');
+    } finally {
+      setSavingExpense(false);
     }
   };
 
   const handleCreateAdvance = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!tripId) return;
+    if (!data || !company?.id) return;
     setAdvanceError(null);
+    setSavingAdvance(true);
     try {
       const amountPaise = Math.round(parseFloat(advanceAmountRupees) * 100);
       if (isNaN(amountPaise) || amountPaise <= 0) {
         throw new Error('Please enter a valid advance amount.');
       }
 
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (activeToken) headers['Authorization'] = `Bearer ${activeToken}`;
+      const todayStr = new Date().toISOString().split('T')[0];
+      const newAdvance: DriverAdvance = {
+        id: `adv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        companyId: company.id,
+        tripId: data.trip.id,
+        tripNumber: data.trip.tripNumber,
+        driverId: data.trip.driverId,
+        driverName: data.trip.driverName,
+        vehicleReg: data.trip.vehicleReg,
+        amountPaise,
+        advanceType: 'CASH_EN_ROUTE',
+        date: todayStr,
+        referenceNotes: advanceNotes.trim() || undefined,
+        disbursedBy: user?.name || user?.email || 'System',
+        isSettled: false,
+      };
 
-      const res = await fetch(`/api/trips/${tripId}/advances`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          amountPaise,
-          advanceType: 'CASH_EN_ROUTE',
-          referenceNotes: advanceNotes,
-        }),
-      });
-
-      const json = await parseResponseJson<any>(res);
-      if (!res.ok || !json || !json.success) {
-        throw new Error(json?.error || 'Failed to disburse advance.');
-      }
-
-      await Promise.all([
-        syncEntityToFirestore(company?.id, 'advances', json.advance),
-        syncEntityToFirestore(company?.id, 'trips', json.trip),
-        syncEntityToFirestore(company?.id, 'drivers', json.driver),
-      ]);
-      window.dispatchEvent(new CustomEvent('tms:advance-updated'));
-      window.dispatchEvent(new CustomEvent('tms:trip-updated'));
-      window.dispatchEvent(new CustomEvent('tms:driver-updated'));
+      await createAdvanceInFirestore(
+        company.id,
+        newAdvance,
+        data.trip,
+        data.driver || undefined
+      );
 
       setIsAddAdvanceOpen(false);
       setAdvanceAmountRupees('');
       setAdvanceNotes('');
-      await fetchTripDetails();
       if (onTripUpdated) onTripUpdated();
     } catch (err: any) {
-      setAdvanceError(err.message || 'Error recording advance.');
+      setAdvanceError(err.message || 'Error recording advance in Firestore.');
+    } finally {
+      setSavingAdvance(false);
     }
   };
 
   const trip = data?.trip;
-  const statusBadge = trip ? getStatusBadge(trip.status) : { variant: 'slate' as BadgeVariant, label: '' };
+  const statusBadge = trip
+    ? getStatusBadge(trip.status)
+    : { variant: 'slate' as BadgeVariant, label: '' };
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="" size="xl">
-      {loading ? (
+      {loading && !data ? (
         <div className="py-16 text-center space-y-3">
           <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="text-xs text-slate-500 font-medium">Loading Trip Dossier...</p>
         </div>
-      ) : error || !data || !trip ? (
+      ) : !data || !trip ? (
         <div className="py-12 text-center space-y-3">
           <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
-          <p className="text-sm font-semibold text-slate-800">{error || 'Trip record not found.'}</p>
+          <p className="text-sm font-semibold text-slate-800">Trip record not found in Firestore.</p>
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800"
@@ -326,7 +332,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
               </p>
             </div>
 
-            {/* Quick Status Action Buttons */}
             <div className="flex items-center gap-1.5 flex-wrap">
               {data.allowedNextStatuses.map((st) => (
                 <button
@@ -346,7 +351,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
             </div>
           </div>
 
-          {/* Cancellation Notice if Cancelled */}
           {trip.status === 'CANCELLED' && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-2">
               <XCircle className="w-4 h-4 shrink-0 text-rose-600 mt-0.5" />
@@ -438,7 +442,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
           {/* TAB 1: OVERVIEW & SPECS */}
           {activeTab === 'overview' && (
             <div className="space-y-4">
-              {/* Financial KPI Grid */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
                   <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Freight Revenue</span>
@@ -458,9 +461,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Entity Cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                {/* Customer */}
                 <div className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-2">
                   <div className="flex items-center gap-1.5 font-bold text-slate-900 border-b border-slate-100 pb-1.5">
                     <Building2 className="w-4 h-4 text-indigo-600" />
@@ -475,7 +476,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                   )}
                 </div>
 
-                {/* Truck */}
                 <div className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-2">
                   <div className="flex items-center gap-1.5 font-bold text-slate-900 border-b border-slate-100 pb-1.5">
                     <Truck className="w-4 h-4 text-indigo-600" />
@@ -489,7 +489,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                   </div>
                 </div>
 
-                {/* Driver */}
                 <div className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-2">
                   <div className="flex items-center gap-1.5 font-bold text-slate-900 border-b border-slate-100 pb-1.5">
                     <Users className="w-4 h-4 text-indigo-600" />
@@ -504,7 +503,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Operational Mileage & Readings */}
               <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2 text-xs">
                 <span className="font-bold text-slate-900 uppercase tracking-wider text-[10px] block">
                   Trip Operational Readings & Consignee Remarks
@@ -588,7 +586,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                           </span>
                         </div>
                         <p className="text-[11px] text-slate-500">
-                          {exp.expenseDate} {exp.petrolPumpName ? `• ${exp.petrolPumpName}` : ''} {exp.litres ? `• ${exp.litres}L` : ''} {exp.location ? `• ${exp.location}` : ''}
+                          {exp.expenseDate || exp.date} {exp.petrolPumpName ? `• ${exp.petrolPumpName}` : ''} {exp.litres ? `• ${exp.litres}L` : ''} {exp.location ? `• ${exp.location}` : ''}
                         </p>
                         {exp.notes && <p className="text-[11px] text-slate-400 italic">{exp.notes}</p>}
                       </div>
@@ -670,7 +668,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                   AnchorTransport TMS follows a strict, sequential state machine ensuring fleet transparency, prevent duplicate driver assignments, and preserve audit histories.
                 </p>
 
-                {/* Visual Step Indicator */}
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2">
                   {[
                     { id: 'PLANNED', label: '1. Planned' },
@@ -680,7 +677,10 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                     { id: 'COMPLETED', label: '5. Completed' },
                   ].map((st, i) => {
                     const isCurrent = trip.status === st.id;
-                    const isPast = ['PLANNED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED'].indexOf(trip.status) >= i;
+                    const isPast =
+                      ['PLANNED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED'].indexOf(
+                        trip.status
+                      ) >= i;
                     return (
                       <div
                         key={st.id}
@@ -699,7 +699,6 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Status Action Buttons */}
               <div className="bg-white p-4 rounded-xl border border-slate-200 space-y-3">
                 <span className="text-xs font-bold text-slate-900 uppercase tracking-wider block">
                   Available Workflow Actions
@@ -826,15 +825,17 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsAddExpenseOpen(false)}
+                      disabled={savingExpense}
                       className="px-3 py-1.5 border border-slate-300 rounded-lg text-slate-600"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
+                      disabled={savingExpense}
                       className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700"
                     >
-                      Save Expense
+                      {savingExpense ? 'Saving...' : 'Save Expense'}
                     </button>
                   </div>
                 </form>
@@ -884,15 +885,17 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsAddAdvanceOpen(false)}
+                      disabled={savingAdvance}
                       className="px-3 py-1.5 border border-slate-300 rounded-lg text-slate-600"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
+                      disabled={savingAdvance}
                       className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700"
                     >
-                      Record Advance
+                      {savingAdvance ? 'Recording...' : 'Record Advance'}
                     </button>
                   </div>
                 </form>

@@ -1,27 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo } from 'react';
 import {
   Scale,
-  IndianRupee,
-  Calendar,
   ShieldCheck,
-  User,
-  Truck,
-  Navigation,
-  FileText,
   Receipt,
   Wallet,
-  Clock,
   AlertTriangle,
   Edit,
   Printer,
-  CheckCircle2,
 } from 'lucide-react';
-import { TripSettlement, Trip, DriverAdvance, TripExpense, UserRole } from '../../types/tms';
+import { TripSettlement, UserRole } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
-import { Badge } from '../../components/ui/Badge';
 import { formatINR } from '../../lib/currency';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { useAuth } from '../../context/AuthContext';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 
 interface SettlementDetailModalProps {
   isOpen: boolean;
@@ -36,39 +26,24 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
   onClose,
   settlementId,
   onEdit,
-  userRole,
+  userRole: _userRole,
 }) => {
-  const { token } = useAuth();
+  const { settlements, expenses: allExpenses, advances: allAdvances, loading, error } = useFirestoreData();
 
-  const [settlement, setSettlement] = useState<TripSettlement | null>(null);
-  const [trip, setTrip] = useState<Trip | null>(null);
-  const [expenses, setExpenses] = useState<TripExpense[]>([]);
-  const [advances, setAdvances] = useState<DriverAdvance[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const settlement = useMemo(
+    () => (settlementId ? settlements.find((s) => s.id === settlementId) || null : null),
+    [settlements, settlementId]
+  );
 
-  useEffect(() => {
-    if (isOpen && settlementId) {
-      setLoading(true);
-      setError(null);
-      fetch(`/api/settlements/${settlementId}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-        .then((res) => parseResponseJson<any>(res))
-        .then((data) => {
-          if (data && data.success) {
-            setSettlement(data.settlement);
-            setTrip(data.trip);
-            setExpenses(data.expenses || []);
-            setAdvances(data.advances || []);
-          } else {
-            throw new Error(data?.error || 'Failed to load settlement dossier.');
-          }
-        })
-        .catch((err) => setError(err.message || 'Error communicating with settlement API.'))
-        .finally(() => setLoading(false));
-    }
-  }, [isOpen, settlementId, token]);
+  const expenses = useMemo(
+    () => (settlement?.tripId ? allExpenses.filter((e) => e.tripId === settlement.tripId) : []),
+    [allExpenses, settlement?.tripId]
+  );
+
+  const advances = useMemo(
+    () => (settlement?.tripId ? allAdvances.filter((a) => a.tripId === settlement.tripId) : []),
+    [allAdvances, settlement?.tripId]
+  );
 
   if (!isOpen || !settlementId) return null;
 
@@ -79,7 +54,7 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
       title={`Settlement Dossier #${settlement?.settlementNumber || settlementId}`}
       maxWidth="2xl"
     >
-      {loading ? (
+      {loading && !settlement ? (
         <div className="py-20 text-center text-xs text-slate-500">
           Loading settlement reconciliation records...
         </div>
@@ -204,7 +179,9 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
             {/* Attached Cash Expenses */}
             <div className="border border-slate-200 rounded-xl p-3 bg-white">
               <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-slate-100">
-                <span className="font-bold text-slate-900">Driver Cash Vouchers ({expenses.filter(e => e.isDriverDisbursed || e.paymentMode === 'CASH').length})</span>
+                <span className="font-bold text-slate-900">
+                  Driver Cash Vouchers ({expenses.filter((e) => e.isDriverDisbursed || e.paymentMode === 'CASH' || e.paymentMode === 'DRIVER_POCKET').length})
+                </span>
                 <Receipt className="w-3.5 h-3.5 text-slate-400" />
               </div>
               <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
@@ -214,7 +191,7 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
                     <div key={e.id} className="p-2 bg-slate-50 rounded-lg flex items-center justify-between text-[11px]">
                       <div>
                         <span className="font-semibold text-slate-800 block">{e.category.replace('_', ' ')}</span>
-                        <span className="text-slate-500">{e.petrolPumpName || e.notes || e.expenseDate}</span>
+                        <span className="text-slate-500">{e.petrolPumpName || e.notes || e.expenseDate || e.date}</span>
                       </div>
                       <span className="font-bold text-rose-700">{formatINR(e.amountPaise)}</span>
                     </div>
@@ -255,7 +232,7 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
             <button
               type="button"
               onClick={() => window.print()}
-              className="px-3.5 py-2 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 flex items-center gap-1.5"
+              className="px-3.5 py-2 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 flex items-center gap-1.5 cursor-pointer"
             >
               <Printer className="w-3.5 h-3.5" />
               <span>Print Voucher</span>
@@ -269,7 +246,7 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
                     onEdit(settlement);
                     onClose();
                   }}
-                  className="px-4 py-2 text-xs font-semibold rounded-xl text-indigo-700 hover:bg-indigo-50 border border-indigo-200 flex items-center gap-1.5"
+                  className="px-4 py-2 text-xs font-semibold rounded-xl text-indigo-700 hover:bg-indigo-50 border border-indigo-200 flex items-center gap-1.5 cursor-pointer"
                 >
                   <Edit className="w-3.5 h-3.5" />
                   <span>Review / Edit</span>
@@ -278,14 +255,18 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-xs font-semibold rounded-xl text-white bg-slate-900 hover:bg-slate-800"
+                className="px-4 py-2 text-xs font-semibold rounded-xl text-white bg-slate-900 hover:bg-slate-800 cursor-pointer"
               >
                 Close
               </button>
             </div>
           </div>
         </div>
-      ) : null}
+      ) : (
+        <div className="py-12 text-center text-xs text-slate-500">
+          Settlement dossier not found in active company records.
+        </div>
+      )}
     </Modal>
   );
 };

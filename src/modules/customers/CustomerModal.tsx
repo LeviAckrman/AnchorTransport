@@ -1,16 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { X, Building2, ShieldCheck, AlertCircle, FileText, CheckCircle2, Phone, Mail, MapPin } from 'lucide-react';
+import { X, Building2, AlertCircle, FileText, Phone, MapPin } from 'lucide-react';
 import { Customer } from '../../types/tms';
-import { parseResponseJson } from '../../lib/safeFetch';
-import { useAuth } from '../../context/AuthContext';
-import { syncEntityToFirestore } from '../../lib/firebase/firestoreService';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { saveCustomerInFirestore } from '../../lib/firebase/firestoreService';
 
 interface CustomerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: (customer: Customer, isEdit: boolean) => void;
   customerToEdit?: Customer | null;
-  token: string;
+  token?: string;
 }
 
 const INDIAN_STATES = [
@@ -39,9 +38,8 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
   onClose,
   onSuccess,
   customerToEdit,
-  token,
 }) => {
-  const { company } = useAuth();
+  const { company, customers: allCustomers } = useFirestoreData();
   const isEdit = Boolean(customerToEdit);
 
   const [name, setName] = useState('');
@@ -128,6 +126,10 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
     setLoading(true);
 
     try {
+      if (!company?.id) {
+        throw new Error('Active company profile is required before saving a customer.');
+      }
+
       if (!name.trim()) {
         throw new Error('Corporate customer name is required.');
       }
@@ -138,48 +140,49 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
         throw new Error('Invalid GSTIN format. Must be a valid 15-character GST identification number (e.g. 19AAACS4128F1Z8).');
       }
 
+      const duplicateGstin = allCustomers.find(
+        (c) => c.id !== customerToEdit?.id && (c.gstin || '').trim().toUpperCase() === cleanGstin
+      );
+      if (duplicateGstin) {
+        throw new Error(`GSTIN ${cleanGstin} is already registered to ${duplicateGstin.name}.`);
+      }
+
       const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
       if (cleanPhone.length !== 10) {
         throw new Error('Please enter a valid 10-digit Indian phone number.');
       }
 
-      const payload = {
+      const parsedCreditDays = parseInt(creditPeriodDays, 10) || 30;
+      const customerId = customerToEdit?.id || `cust_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const nowIso = new Date().toISOString();
+
+      const customerObj: Customer = {
+        id: customerId,
+        companyId: company.id,
         name: name.trim(),
         tradeName: tradeName.trim() || undefined,
         gstin: cleanGstin,
         pan: pan.trim().toUpperCase() || cleanGstin.substring(2, 12),
-        contactPerson: contactPerson.trim() || undefined,
+        contactPerson: contactPerson.trim() || 'Authorized Coordinator',
         phone: cleanPhone,
-        email: email.trim().toLowerCase() || undefined,
-        billingAddress: billingAddress.trim() || undefined,
-        city: city.trim() || undefined,
-        state: state.trim() || undefined,
-        stateCode: stateCode.trim() || undefined,
-        pincode: pincode.trim() || undefined,
-        creditPeriodDays: parseInt(creditPeriodDays, 10) || 30,
+        email: email.trim().toLowerCase() || '',
+        billingAddress: billingAddress.trim() || '',
+        city: city.trim() || '',
+        state: state.trim() || '',
+        stateCode: stateCode.trim() || cleanGstin.substring(0, 2),
+        pincode: pincode.trim() || '',
+        creditPeriodDays: parsedCreditDays,
+        paymentTermsDays: parsedCreditDays,
         creditLimitPaise: Math.round((parseFloat(creditLimit) || 0) * 100),
+        currentOutstandingPaise: customerToEdit?.currentOutstandingPaise ?? 0,
+        totalFreightBilledPaise: customerToEdit?.totalFreightBilledPaise ?? 0,
         notes: notes.trim() || undefined,
+        createdAt: customerToEdit?.createdAt || nowIso,
+        updatedAt: nowIso,
       };
 
-      const url = isEdit ? `/api/customers/${customerToEdit!.id}` : '/api/customers';
-      const method = isEdit ? 'PUT' : 'POST';
-
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      const data = await parseResponseJson<any>(res);
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to save customer record.');
-      }
-
-      await syncEntityToFirestore(company?.id, 'customers', data.customer);
-      onSuccess(data.customer, isEdit);
+      await saveCustomerInFirestore(company.id, customerObj);
+      onSuccess(customerObj, isEdit);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Error saving customer.');

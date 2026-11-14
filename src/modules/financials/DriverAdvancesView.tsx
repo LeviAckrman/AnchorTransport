@@ -1,19 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Wallet,
   Plus,
   Search,
-  RefreshCw,
   ChevronLeft,
   ChevronRight,
   AlertTriangle,
-  IndianRupee,
-  Calendar,
   CheckCircle2,
   Clock,
-  User,
-  Navigation,
-  FileText,
   ShieldCheck,
 } from 'lucide-react';
 import { DriverAdvance, UserRole } from '../../types/tms';
@@ -21,112 +15,109 @@ import { formatINR } from '../../lib/currency';
 import { Badge } from '../../components/ui/Badge';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { DriverAdvanceModal } from './DriverAdvanceModal';
-import { useAuth } from '../../context/AuthContext';
-import { parseResponseJson } from '../../lib/safeFetch';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
 
 interface DriverAdvancesViewProps {
   userRole: UserRole;
   onNavigateTab?: (tab: any) => void;
 }
 
-export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({ userRole, onNavigateTab }) => {
-  const { token, company } = useAuth();
-
-  const [advances, setAdvances] = useState<DriverAdvance[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({
+  userRole: _userRole,
+  onNavigateTab: _onNavigateTab,
+}) => {
+  const { advances: allAdvances, trips, drivers, loading, error } = useFirestoreData();
 
   // Pagination & Filters
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
+  const limit = 15;
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState(''); // 'settled' | 'pending' | ''
 
-  // Summary
-  const [summary, setSummary] = useState({
-    totalAdvancesPaise: 0,
-    settledAdvancesPaise: 0,
-    pendingAdvancesPaise: 0,
-    count: 0,
-  });
-
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
-
-  const fetchAdvances = async (targetPage = page) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams({
-        page: targetPage.toString(),
-        limit: '15',
-        search: searchQuery,
-      });
-
-      if (statusFilter === 'settled') params.append('isSettled', 'true');
-      if (statusFilter === 'pending') params.append('isSettled', 'false');
-
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(`/api/advances?${params.toString()}`, { headers });
-      const data = await parseResponseJson<any>(res);
-
-      if (!res.ok || !data || !data.success) {
-        throw new Error(data?.error || 'Failed to fetch driver advances.');
-      }
-
-      setAdvances(data.data || []);
-      setPage(data.pagination.page);
-      setTotalPages(data.pagination.totalPages);
-      setTotalCount(data.pagination.total);
-      if (data.summary) {
-        setSummary(data.summary);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Error loading driver advances ledger.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchAdvances(1);
-  }, [statusFilter, token, company?.id]);
-
-  useEffect(() => {
-    const handleRefresh = () => {
-      fetchAdvances(page);
-    };
-    window.addEventListener('tms:firestore-hydrated', handleRefresh);
-    window.addEventListener('tms:advance-updated', handleRefresh);
-    window.addEventListener('tms:trip-updated', handleRefresh);
-    return () => {
-      window.removeEventListener('tms:firestore-hydrated', handleRefresh);
-      window.removeEventListener('tms:advance-updated', handleRefresh);
-      window.removeEventListener('tms:trip-updated', handleRefresh);
-    };
-  }, [page, statusFilter, searchQuery, token, company?.id]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      fetchAdvances(1);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMsg({ text, type });
     setTimeout(() => setToastMsg(null), 3500);
   };
 
+  const tripMap = useMemo(() => new Map(trips.map((t) => [t.id, t])), [trips]);
+  const driverMap = useMemo(() => new Map(drivers.map((d) => [d.id, d])), [drivers]);
+
+  const enrichedAdvances = useMemo(() => {
+    return allAdvances.map((adv) => {
+      const trip = adv.tripId ? tripMap.get(adv.tripId) : undefined;
+      const driver = adv.driverId ? driverMap.get(adv.driverId) : undefined;
+      return {
+        ...adv,
+        tripNumber: adv.tripNumber || trip?.tripNumber,
+        vehicleReg: adv.vehicleReg || trip?.vehicleReg,
+        driverName: adv.driverName || driver?.fullName || trip?.driverName,
+      };
+    });
+  }, [allAdvances, tripMap, driverMap]);
+
+  const filteredAdvances = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return [...enrichedAdvances]
+      .filter((adv) => {
+        if (statusFilter === 'settled' && !adv.isSettled) return false;
+        if (statusFilter === 'pending' && adv.isSettled) return false;
+        if (q) {
+          const hay = [
+            adv.driverName,
+            adv.tripNumber,
+            adv.vehicleReg,
+            adv.reference,
+            adv.referenceNotes,
+            adv.notes,
+            adv.advanceType,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => new Date(b.date || b.createdAt || 0).getTime() - new Date(a.date || a.createdAt || 0).getTime());
+  }, [enrichedAdvances, statusFilter, searchQuery]);
+
+  const summary = useMemo(() => {
+    let totalAdvancesPaise = 0;
+    let settledAdvancesPaise = 0;
+    let pendingAdvancesPaise = 0;
+
+    for (const adv of filteredAdvances) {
+      const amt = adv.amountPaise || 0;
+      totalAdvancesPaise += amt;
+      if (adv.isSettled) settledAdvancesPaise += amt;
+      else pendingAdvancesPaise += amt;
+    }
+
+    return {
+      totalAdvancesPaise,
+      settledAdvancesPaise,
+      pendingAdvancesPaise,
+      count: filteredAdvances.length,
+    };
+  }, [filteredAdvances]);
+
+  const totalCount = filteredAdvances.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+  const safePage = Math.min(page, totalPages);
+
+  const advances = useMemo(() => {
+    const start = (safePage - 1) * limit;
+    return filteredAdvances.slice(start, start + limit);
+  }, [filteredAdvances, safePage]);
+
   const handleModalSuccess = (advance: DriverAdvance) => {
     showNotification(
-      `Disbursed advance of ${formatINR(advance.amountPaise)} to ${advance.driverName}.`,
+      `Disbursed advance of ${formatINR(advance.amountPaise)} to ${advance.driverName || 'Driver'}.`,
       'success'
     );
-    fetchAdvances(1);
   };
 
   return (
@@ -226,7 +217,10 @@ export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({ userRole
             type="text"
             placeholder="Search driver, trip #, UTR, reference..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setPage(1);
+            }}
             className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
           />
         </div>
@@ -234,30 +228,24 @@ export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({ userRole
         <div className="flex items-center gap-2 w-full sm:w-auto">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
             className="px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:bg-white"
           >
             <option value="">All Settlement States</option>
             <option value="pending">Pending Settlement</option>
             <option value="settled">Settled / Reconciled</option>
           </select>
-
-          <button
-            onClick={() => fetchAdvances(page)}
-            className="p-2 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl border border-slate-200"
-            title="Refresh Ledger"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
         </div>
       </div>
 
       {/* Table */}
       <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
-        {loading ? (
+        {loading && allAdvances.length === 0 ? (
           <div className="py-20 text-center space-y-3">
-            <RefreshCw className="w-8 h-8 text-indigo-600 animate-spin mx-auto" />
-            <p className="text-sm font-semibold text-slate-600">Loading advances ledger...</p>
+            <p className="text-sm font-semibold text-slate-600 animate-pulse">Loading advances ledger...</p>
           </div>
         ) : error ? (
           <div className="py-16 text-center space-y-3 px-4">
@@ -273,7 +261,7 @@ export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({ userRole
             </p>
             <button
               onClick={() => setIsModalOpen(true)}
-              className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700"
+              className="mt-2 px-4 py-2 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
             >
               Disburse Advance
             </button>
@@ -346,19 +334,19 @@ export const DriverAdvancesView: React.FC<DriverAdvancesViewProps> = ({ userRole
         {totalPages > 1 && (
           <div className="py-3 px-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-xs">
             <span className="text-slate-500">
-              Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({totalCount} disbursements)
+              Showing page <strong>{safePage}</strong> of <strong>{totalPages}</strong> ({totalCount} disbursements)
             </span>
             <div className="flex items-center gap-1">
               <button
-                disabled={page <= 1}
-                onClick={() => fetchAdvances(page - 1)}
+                disabled={safePage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
                 className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50 text-slate-700 hover:bg-slate-100"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
               <button
-                disabled={page >= totalPages}
-                onClick={() => fetchAdvances(page + 1)}
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white disabled:opacity-50 text-slate-700 hover:bg-slate-100"
               >
                 <ChevronRight className="w-3.5 h-3.5" />

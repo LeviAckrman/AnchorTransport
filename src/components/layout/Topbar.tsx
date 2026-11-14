@@ -5,9 +5,6 @@ import {
   ChevronDown,
   Plus,
   RefreshCw,
-  User,
-  LogOut,
-  SlidersHorizontal,
 } from 'lucide-react';
 import { Company, UserRole } from '../../types/tms';
 import { useAuth } from '../../context/AuthContext';
@@ -15,7 +12,6 @@ import { useAuth } from '../../context/AuthContext';
 interface TopbarProps {
   company: Company;
   currentRole: UserRole;
-  onRoleChange: (role: UserRole) => void;
   onResetData: () => void;
   onQuickDispatch: () => void;
   onOpenProfile: () => void;
@@ -24,31 +20,25 @@ interface TopbarProps {
 export const Topbar: React.FC<TopbarProps> = ({
   company,
   currentRole,
-  onRoleChange,
   onResetData,
   onQuickDispatch,
   onOpenProfile,
 }) => {
-  const { user, accessibleCompanies, switchCompany, logout } = useAuth();
-  const [roleMenuOpen, setRoleMenuOpen] = useState(false);
+  const { user, accessibleCompanies, switchCompany, permissions } = useAuth();
   const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
 
-  const roles: { id: UserRole; label: string; desc: string }[] = [
-    { id: 'OWNER', label: 'Owner', desc: 'Full business & financial authority' },
-    { id: 'ADMIN', label: 'Admin', desc: 'Fleet operations & user setup' },
-    { id: 'MANAGER', label: 'Manager', desc: 'Trip dispatch, fleet & driver tracking' },
-    { id: 'ACCOUNTANT', label: 'Accountant', desc: 'Trip settlement, billing & ledger' },
-    { id: 'OPERATIONS', label: 'Operations Staff', desc: 'Daily log & driver advance entry' },
-  ];
-
   const closeMenus = () => {
-    setRoleMenuOpen(false);
     setCompanyMenuOpen(false);
   };
 
+  const locationSummary =
+    company.city && company.state
+      ? `${company.city}, ${company.state}${company.stateCode ? ` (Zone ${company.stateCode})` : ''}`
+      : company.city || company.state || 'Company Workspace';
+
   return (
     <header className="relative h-16 bg-white border-b border-slate-200/90 px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-4 shrink-0 select-none z-20">
-      {(roleMenuOpen || companyMenuOpen) && (
+      {companyMenuOpen && (
         <div
           className="fixed inset-0 z-30"
           onClick={closeMenus}
@@ -61,10 +51,7 @@ export const Topbar: React.FC<TopbarProps> = ({
         <div className="relative min-w-0 max-w-full">
           <button
             type="button"
-            onClick={() => {
-              setRoleMenuOpen(false);
-              setCompanyMenuOpen(!companyMenuOpen);
-            }}
+            onClick={() => setCompanyMenuOpen(!companyMenuOpen)}
             className="flex items-center gap-2.5 text-left p-1.5 rounded-xl hover:bg-slate-50 transition-colors border border-transparent hover:border-slate-200 max-w-full min-w-0 cursor-pointer"
           >
             <div className="p-2 rounded-lg bg-indigo-50 text-indigo-700 hidden sm:block shrink-0">
@@ -73,16 +60,22 @@ export const Topbar: React.FC<TopbarProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 min-w-0">
                 <h2 className="text-sm sm:text-base font-bold text-slate-900 leading-tight truncate">
-                  {company.name}
+                  {company.name || 'Transport Company'}
                 </h2>
                 {accessibleCompanies.length > 1 && (
                   <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                 )}
               </div>
               <p className="text-[11px] sm:text-xs text-slate-500 flex items-center gap-1.5 truncate">
-                <span className="truncate">{company.city}, {company.state} (Zone {company.stateCode})</span>
-                <span className="text-slate-300 hidden md:inline">•</span>
-                <span className="text-emerald-700 font-medium hidden md:inline shrink-0">GSTIN: {company.gstin}</span>
+                <span className="truncate">{locationSummary}</span>
+                {company.gstin && (
+                  <>
+                    <span className="text-slate-300 hidden md:inline">•</span>
+                    <span className="text-emerald-700 font-medium hidden md:inline shrink-0">
+                      GSTIN: {company.gstin}
+                    </span>
+                  </>
+                )}
               </p>
             </div>
           </button>
@@ -124,72 +117,32 @@ export const Topbar: React.FC<TopbarProps> = ({
         </div>
       </div>
 
-      {/* Right Controls: Role Switcher, Quick Actions, User Profile */}
+      {/* Right Controls: Authoritative Role Badge, Quick Actions, User Profile */}
       <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
-        {/* Role Switcher Pill */}
-        <div className="relative">
+        <div
+          title="Active Firestore company membership role"
+          className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 border border-slate-200"
+        >
+          <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
+          <span className="hidden sm:inline">Role:</span>
+          <span className="text-indigo-700 font-bold">{currentRole}</span>
+        </div>
+
+        {/* Reset Data Button (Strictly OWNER / ADMIN) */}
+        {permissions?.canManageCompany && (
           <button
             type="button"
             onClick={() => {
-              setCompanyMenuOpen(false);
-              setRoleMenuOpen(!roleMenuOpen);
+              closeMenus();
+              onResetData();
             }}
-            className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-slate-200/80 text-slate-700 border border-slate-200 transition-colors cursor-pointer"
+            title="Clear operational company data"
+            className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors border border-transparent hover:border-slate-200 hidden sm:flex items-center gap-1 text-xs cursor-pointer"
           >
-            <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
-            <span className="hidden sm:inline">Role:</span>
-            <span className="text-indigo-700 font-bold">{currentRole}</span>
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Reset Data</span>
           </button>
-
-          {roleMenuOpen && (
-            <div className="absolute right-0 mt-1.5 w-64 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-50">
-              <div className="px-3 py-2 border-b border-slate-100">
-                <p className="text-xs font-bold text-slate-900">Switch Permission Role</p>
-                <p className="text-[11px] text-slate-500">Test multi-role permissions in real-time</p>
-              </div>
-              <div className="py-1">
-                {roles.map((r) => (
-                  <button
-                    type="button"
-                    key={r.id}
-                    onClick={() => {
-                      onRoleChange(r.id);
-                      setRoleMenuOpen(false);
-                    }}
-                    className={`w-full text-left px-3 py-2 text-xs flex flex-col transition-colors cursor-pointer ${
-                      currentRole === r.id
-                        ? 'bg-indigo-50 text-indigo-900 font-semibold'
-                        : 'text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold">{r.label}</span>
-                      {currentRole === r.id && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />
-                      )}
-                    </div>
-                    <span className="text-[10px] text-slate-500 font-normal">{r.desc}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Reset Store Button */}
-        <button
-          type="button"
-          onClick={() => {
-            closeMenus();
-            onResetData();
-          }}
-          title="Clear operational company data"
-          className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors border border-transparent hover:border-slate-200 hidden sm:flex items-center gap-1 text-xs cursor-pointer"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline">Reset Data</span>
-        </button>
+        )}
 
         {/* Quick Dispatch CTA Button */}
         <button
