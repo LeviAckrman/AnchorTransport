@@ -93,7 +93,7 @@ export function isVerifiedEmailUser(): boolean {
 }
 
 function isValidDocSegment(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0 && !value.includes('/');
+  return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.trim());
 }
 
 const BOOTSTRAPPED_ADMIN_EMAIL = 'kunduankit129@gmail.com';
@@ -679,24 +679,44 @@ export async function ensureFirestoreUserProfile(
     if (snap.exists()) {
       const existingRaw = snap.data();
       const existingProfile = normalizeTimestamps<FirestoreUserProfile>(existingRaw);
-      // Legacy backfill: if user already has a company linked in Firestore, ensure onboardingCompleted is permanently true
-      if (
+      const missingTimestampCreatedAt = !(existingRaw.createdAt instanceof Timestamp);
+      const needsOnboardingBackfill =
         existingProfile.onboardingCompleted !== true &&
-        (existingProfile.activeCompanyId || existingProfile.defaultCompanyId) &&
-        isVerifiedEmailUser()
-      ) {
+        Boolean(existingProfile.activeCompanyId || existingProfile.defaultCompanyId);
+      const missingCoreFields = !existingRaw.id || !existingRaw.email || !existingRaw.name;
+
+      // Legacy backfill: ensure required schema fields, Timestamp createdAt, and permanent onboardingCompleted
+      if (isVerifiedEmailUser() && (needsOnboardingBackfill || missingTimestampCreatedAt || missingCoreFields)) {
         const completedAt = existingProfile.onboardingCompletedAt || new Date().toISOString();
-        await updateDoc(userRef, {
-          onboardingCompleted: true,
+        const fallbackEmail = (fbUser.email || existingRaw.email || '').toLowerCase().slice(0, 200) || 'user@anchortransport.in';
+        const fallbackName = (existingRaw.name || fbUser.displayName || fbUser.email?.split('@')[0] || 'Fleet User').slice(0, 100);
+        const backfillPayload: Record<string, any> = {
           updatedAt: serverTimestamp(),
-          ...(existingRaw.onboardingCompletedAt === undefined
-            ? { onboardingCompletedAt: completedAt }
+          ...(missingTimestampCreatedAt ? { createdAt: serverTimestamp() } : {}),
+          ...(!existingRaw.id ? { id: fbUser.uid } : {}),
+          ...(!existingRaw.email ? { email: fallbackEmail } : {}),
+          ...(!existingRaw.name ? { name: fallbackName } : {}),
+          ...(needsOnboardingBackfill
+            ? {
+                onboardingCompleted: true,
+                ...(existingRaw.onboardingCompletedAt === undefined
+                  ? { onboardingCompletedAt: completedAt }
+                  : {}),
+              }
             : {}),
-        });
+        };
+        await updateDoc(userRef, backfillPayload);
         return {
           ...existingProfile,
-          onboardingCompleted: true,
-          onboardingCompletedAt: completedAt,
+          id: existingProfile.id || fbUser.uid,
+          email: existingProfile.email || fallbackEmail,
+          name: existingProfile.name || fallbackName,
+          ...(needsOnboardingBackfill
+            ? {
+                onboardingCompleted: true,
+                onboardingCompletedAt: completedAt,
+              }
+            : {}),
         };
       }
       return existingProfile;
@@ -781,9 +801,26 @@ export async function updateFirestoreUserProfile(
       updatedAt: serverTimestamp(),
     };
 
+    if (!(existingData.createdAt instanceof Timestamp)) {
+      updatePayload.createdAt = serverTimestamp();
+    }
+    if (!existingData.id) {
+      updatePayload.id = uid;
+    }
+    if (!existingData.email) {
+      updatePayload.email =
+        (auth.currentUser.email || '').toLowerCase().slice(0, 200) || 'user@anchortransport.in';
+    }
+
     const nextName = clipStr(updates.name, 100);
     if (nextName !== undefined) {
       updatePayload.name = nextName;
+    } else if (!existingData.name) {
+      updatePayload.name = (
+        auth.currentUser.displayName ||
+        auth.currentUser.email?.split('@')[0] ||
+        'Fleet User'
+      ).slice(0, 100);
     }
     if (updates.phone !== undefined) {
       updatePayload.phone = clipStr(updates.phone, 20) || '';
@@ -900,7 +937,13 @@ export async function createCompanyInFirestoreAtomic(
   try {
     await ensureFirestoreUserProfile(fbUser);
 
-    const existingMemberSnap = await getDoc(doc(db, 'companies', company.id, 'members', fbUser.uid));
+    const companyRef = doc(db, 'companies', company.id);
+    const memberRef = doc(db, 'companies', company.id, 'members', fbUser.uid);
+    const [existingMemberSnap, existingCompanySnap] = await Promise.all([
+      getDoc(memberRef),
+      getDoc(companyRef),
+    ]);
+
     if (existingMemberSnap.exists()) {
       await updateFirestoreUserProfile(fbUser.uid, {
         defaultCompanyId: company.id,
@@ -910,41 +953,50 @@ export async function createCompanyInFirestoreAtomic(
       return;
     }
 
+    const companyExists = existingCompanySnap.exists();
+    if (companyExists) {
+      const existingCompanyData = existingCompanySnap.data() || {};
+      const isOwnerMatch = existingCompanyData.ownerId === fbUser.uid;
+      if (!isOwnerMatch && !isBootstrappedAdminUser()) {
+        return;
+      }
+    }
+
     const userSnap = await getDoc(doc(db, 'users', fbUser.uid));
     const userExisting = userSnap.data() || {};
 
     const batch = writeBatch(db);
 
-    const companyRef = doc(db, 'companies', company.id);
-    const companyPayload = stripUndefined({
-      id: company.id,
-      name: clipStr(company.name, 150) || 'Transport Company',
-      tradeName: clipStr(company.tradeName || company.name, 150),
-      gstin: clipStr(company.gstin, 15),
-      pan: clipStr(company.pan, 10),
-      phone: clipStr(company.phone, 25),
-      email: clipStr(company.email, 200),
-      address: clipStr(company.address, 300),
-      city: clipStr(company.city, 80),
-      state: clipStr(company.state, 60),
-      stateCode: clipStr(company.stateCode, 5),
-      pincode: clipStr(company.pincode, 10),
-      bankName: clipStr(company.bankName, 100),
-      accountNumber: clipStr(company.accountNumber, 40),
-      ifscCode: clipStr(company.ifscCode, 15),
-      branch: clipStr(company.branch, 100),
-      lrPrefix: clipStr(company.lrPrefix, 30),
-      invoicePrefix: clipStr(company.invoicePrefix, 30),
-      tripPrefix: clipStr(company.tripPrefix, 30),
-      fleetSize: clipStr(company.fleetSize, 50),
-      logoUrl: clipStr(company.logoUrl, 500),
-      ownerId: fbUser.uid,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    batch.set(companyRef, companyPayload);
+    if (!companyExists) {
+      const companyPayload = stripUndefined({
+        id: company.id,
+        name: clipStr(company.name, 150) || 'Transport Company',
+        tradeName: clipStr(company.tradeName || company.name, 150),
+        gstin: clipStr(company.gstin, 15),
+        pan: clipStr(company.pan, 10),
+        phone: clipStr(company.phone, 25),
+        email: clipStr(company.email, 200),
+        address: clipStr(company.address, 300),
+        city: clipStr(company.city, 80),
+        state: clipStr(company.state, 60),
+        stateCode: clipStr(company.stateCode, 5),
+        pincode: clipStr(company.pincode, 10),
+        bankName: clipStr(company.bankName, 100),
+        accountNumber: clipStr(company.accountNumber, 40),
+        ifscCode: clipStr(company.ifscCode, 15),
+        branch: clipStr(company.branch, 100),
+        lrPrefix: clipStr(company.lrPrefix, 30),
+        invoicePrefix: clipStr(company.invoicePrefix, 30),
+        tripPrefix: clipStr(company.tripPrefix, 30),
+        fleetSize: clipStr(company.fleetSize, 50),
+        logoUrl: clipStr(company.logoUrl, 500),
+        ownerId: fbUser.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(companyRef, companyPayload);
+    }
 
-    const memberRef = doc(db, 'companies', company.id, 'members', fbUser.uid);
     const memberPayload = stripUndefined({
       id: fbUser.uid,
       userId: fbUser.uid,
@@ -965,6 +1017,24 @@ export async function createCompanyInFirestoreAtomic(
       onboardingCompleted: true,
       updatedAt: serverTimestamp(),
     };
+    if (!(userExisting.createdAt instanceof Timestamp)) {
+      userUpdates.createdAt = serverTimestamp();
+    }
+    if (!userExisting.id) {
+      userUpdates.id = fbUser.uid;
+    }
+    if (!userExisting.email) {
+      userUpdates.email =
+        (fbUser.email || '').toLowerCase().slice(0, 200) || 'user@anchortransport.in';
+    }
+    if (!userExisting.name) {
+      userUpdates.name = (
+        fbUser.displayName ||
+        fbUser.email?.split('@')[0] ||
+        company.name ||
+        'Fleet User'
+      ).slice(0, 100);
+    }
     if (userExisting.onboardingCompletedAt === undefined) {
       userUpdates.onboardingCompletedAt = new Date().toISOString();
     }

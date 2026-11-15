@@ -96,6 +96,16 @@ service cloud.firestore {
       return isFleetStaff(companyId) || isAccountant(companyId);
     }
 
+    function isCreatedAtPreservedOrMigrated() {
+      return ('createdAt' in existing() && existing().createdAt is timestamp)
+        ? incoming().createdAt == existing().createdAt
+        : incoming().createdAt == request.time;
+    }
+
+    function canMigrateLegacyCreatedAt() {
+      return !('createdAt' in existing()) || !(existing().createdAt is timestamp);
+    }
+
     // ------------------------------------------------------------------------
     // 3. VALIDATION BLUEPRINTS (Anti-Update-Gap & Anti-Shadow-Field)
     // ------------------------------------------------------------------------
@@ -635,8 +645,8 @@ service cloud.firestore {
     // 5. USER PROFILES (/users/{userId}) - Strict PII Owner Isolation
     // ------------------------------------------------------------------------
     match /users/{userId} {
-      allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin());
-      allow list: if isSignedIn() && (existing().id == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(userId) && isSignedIn() && (isBootstrappedAdmin() || request.auth.uid == userId);
+      allow list: if isSignedIn() && (isBootstrappedAdmin() || existing().id == request.auth.uid);
       allow create: if isValidId(userId)
                     && isVerifiedUser()
                     && request.auth.uid == userId
@@ -646,12 +656,13 @@ service cloud.firestore {
                     && isVerifiedUser()
                     && (request.auth.uid == userId || isBootstrappedAdmin())
                     && isValidUser(incoming(), userId)
-                    && incoming().createdAt == existing().createdAt
+                    && isCreatedAtPreservedOrMigrated()
                     && (!('onboardingCompleted' in existing()) || existing().onboardingCompleted != true || incoming().onboardingCompleted == true)
                     && (!('onboardingCompletedAt' in existing()) || incoming().onboardingCompletedAt == existing().onboardingCompletedAt || isBootstrappedAdmin())
                     && (
                       isBootstrappedAdmin() ||
-                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'updatedAt'])
+                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'updatedAt']) ||
+                      (canMigrateLegacyCreatedAt() && incoming().diff(existing()).affectedKeys().hasOnly(['id', 'email', 'name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'createdAt', 'updatedAt']))
                     );
       allow delete: if false;
     }
@@ -660,8 +671,8 @@ service cloud.firestore {
     // 6. MULTI-TENANT COMPANY ROOT (/companies/{companyId})
     // ------------------------------------------------------------------------
     match /companies/{companyId} {
-      allow get: if isValidId(companyId) && (isCompanyMember(companyId) || isBootstrappedAdmin());
-      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isBootstrappedAdmin());
+      allow get: if isValidId(companyId) && (isBootstrappedAdmin() || isCompanyMember(companyId));
+      allow list: if isSignedIn() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
 
       // Atomic Company Creation: must co-create the OWNER member doc in the same batch
       allow create: if isValidId(companyId)
@@ -676,14 +687,25 @@ service cloud.firestore {
                     && isVerifiedUser()
                     && isOwnerOrAdmin(companyId)
                     && isValidCompany(incoming(), companyId)
-                    && incoming().ownerId == existing().ownerId
-                    && incoming().createdAt == existing().createdAt
-                    && incoming().diff(existing()).affectedKeys().hasOnly([
-                      'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-                      'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
-                      'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-                      'fleetSize', 'logoUrl', 'updatedAt'
-                    ]);
+                    && (!('ownerId' in existing()) || incoming().ownerId == existing().ownerId)
+                    && isCreatedAtPreservedOrMigrated()
+                    && (
+                      incoming().diff(existing()).affectedKeys().hasOnly([
+                        'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
+                        'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                        'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
+                        'fleetSize', 'logoUrl', 'updatedAt'
+                      ]) ||
+                      (
+                        canMigrateLegacyCreatedAt() &&
+                        incoming().diff(existing()).affectedKeys().hasOnly([
+                          'id', 'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
+                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
+                          'fleetSize', 'logoUrl', 'ownerId', 'createdAt', 'updatedAt'
+                        ])
+                      )
+                    );
       allow delete: if false;
 
       // ----------------------------------------------------------------------
@@ -691,8 +713,8 @@ service cloud.firestore {
       // ----------------------------------------------------------------------
       match /members/{userId} {
         allow get: if isValidId(companyId) && isValidId(userId)
-                   && (isCompanyMember(companyId) || (isSignedIn() && request.auth.uid == userId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && (existing().userId == request.auth.uid || isCompanyMember(companyId) || isBootstrappedAdmin());
+                   && (isBootstrappedAdmin() || isCompanyMember(companyId) || (isSignedIn() && request.auth.uid == userId));
+        allow list: if isSignedIn() && (isBootstrappedAdmin() || existing().userId == request.auth.uid || isCompanyMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(userId)
                       && isVerifiedUser()
@@ -709,6 +731,14 @@ service cloud.firestore {
                           && !exists(/databases/$(database)/documents/companies/$(companyId))
                           && existsAfter(/databases/$(database)/documents/companies/$(companyId))
                           && getAfter(/databases/$(database)/documents/companies/$(companyId)).data.ownerId == request.auth.uid
+                        ) ||
+                        // Action 3: Verified company owner restores missing OWNER member doc
+                        (
+                          request.auth.uid == userId
+                          && incoming().role == 'OWNER'
+                          && incoming().status == 'ACTIVE'
+                          && exists(/databases/$(database)/documents/companies/$(companyId))
+                          && get(/databases/$(database)/documents/companies/$(companyId)).data.ownerId == request.auth.uid
                         )
                       );
 
@@ -732,8 +762,8 @@ service cloud.firestore {
       // 6.2 FLEET VEHICLES (/companies/{companyId}/vehicles/{vehicleId})
       // ----------------------------------------------------------------------
       match /vehicles/{vehicleId} {
-        allow get: if isValidId(companyId) && isValidId(vehicleId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(vehicleId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(vehicleId)
                       && isVerifiedUser()
@@ -745,7 +775,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(vehicleId)
                       && isVerifiedUser()
                       && isValidVehicle(incoming(), companyId, vehicleId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -768,8 +798,8 @@ service cloud.firestore {
       // 6.3 DRIVERS (/companies/{companyId}/drivers/{driverId})
       // ----------------------------------------------------------------------
       match /drivers/{driverId} {
-        allow get: if isValidId(companyId) && isValidId(driverId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(driverId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(driverId)
                       && isVerifiedUser()
@@ -781,7 +811,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(driverId)
                       && isVerifiedUser()
                       && isValidDriver(incoming(), companyId, driverId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFinanceOrFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -802,8 +832,8 @@ service cloud.firestore {
       // 6.4 CUSTOMERS (/companies/{companyId}/customers/{customerId})
       // ----------------------------------------------------------------------
       match /customers/{customerId} {
-        allow get: if isValidId(companyId) && isValidId(customerId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(customerId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(customerId)
                       && isVerifiedUser()
@@ -815,7 +845,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(customerId)
                       && isVerifiedUser()
                       && isValidCustomer(incoming(), companyId, customerId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFinanceOrFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -837,8 +867,8 @@ service cloud.firestore {
       // 6.5 TRIPS (/companies/{companyId}/trips/{tripId})
       // ----------------------------------------------------------------------
       match /trips/{tripId} {
-        allow get: if isValidId(companyId) && isValidId(tripId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(tripId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(tripId)
                       && isVerifiedUser()
@@ -850,7 +880,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(tripId)
                       && isVerifiedUser()
                       && isValidTrip(incoming(), companyId, tripId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFinanceOrFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -886,8 +916,8 @@ service cloud.firestore {
       // 6.6 TRIP EXPENSES (/companies/{companyId}/expenses/{expenseId})
       // ----------------------------------------------------------------------
       match /expenses/{expenseId} {
-        allow get: if isValidId(companyId) && isValidId(expenseId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(expenseId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(expenseId)
                       && isVerifiedUser()
@@ -899,7 +929,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(expenseId)
                       && isVerifiedUser()
                       && isValidExpense(incoming(), companyId, expenseId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFinanceOrFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -921,8 +951,8 @@ service cloud.firestore {
       // 6.7 DRIVER ADVANCES (/companies/{companyId}/advances/{advanceId})
       // ----------------------------------------------------------------------
       match /advances/{advanceId} {
-        allow get: if isValidId(companyId) && isValidId(advanceId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(advanceId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(advanceId)
                       && isVerifiedUser()
@@ -934,7 +964,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(advanceId)
                       && isVerifiedUser()
                       && isValidAdvance(incoming(), companyId, advanceId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFinanceOrFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -950,8 +980,8 @@ service cloud.firestore {
       // 6.8 TRIP SETTLEMENTS (/companies/{companyId}/settlements/{settlementId})
       // ----------------------------------------------------------------------
       match /settlements/{settlementId} {
-        allow get: if isValidId(companyId) && isValidId(settlementId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(settlementId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(settlementId)
                       && isVerifiedUser()
@@ -963,7 +993,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(settlementId)
                       && isVerifiedUser()
                       && isValidSettlement(incoming(), companyId, settlementId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isAccountant(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -987,8 +1017,8 @@ service cloud.firestore {
       // 6.9 INVOICES (/companies/{companyId}/invoices/{invoiceId})
       // ----------------------------------------------------------------------
       match /invoices/{invoiceId} {
-        allow get: if isValidId(companyId) && isValidId(invoiceId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(invoiceId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(invoiceId)
                       && isVerifiedUser()
@@ -1000,7 +1030,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(invoiceId)
                       && isVerifiedUser()
                       && isValidInvoice(incoming(), companyId, invoiceId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isAccountant(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -1022,8 +1052,8 @@ service cloud.firestore {
       // 6.10 PAYMENTS (/companies/{companyId}/payments/{paymentId})
       // ----------------------------------------------------------------------
       match /payments/{paymentId} {
-        allow get: if isValidId(companyId) && isValidId(paymentId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(paymentId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(paymentId)
                       && isVerifiedUser()
@@ -1035,7 +1065,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(paymentId)
                       && isVerifiedUser()
                       && isValidPayment(incoming(), companyId, paymentId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isOwnerOrAdmin(companyId)
                       && incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'tdsDeductedPaise', 'bankAccount', 'updatedAt']);
 
@@ -1048,8 +1078,8 @@ service cloud.firestore {
       // 6.11 VEHICLE COMPLIANCE DOCUMENTS (/companies/{companyId}/documents/{docId})
       // ----------------------------------------------------------------------
       match /documents/{docId} {
-        allow get: if isValidId(companyId) && isValidId(docId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(docId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(docId)
                       && isVerifiedUser()
@@ -1061,7 +1091,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(docId)
                       && isVerifiedUser()
                       && isValidVehicleDocument(incoming(), companyId, docId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -1080,8 +1110,8 @@ service cloud.firestore {
       // 6.12 MAINTENANCE RECORDS (/companies/{companyId}/maintenance/{maintenanceId})
       // ----------------------------------------------------------------------
       match /maintenance/{maintenanceId} {
-        allow get: if isValidId(companyId) && isValidId(maintenanceId) && (isActiveMember(companyId) || isBootstrappedAdmin());
-        allow list: if isSignedIn() && existing().companyId == companyId && (isActiveMember(companyId) || isBootstrappedAdmin());
+        allow get: if isValidId(companyId) && isValidId(maintenanceId) && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
 
         allow create: if isValidId(companyId) && isValidId(maintenanceId)
                       && isVerifiedUser()
@@ -1093,7 +1123,7 @@ service cloud.firestore {
         allow update: if isValidId(companyId) && isValidId(maintenanceId)
                       && isVerifiedUser()
                       && isValidMaintenance(incoming(), companyId, maintenanceId)
-                      && incoming().createdAt == existing().createdAt
+                      && isCreatedAtPreservedOrMigrated()
                       && isFleetStaff(companyId)
                       && (
                         isOwnerOrAdmin(companyId) ||
@@ -1117,7 +1147,7 @@ service cloud.firestore {
 
         allow create: if isValidId(companyId) && isValidId(logId)
                       && isVerifiedUser()
-                      && isActiveMember(companyId)
+                      && (isBootstrappedAdmin() || isActiveMember(companyId))
                       && isValidAuditLog(incoming(), companyId, logId);
 
         allow update, delete: if false;
