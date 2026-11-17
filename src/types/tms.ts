@@ -25,7 +25,9 @@ export interface Company {
   lrPrefix: string; // e.g. "FG/25-26/"
   invoicePrefix: string; // e.g. "INV/25-26/"
   tripPrefix?: string; // e.g. "TR-"
+  fleetSize?: string;
   logoUrl?: string; // Company logo image URL or SVG data
+  ownerId?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -128,7 +130,7 @@ export interface Customer {
   companyId: string;
   name: string;
   tradeName?: string;
-  gstin: string; // 15 characters
+  gstin?: string; // 15 characters (optional for unregistered parties)
   pan: string;
   contactPerson: string;
   phone: string;
@@ -148,6 +150,25 @@ export interface Customer {
   updatedAt?: string;
 }
 
+export interface Broker {
+  id: string;
+  companyId: string;
+  name: string;
+  companyName?: string;
+  phone: string;
+  email?: string;
+  gstin?: string;
+  pan?: string;
+  city?: string;
+  state?: string;
+  commissionRatePercent?: number;
+  defaultCommissionPaise?: number;
+  notes?: string;
+  status?: 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export type TripStatus = 'PLANNED' | 'DISPATCHED' | 'IN_TRANSIT' | 'DELIVERED' | 'COMPLETED' | 'SETTLED' | 'CANCELLED';
 
 export interface Trip {
@@ -157,7 +178,7 @@ export interface Trip {
   lrNumber: string; // Lorry Receipt / Bilty No.
   customerId: string;
   customerName: string;
-  customerGstin: string;
+  customerGstin?: string;
   vehicleId: string;
   vehicleReg: string;
   driverId: string;
@@ -165,6 +186,10 @@ export interface Trip {
   driverPhone: string;
   originCity: string;
   destinationCity: string;
+  pickupAddress?: string;
+  deliveryAddress?: string;
+  loadingDetails?: string;
+  unloadingDetails?: string;
   goodsType: string; // e.g. "Steel Coils", "Jute Bags", "Cement Bags", "FMCG"
   weightTonnes: number;
   ratePerTonnePaise: number;
@@ -178,12 +203,17 @@ export interface Trip {
   actualDeliveryDate?: string;
   status: TripStatus;
   
-  // Operational Readings
+  // Operational Readings & Documents
   startOdometerKm: number;
   endOdometerKm?: number;
   podReceived: boolean; // Proof of Delivery received from consignee
   podDocumentUrl?: string;
+  lrDocumentUrl?: string;
+  dispatchDocumentUrl?: string;
   podRemarks?: string;
+  brokerId?: string;
+  brokerName?: string;
+  brokerCommissionPaise?: number;
 
   // Financial aggregates
   totalExpensesPaise: number;
@@ -228,7 +258,7 @@ export type PaymentMode = 'CASH' | 'FASTAG' | 'PETRO_CARD' | 'UPI' | 'DRIVER_POC
 export interface TripExpense {
   id: string;
   companyId: string;
-  tripId: string;
+  tripId?: string;
   tripNumber?: string;
   vehicleId?: string;
   vehicleReg?: string;
@@ -266,7 +296,7 @@ export type AdvanceType = 'CASH_DISPATCH' | 'CASH_EN_ROUTE' | 'PUMP_DIESEL_SLIP'
 export interface DriverAdvance {
   id: string;
   companyId: string;
-  tripId: string;
+  tripId?: string;
   tripNumber?: string;
   driverId: string;
   driverName?: string;
@@ -279,6 +309,10 @@ export interface DriverAdvance {
   referenceNotes?: string;
   notes?: string;
   disbursedBy: string;
+  status?: 'ACTIVE' | 'CANCELLED' | 'SETTLED';
+  cancelledAt?: string;
+  cancellationReason?: string;
+  cancelledBy?: string;
   isSettled: boolean;
   settlementId?: string;
   createdAt?: string;
@@ -297,6 +331,12 @@ export interface TripSettlement {
   vehicleId?: string;
   vehicleReg?: string;
   settlementNumber?: string; // e.g. STL-2026-0001
+  totalRevenuePaise?: number;
+  fuelExpensesPaise?: number;
+  tollExpensesPaise?: number;
+  otherExpensesPaise?: number;
+  totalExpensesPaise?: number;
+  tripProfitLossPaise?: number;
   totalAdvanceGivenPaise: number;
   driverCashExpensesPaise: number; // Expenses driver paid out of cash advance
   driverBataAllowancePaise: number; // Days * bata rate
@@ -309,6 +349,8 @@ export interface TripSettlement {
   status: SettlementStatus;
   settledDate: string;
   settledBy: string;
+  approvedBy?: string;
+  approvedAt?: string;
   settlementNotes?: string;
   isCorrectionAuthorized?: boolean;
   correctionReason?: string;
@@ -325,12 +367,12 @@ export interface Invoice {
   id: string;
   companyId: string;
   invoiceNumber: string; // e.g. INV/25-26/089
-  tripId: string;
-  tripNumber: string;
-  lrNumber: string;
+  tripId?: string;
+  tripNumber?: string;
+  lrNumber?: string;
   customerId: string;
   customerName: string;
-  customerGstin: string;
+  customerGstin?: string;
   billingAddress?: string;
   originCity?: string;
   destinationCity?: string;
@@ -346,6 +388,7 @@ export interface Invoice {
   unloadingChargesPaise?: number;
   detentionChargesPaise?: number;
   otherChargesPaise?: number;
+  discountPaise?: number;
   taxableAmountPaise: number;
   isRcmApplicable: boolean; // Reverse Charge Mechanism (GTA standard: 5% RCM or 12% forward)
   gstRatePercent?: number;
@@ -420,15 +463,69 @@ export interface MaintenanceRecord {
   notes?: string;
 }
 
+export interface FileRecord {
+  id: string;
+  companyId: string;
+  uploadedByUid: string;
+  uploadedByName?: string;
+  folder: 'trips' | 'dispatches' | 'pod' | 'expenses' | 'fuel' | 'documents' | 'company';
+  fileName: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  storagePath: string;
+  downloadUrl: string;
+  entityType?: string;
+  entityId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CompanySettings {
+  id: string;
+  companyId: string;
+  defaultGstRatePercent?: number;
+  defaultRcmEnabled?: boolean;
+  defaultCreditPeriodDays?: number;
+  defaultFuelUnit?: 'LITRES' | 'GALLONS';
+  lowFastagThresholdPaise?: number;
+  expiryAlertDays?: number;
+  autoGenerateLr?: boolean;
+  currency?: string;
+  updatedByUid?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface AuditLog {
   id: string;
   companyId: string;
   userId: string;
   userName: string;
-  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'DISPATCH' | 'SETTLE' | 'INVOICE' | 'PAYMENT';
-  entityType: 'TRIP' | 'VEHICLE' | 'DRIVER' | 'SETTLEMENT' | 'INVOICE' | 'PAYMENT' | 'EXPENSE' | 'CUSTOMER' | 'DOCUMENT';
+  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'DISPATCH' | 'SETTLE' | 'APPROVE' | 'INVOICE' | 'PAYMENT' | 'CANCEL';
+  entityType:
+    | 'TRIP'
+    | 'DISPATCH'
+    | 'VEHICLE'
+    | 'DRIVER'
+    | 'ADVANCE'
+    | 'SETTLEMENT'
+    | 'INVOICE'
+    | 'BILLING'
+    | 'PAYMENT'
+    | 'EXPENSE'
+    | 'FUEL'
+    | 'CUSTOMER'
+    | 'BROKER'
+    | 'DOCUMENT'
+    | 'FILE_RECORD'
+    | 'SETTINGS'
+    | 'COMPANY'
+    | 'MEMBER';
   entityId: string;
+  moduleName?: string;
   summary: string;
+  previousValues?: Record<string, string | number | boolean>;
+  updatedValues?: Record<string, string | number | boolean>;
   timestamp: string;
 }
 

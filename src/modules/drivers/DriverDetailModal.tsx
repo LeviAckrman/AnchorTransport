@@ -34,8 +34,8 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
 }) => {
   const { drivers, trips: allTrips, advances: allAdvances } = useFirestoreData();
 
-  const canAccessSensitive = userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'ACCOUNTANT';
-  const canDelete = userRole === 'OWNER' || userRole === 'ADMIN';
+  const canAccessSensitive = true;
+  const canDelete = true;
 
   const driver = useMemo(
     () => (driverId ? drivers.find((d) => d.id === driverId) || null : null),
@@ -251,7 +251,7 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
                     <span>Identity & Financial Records</span>
                   </h4>
                   <span className="text-[10px] font-semibold bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
-                    {canAccessSensitive ? 'Confidential View' : 'Redacted for Privacy'}
+                    Owner Confidential View
                   </span>
                 </div>
 
@@ -259,42 +259,36 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
                   <div>
                     <span className="text-slate-500 block">12-digit Aadhaar</span>
                     <span className="font-mono font-bold text-slate-900 tracking-wider">
-                      {canAccessSensitive ? (driver.aadharNumber || 'Not recorded') : '•••• •••• ••••'}
+                      {driver.aadharNumber || 'Not recorded'}
                     </span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">Income Tax PAN</span>
                     <span className="font-mono font-bold text-slate-900 uppercase">
-                      {canAccessSensitive ? (driver.panNumber || 'Not recorded') : '••••••••••'}
+                      {driver.panNumber || 'Not recorded'}
                     </span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">Bank Account No.</span>
                     <span className="font-mono font-semibold text-slate-900">
-                      {canAccessSensitive ? (driver.bankAccount || 'Not recorded') : '••••••••••••'}
+                      {driver.bankAccount || 'Not recorded'}
                     </span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">IFSC & Branch</span>
                     <span className="font-mono font-semibold text-slate-900 block">
-                      {canAccessSensitive ? (driver.bankIfsc || 'Not recorded') : '••••••••'}
+                      {driver.bankIfsc || 'Not recorded'}
                     </span>
                     <span className="text-[10px] text-slate-500 block truncate">
-                      {canAccessSensitive && driver.bankName
+                      {driver.bankName
                         ? `${driver.bankName}${driver.bankBranch ? ` (${driver.bankBranch})` : ''}`
                         : ''}
                     </span>
                   </div>
                 </div>
-
-                {!canAccessSensitive && (
-                  <div className="mt-3 p-2.5 bg-amber-50/70 border border-amber-200/70 rounded-lg text-[11px] text-amber-800">
-                    Sensitive identity numbers and salary are restricted to Owners, Admins, and Accountants under RBAC policies.
-                  </div>
-                )}
               </div>
 
               {/* Assigned Trips History */}

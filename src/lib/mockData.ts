@@ -34,18 +34,6 @@ export const INITIAL_USERS: User[] = [
     email: 'anupam@royalbengal.com',
     phone: '+91 98301 22890',
   },
-  {
-    id: 'usr_acct_02',
-    name: 'Subhashish Dey',
-    email: 'accounts@royalbengal.com',
-    phone: '+91 98310 99411',
-  },
-  {
-    id: 'usr_ops_03',
-    name: 'Bikash Mahato',
-    email: 'bikash@royalbengal.com',
-    phone: '+91 94340 18273',
-  },
 ];
 
 export const INITIAL_COMPANY_USERS: CompanyUser[] = [
@@ -55,22 +43,6 @@ export const INITIAL_COMPANY_USERS: CompanyUser[] = [
     userId: 'usr_owner_01',
     role: 'OWNER',
     user: INITIAL_USERS[0],
-    active: true,
-  },
-  {
-    id: 'cu_02',
-    companyId: 'comp_wb_royal_001',
-    userId: 'usr_acct_02',
-    role: 'ACCOUNTANT',
-    user: INITIAL_USERS[1],
-    active: true,
-  },
-  {
-    id: 'cu_03',
-    companyId: 'comp_wb_royal_001',
-    userId: 'usr_ops_03',
-    role: 'MANAGER',
-    user: INITIAL_USERS[2],
     active: true,
   },
 ];

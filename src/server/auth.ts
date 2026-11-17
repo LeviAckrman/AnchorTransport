@@ -111,10 +111,10 @@ export async function requireAuth(
             email: user.email,
             name: user.name,
             companyId: membership?.companyId || '',
-            role: (membership?.role as UserRole) || 'OPERATIONS',
+            role: 'OWNER',
           };
           req.companyId = membership?.companyId;
-          req.role = membership?.role as UserRole;
+          req.role = 'OWNER';
           next();
           return;
         }
@@ -132,7 +132,7 @@ export async function requireAuth(
 
 /**
  * Middleware: Enforces that the authenticated user possesses an allowed role.
- * Example: requireRoles(['OWNER', 'ADMIN'])
+ * Owner-only architecture: requireRoles(['OWNER'])
  */
 export function requireRoles(allowedRoles: UserRole[]) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {

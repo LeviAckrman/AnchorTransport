@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   RotateCcw,
+  Trash2,
 } from 'lucide-react';
 import { Trip, Vehicle, Driver, Customer, UserRole, TripStatus } from '../../types/tms';
 import { formatINR, paiseToRupees } from '../../lib/currency';
@@ -26,6 +27,7 @@ import { isDateWithinRange } from '../../lib/tmsCalculations';
 import {
   transitionTripStatusInFirestore,
   clearCompanyTripsDataInFirestore,
+  deleteTripInFirestore,
 } from '../../lib/firebase/firestoreService';
 
 interface TripsViewProps {
@@ -80,6 +82,8 @@ export const TripsView: React.FC<TripsViewProps> = ({
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [isResetTripsDialogOpen, setIsResetTripsDialogOpen] = useState(false);
   const [resettingTrips, setResettingTrips] = useState(false);
+  const [tripToDelete, setTripToDelete] = useState<Trip | null>(null);
+  const [deletingTrip, setDeletingTrip] = useState(false);
 
   const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
     setActionMsg({ type, text });
@@ -250,12 +254,33 @@ export const TripsView: React.FC<TripsViewProps> = ({
     }
   };
 
+  const handleDeleteTrip = async () => {
+    if (!tripToDelete || !company?.id) return;
+    setDeletingTrip(true);
+    try {
+      const veh = liveVehicles.find((v) => v.id === tripToDelete.vehicleId);
+      const drv = liveDrivers.find((d) => d.id === tripToDelete.driverId);
+      await deleteTripInFirestore(company.id, tripToDelete.id, {
+        tripNumber: tripToDelete.tripNumber,
+        vehicle: veh,
+        driver: drv,
+      });
+      showNotification(`Trip ${tripToDelete.tripNumber} deleted from Firestore.`);
+      setTripToDelete(null);
+    } catch (err: any) {
+      showNotification(err.message || 'Error deleting trip from Firestore.', 'error');
+    } finally {
+      setDeletingTrip(false);
+    }
+  };
+
   const handleStatusTransitionConfirm = async (transitionData: {
     targetStatus: TripStatus;
     cancellationReason?: string;
     actualDeliveryDate?: string;
     endOdometerKm?: number;
     podReceived?: boolean;
+    podDocumentUrl?: string;
     podRemarks?: string;
   }) => {
     if (!tripForStatusChange || !company?.id) return;
@@ -272,9 +297,10 @@ export const TripsView: React.FC<TripsViewProps> = ({
         actualDeliveryDate: transitionData.actualDeliveryDate,
         endOdometerKm: transitionData.endOdometerKm,
         podReceived: transitionData.podReceived,
+        podDocumentUrl: transitionData.podDocumentUrl,
         podRemarks: transitionData.podRemarks,
         cancellationReason: transitionData.cancellationReason,
-        cancelledBy: user?.email || user?.name || 'System',
+        cancelledBy: user?.email || user?.name || 'Owner',
       });
 
       showNotification(`Trip ${targetTrip.tripNumber} is now ${transitionData.targetStatus}.`);
@@ -310,7 +336,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
         subtitle="Manage company-owned truck dispatches, route execution, cargo bills, live contribution, and POD delivery receipts"
         actions={
           <div className="flex items-center gap-2">
-            {(userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'MANAGER') && allTrips.length > 0 && (
+            {allTrips.length > 0 && (
               <button
                 onClick={() => setIsResetTripsDialogOpen(true)}
                 className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-xl text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
@@ -652,6 +678,13 @@ export const TripsView: React.FC<TripsViewProps> = ({
                               Complete
                             </button>
                           )}
+                          <button
+                            onClick={() => setTripToDelete(t)}
+                            title="Delete Trip"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -720,6 +753,12 @@ export const TripsView: React.FC<TripsViewProps> = ({
                         Edit
                       </button>
                     )}
+                    <button
+                      onClick={() => setTripToDelete(t)}
+                      className="px-3 py-1 border border-rose-200 text-rose-700 hover:bg-rose-50 rounded-lg text-xs font-medium"
+                    >
+                      Delete
+                    </button>
                   </div>
                 </div>
               );
@@ -812,6 +851,18 @@ export const TripsView: React.FC<TripsViewProps> = ({
         message="Are you sure you want to reset all commercial trips? This will clear all trip dispatches, related trip expenses, and driver advances, and return assigned trucks and drivers back to Available status. New data will only be added after you dispatch new trips."
         confirmLabel={resettingTrips ? 'Resetting...' : 'Reset All Trips'}
         cancelLabel="Keep Current Trips"
+        variant="danger"
+      />
+
+      {/* Delete Single Trip Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={Boolean(tripToDelete)}
+        onClose={() => setTripToDelete(null)}
+        onConfirm={handleDeleteTrip}
+        title={`Delete Trip ${tripToDelete?.tripNumber || ''}`}
+        message={`Are you sure you want to delete trip ${tripToDelete?.tripNumber || ''} (${tripToDelete?.originCity || ''} → ${tripToDelete?.destinationCity || ''})? Assigned truck ${tripToDelete?.vehicleReg || ''} and driver ${tripToDelete?.driverName || ''} will be released back to Available status.`}
+        confirmLabel={deletingTrip ? 'Deleting...' : 'Delete Trip'}
+        cancelLabel="Cancel"
         variant="danger"
       />
     </div>

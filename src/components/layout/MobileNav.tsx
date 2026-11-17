@@ -18,7 +18,6 @@ import {
   Wrench,
   BarChart3,
   Building,
-  ShieldCheck,
 } from 'lucide-react';
 import { ActiveTab } from './Sidebar';
 import { UserRole } from '../../types/tms';
@@ -38,25 +37,22 @@ export const MobileNav: React.FC<MobileNavProps> = ({
 }) => {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const allNavItems: { id: ActiveTab; label: string; icon: React.ElementType; roles: UserRole[] }[] = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'] },
-    { id: 'trips', label: 'Trips & Dispatch', icon: Navigation, roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'] },
-    { id: 'vehicles', label: 'Vehicles / Trucks', icon: Truck, roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'] },
-    { id: 'drivers', label: 'Drivers', icon: Users, roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'] },
-    { id: 'customers', label: 'Customers', icon: Building2, roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT'] },
-    { id: 'expenses', label: 'Trip Expenses', icon: Receipt, roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'] },
-    { id: 'advances', label: 'Driver Advances', icon: Wallet, roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'] },
-    { id: 'settlements', label: 'Trip Settlements', icon: Scale, roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'] },
-    { id: 'invoices', label: 'Invoices & Billing', icon: FileText, roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'] },
-    { id: 'payments', label: 'Payments', icon: CreditCard, roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'] },
-    { id: 'documents', label: 'Vehicle Documents', icon: FileCheck2, roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'] },
-    { id: 'maintenance', label: 'Maintenance', icon: Wrench, roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'] },
-    { id: 'reports', label: 'Reports', icon: BarChart3, roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'] },
-    { id: 'settings', label: 'Company Settings', icon: Building, roles: ['OWNER', 'ADMIN'] },
-    { id: 'users', label: 'User Roles', icon: ShieldCheck, roles: ['OWNER'] },
+  const visibleDrawerItems: { id: ActiveTab; label: string; icon: React.ElementType }[] = [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'trips', label: 'Trips & Dispatch', icon: Navigation },
+    { id: 'vehicles', label: 'Vehicles / Trucks', icon: Truck },
+    { id: 'drivers', label: 'Drivers', icon: Users },
+    { id: 'customers', label: 'Customers', icon: Building2 },
+    { id: 'expenses', label: 'Trip Expenses', icon: Receipt },
+    { id: 'advances', label: 'Driver Advances', icon: Wallet },
+    { id: 'settlements', label: 'Trip Settlements', icon: Scale },
+    { id: 'invoices', label: 'Invoices & Billing', icon: FileText },
+    { id: 'payments', label: 'Payments', icon: CreditCard },
+    { id: 'documents', label: 'Vehicle Documents', icon: FileCheck2 },
+    { id: 'maintenance', label: 'Maintenance', icon: Wrench },
+    { id: 'reports', label: 'Reports', icon: BarChart3 },
+    { id: 'settings', label: 'Company Settings', icon: Building },
   ];
-
-  const visibleDrawerItems = allNavItems.filter((i) => i.roles.includes(userRole));
 
   return (
     <>

@@ -12,6 +12,8 @@ import {
   Phone,
   XCircle,
   CreditCard,
+  ExternalLink,
+  Download,
 } from 'lucide-react';
 import {
   TripExpense,
@@ -98,6 +100,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
     const customer = customers.find((c) => c.id === trip.customerId) || null;
     const tripExpenses = expenses.filter((e) => e.tripId === trip.id);
     const tripAdvances = advances.filter((a) => a.tripId === trip.id);
+    const activeTripAdvances = tripAdvances.filter((a) => a.status !== 'CANCELLED');
 
     const totalRevenuePaise =
       trip.totalRevenuePaise || (trip.freightAmountPaise || 0) + (trip.otherChargesPaise || 0);
@@ -107,7 +110,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
         : trip.totalExpensesPaise || 0;
     const totalAdvancesPaise =
       tripAdvances.length > 0
-        ? tripAdvances.reduce((sum, a) => sum + (a.amountPaise || 0), 0)
+        ? activeTripAdvances.reduce((sum, a) => sum + (a.amountPaise || 0), 0)
         : trip.totalAdvancesPaise || 0;
     const tripContributionPaise = totalRevenuePaise - totalExpensesPaise;
     const profitMarginPercent =
@@ -176,6 +179,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
     actualDeliveryDate?: string;
     endOdometerKm?: number;
     podReceived?: boolean;
+    podDocumentUrl?: string;
     podRemarks?: string;
   }) => {
     if (!data || !company?.id) return;
@@ -187,9 +191,10 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
       actualDeliveryDate: transitionData.actualDeliveryDate,
       endOdometerKm: transitionData.endOdometerKm,
       podReceived: transitionData.podReceived,
+      podDocumentUrl: transitionData.podDocumentUrl,
       podRemarks: transitionData.podRemarks,
       cancellationReason: transitionData.cancellationReason,
-      cancelledBy: user?.email || user?.name || 'System',
+      cancelledBy: user?.email || user?.name || 'Owner',
     });
     if (onTripUpdated) onTripUpdated();
   };
@@ -468,10 +473,11 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                     <span>Customer & Billing</span>
                   </div>
                   <p className="font-semibold text-slate-800">{data.customer?.name || trip.customerName}</p>
-                  <p className="font-mono text-slate-500 text-[11px]">GSTIN: {data.customer?.gstin || trip.customerGstin}</p>
+                  <p className="font-mono text-slate-500 text-[11px]">GSTIN: {data.customer?.gstin || trip.customerGstin || 'Unregistered'}</p>
                   {data.customer && (
                     <p className="text-slate-600 text-[11px]">
-                      {data.customer.billingAddress}, {data.customer.city}, {data.customer.state} - {data.customer.pincode}
+                      {[data.customer.billingAddress, data.customer.city, data.customer.state].filter(Boolean).join(', ')}
+                      {data.customer.pincode ? ` - ${data.customer.pincode}` : ''}
                     </p>
                   )}
                 </div>
@@ -531,6 +537,79 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                     </span>
                   </div>
                 </div>
+
+                {(trip.pickupAddress || trip.deliveryAddress || trip.loadingDetails || trip.unloadingDetails) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2 border-t border-slate-200">
+                    {trip.pickupAddress && (
+                      <div className="bg-white p-2 rounded-lg border border-slate-200">
+                        <span className="text-[10px] font-semibold text-slate-400 uppercase block">Pickup Address</span>
+                        <span className="text-[11px] text-slate-700">{trip.pickupAddress}</span>
+                      </div>
+                    )}
+                    {trip.deliveryAddress && (
+                      <div className="bg-white p-2 rounded-lg border border-slate-200">
+                        <span className="text-[10px] font-semibold text-slate-400 uppercase block">Delivery Address</span>
+                        <span className="text-[11px] text-slate-700">{trip.deliveryAddress}</span>
+                      </div>
+                    )}
+                    {trip.loadingDetails && (
+                      <div className="bg-white p-2 rounded-lg border border-slate-200">
+                        <span className="text-[10px] font-semibold text-slate-400 uppercase block">Loading Details</span>
+                        <span className="text-[11px] text-slate-700">{trip.loadingDetails}</span>
+                      </div>
+                    )}
+                    {trip.unloadingDetails && (
+                      <div className="bg-white p-2 rounded-lg border border-slate-200">
+                        <span className="text-[10px] font-semibold text-slate-400 uppercase block">Unloading Details</span>
+                        <span className="text-[11px] text-slate-700">{trip.unloadingDetails}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {(trip.lrDocumentUrl || trip.dispatchDocumentUrl || trip.podDocumentUrl) && (
+                  <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200">
+                    {trip.lrDocumentUrl && (
+                      <a
+                        href={trip.lrDocumentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-[11px] font-semibold hover:bg-indigo-50"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>LR / Bilty Document</span>
+                        <Download className="w-3 h-3" />
+                      </a>
+                    )}
+                    {trip.dispatchDocumentUrl && (
+                      <a
+                        href={trip.dispatchDocumentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-[11px] font-semibold hover:bg-indigo-50"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Dispatch Document</span>
+                        <Download className="w-3 h-3" />
+                      </a>
+                    )}
+                    {trip.podDocumentUrl && (
+                      <a
+                        href={trip.podDocumentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        download
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-emerald-200 text-emerald-700 rounded-lg text-[11px] font-semibold hover:bg-emerald-50"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>Stamped POD Copy</span>
+                        <Download className="w-3 h-3" />
+                      </a>
+                    )}
+                  </div>
+                )}
 
                 {trip.podRemarks && (
                   <p className="text-[11px] text-slate-600 bg-white p-2 rounded-lg border border-slate-200 mt-2">
@@ -638,15 +717,35 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-semibold text-slate-900">{adv.advanceType.replace('_', ' ')}</span>
-                          <Badge variant={adv.isSettled ? 'success' : 'amber'} size="sm">
-                            {adv.isSettled ? 'Settled' : 'Pending Reconciliation'}
+                          <Badge
+                            variant={
+                              adv.status === 'CANCELLED'
+                                ? 'danger'
+                                : adv.isSettled
+                                ? 'success'
+                                : 'amber'
+                            }
+                            size="sm"
+                          >
+                            {adv.status === 'CANCELLED'
+                              ? 'Cancelled'
+                              : adv.isSettled
+                              ? 'Settled'
+                              : 'Pending Reconciliation'}
                           </Badge>
                         </div>
                         <p className="text-[11px] text-slate-500">{adv.date} • Disbursed by {adv.disbursedBy}</p>
+                        {adv.cancellationReason && (
+                          <p className="text-[11px] text-rose-600">Cancelled: {adv.cancellationReason}</p>
+                        )}
                         {adv.referenceNotes && <p className="text-[11px] text-slate-400">{adv.referenceNotes}</p>}
                       </div>
                       <div className="text-right">
-                        <span className="font-bold text-amber-700 text-sm block">
+                        <span
+                          className={`font-bold text-sm block ${
+                            adv.status === 'CANCELLED' ? 'text-slate-400 line-through' : 'text-amber-700'
+                          }`}
+                        >
                           {formatINR(adv.amountPaise)}
                         </span>
                       </div>

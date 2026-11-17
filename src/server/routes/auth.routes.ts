@@ -14,6 +14,7 @@ import {
 } from '../auth';
 import { UserRole } from '../../types/tms';
 import { adminAuth, runAdminFirestore } from '../../lib/firebase/admin';
+import { FieldValue } from 'firebase-admin/firestore';
 import { loadAuthDb, persistAuthDb } from '../authDb';
 
 export const authRouter = Router();
@@ -72,24 +73,6 @@ const SEED_USERS: StoredUser[] = [
     email: 'anupam@royalbengal.com',
     name: 'Anupam Ghosh',
     phone: '+91 98301 22890',
-    passwordHash: DEMO_PASSWORD_HASH,
-    isActive: true,
-    onboardingCompleted: true,
-  },
-  {
-    id: 'usr_acct_02',
-    email: 'accounts@royalbengal.com',
-    name: 'Subhashish Dey',
-    phone: '+91 98310 99411',
-    passwordHash: DEMO_PASSWORD_HASH,
-    isActive: true,
-    onboardingCompleted: true,
-  },
-  {
-    id: 'usr_ops_03',
-    email: 'bikash@royalbengal.com',
-    name: 'Bikash Mahato',
-    phone: '+91 94340 18273',
     passwordHash: DEMO_PASSWORD_HASH,
     isActive: true,
     onboardingCompleted: true,
@@ -162,6 +145,7 @@ const SEED_COMPANIES: StoredCompany[] = [
     invoicePrefix: 'INV/25-26/',
     tripPrefix: 'TR-',
     fleetSize: '0-5 Trucks',
+    ownerId: 'usr_empty_01',
   },
 ];
 
@@ -178,28 +162,6 @@ const SEED_COMPANY_USERS: StoredCompanyUser[] = [
     companyId: 'comp_wb_royal_001',
     userId: 'usr_owner_01',
     role: 'OWNER',
-    isActive: true,
-  },
-  {
-    id: 'cu_02',
-    companyId: 'comp_wb_royal_001',
-    userId: 'usr_acct_02',
-    role: 'ACCOUNTANT',
-    isActive: true,
-  },
-  {
-    id: 'cu_03',
-    companyId: 'comp_wb_royal_001',
-    userId: 'usr_ops_03',
-    role: 'MANAGER',
-    isActive: true,
-  },
-  // User 1 also has access to secondary company in Odisha
-  {
-    id: 'cu_04',
-    companyId: 'comp_od_kalinga_002',
-    userId: 'usr_owner_01',
-    role: 'ADMIN',
     isActive: true,
   },
 ];
@@ -268,15 +230,19 @@ authRouter.post('/session', async (req, res) => {
       }
     }
 
+    if (!verifiedUid && typeof uid === 'string' && uid.trim()) {
+      verifiedUid = uid.trim();
+    }
+
     if (!verifiedEmail) {
       res.status(400).json({ success: false, error: 'Valid user email is required.' });
       return;
     }
 
-    // Find or create local user record
-    let user = serverUsers.find(
-      (u) => (verifiedUid && u.id === verifiedUid) || u.email.toLowerCase() === verifiedEmail
-    );
+    // Strictly match Firebase UID when provided so a recreated account never inherits an older UID's company
+    let user = verifiedUid
+      ? serverUsers.find((u) => u.id === verifiedUid)
+      : serverUsers.find((u) => u.email.toLowerCase() === verifiedEmail);
     let stateChanged = false;
     if (!user) {
       const completedFromFirestore = incomingOnboardingCompleted === true;
@@ -304,7 +270,8 @@ authRouter.post('/session', async (req, res) => {
             name: user!.name,
             onboardingCompleted: Boolean(user!.onboardingCompleted),
             ...(user!.onboardingCompletedAt ? { onboardingCompletedAt: user!.onboardingCompletedAt } : {}),
-            createdAt: new Date().toISOString(),
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
@@ -332,14 +299,15 @@ authRouter.post('/session', async (req, res) => {
     // Check company memberships
     let memberships = serverCompanyUsers.filter((cu) => cu.userId === user!.id && cu.isActive);
 
-    // Rehydrate company & membership from Firestore payload after server restarts when !adminAuth
+    // Rehydrate company & owner membership from Firestore payload when ownerId matches user.id
     if (
       memberships.length === 0 &&
       !adminAuth &&
       firestoreCompany &&
       typeof firestoreCompany === 'object' &&
       typeof firestoreCompany.id === 'string' &&
-      firestoreCompany.id.trim()
+      firestoreCompany.id.trim() &&
+      firestoreCompany.ownerId === user.id
     ) {
       const compId = firestoreCompany.id.trim();
       let existingComp = serverCompanies.find((c) => c.id === compId);
@@ -366,25 +334,16 @@ authRouter.post('/session', async (req, res) => {
           tripPrefix: firestoreCompany.tripPrefix || 'TR-',
           logoUrl: firestoreCompany.logoUrl,
           fleetSize: firestoreCompany.fleetSize,
-          ownerId: firestoreCompany.ownerId,
+          ownerId: user.id,
         };
         serverCompanies.push(existingComp);
       }
-
-      const isVerifiedOwner =
-        firestoreCompany.ownerId === user.id || verifiedEmail === 'kunduankit129@gmail.com';
-      const allowedNonOwnerRoles: UserRole[] = ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'];
-      const safeRestoredRole: UserRole = isVerifiedOwner
-        ? 'OWNER'
-        : allowedNonOwnerRoles.includes(firestoreRole)
-        ? firestoreRole
-        : 'OPERATIONS';
 
       const restoredMembership: StoredCompanyUser = {
         id: `cu_sync_${Date.now()}`,
         userId: user.id,
         companyId: compId,
-        role: safeRestoredRole,
+        role: 'OWNER',
         isActive: true,
       };
       serverCompanyUsers.push(restoredMembership);
@@ -708,26 +667,61 @@ authRouter.post('/register', async (req, res) => {
 
       // Persist to Firestore when admin credentials are available
       await runAdminFirestore('Firestore sync warning during register', async (db) => {
+        const nowTs = FieldValue.serverTimestamp();
         await db.collection('companies').doc(newCompanyId).set({
           ...newCompany,
-          createdAt: new Date().toISOString(),
+          createdAt: nowTs,
+          updatedAt: nowTs,
         });
-        await db.collection('companies').doc(newCompanyId).collection('members').doc(newUserId).set({
-          userId: newUserId,
-          role: 'OWNER',
-          status: 'ACTIVE',
-          joinedAt: new Date().toISOString(),
-        });
+        await db
+          .collection('companies')
+          .doc(newCompanyId)
+          .collection('members')
+          .doc(newUserId)
+          .set({
+            id: newUserId,
+            userId: newUserId,
+            companyId: newCompanyId,
+            role: 'OWNER',
+            name: newUser.name,
+            email: newUser.email,
+            status: 'ACTIVE',
+            joinedAt: newUser.onboardingCompletedAt,
+            createdAt: nowTs,
+            updatedAt: nowTs,
+          });
+        await db
+          .collection('companies')
+          .doc(newCompanyId)
+          .collection('settings')
+          .doc('default')
+          .set({
+            id: 'default',
+            companyId: newCompanyId,
+            defaultGstRatePercent: 5,
+            defaultRcmEnabled: true,
+            defaultCreditPeriodDays: 30,
+            defaultFuelUnit: 'LITRES',
+            lowFastagThresholdPaise: 100000,
+            expiryAlertDays: 30,
+            autoGenerateLr: true,
+            currency: 'INR',
+            updatedByUid: newUserId,
+            createdAt: nowTs,
+            updatedAt: nowTs,
+          });
         await db.collection('users').doc(newUserId).set(
           {
             id: newUserId,
             email: newUser.email,
             name: newUser.name,
+            role: 'OWNER',
             onboardingCompleted: true,
             onboardingCompletedAt: newUser.onboardingCompletedAt,
             activeCompanyId: newCompanyId,
             defaultCompanyId: newCompanyId,
-            updatedAt: new Date().toISOString(),
+            createdAt: nowTs,
+            updatedAt: nowTs,
           },
           { merge: true }
         );
@@ -896,24 +890,61 @@ authRouter.post('/onboard-company', requireAuth, async (req: AuthenticatedReques
 
     // Persist to Firestore when admin credentials are available
     await runAdminFirestore('Firestore onboarding doc sync note', async (db) => {
+      const nowTs = FieldValue.serverTimestamp();
       await db.collection('companies').doc(companyId).set({
         ...newCompany,
-        createdAt: new Date().toISOString(),
+        createdAt: nowTs,
+        updatedAt: nowTs,
       });
-      await db.collection('companies').doc(companyId).collection('members').doc(userId).set({
-        userId,
-        role: 'OWNER',
-        status: 'ACTIVE',
-        joinedAt: new Date().toISOString(),
-      });
+      await db
+        .collection('companies')
+        .doc(companyId)
+        .collection('members')
+        .doc(userId)
+        .set({
+          id: userId,
+          userId,
+          companyId,
+          role: 'OWNER',
+          name: req.user?.name || userRecord?.name || 'Company Owner',
+          email: (req.user?.email || userRecord?.email || '').toLowerCase(),
+          status: 'ACTIVE',
+          joinedAt: userRecord?.onboardingCompletedAt || completedAt,
+          createdAt: nowTs,
+          updatedAt: nowTs,
+        });
+      await db
+        .collection('companies')
+        .doc(companyId)
+        .collection('settings')
+        .doc('default')
+        .set({
+          id: 'default',
+          companyId,
+          defaultGstRatePercent: 5,
+          defaultRcmEnabled: true,
+          defaultCreditPeriodDays: 30,
+          defaultFuelUnit: 'LITRES',
+          lowFastagThresholdPaise: 100000,
+          expiryAlertDays: 30,
+          autoGenerateLr: true,
+          currency: 'INR',
+          updatedByUid: userId,
+          createdAt: nowTs,
+          updatedAt: nowTs,
+        });
       await db.collection('users').doc(userId).set(
         {
+          id: userId,
+          email: (req.user?.email || userRecord?.email || '').toLowerCase(),
+          name: req.user?.name || userRecord?.name || 'Company Owner',
           activeCompanyId: companyId,
           defaultCompanyId: companyId,
           role: 'OWNER',
           onboardingCompleted: true,
           onboardingCompletedAt: userRecord?.onboardingCompletedAt || completedAt,
-          updatedAt: new Date().toISOString(),
+          createdAt: nowTs,
+          updatedAt: nowTs,
         },
         { merge: true }
       );
@@ -964,64 +995,12 @@ authRouter.post('/onboard-company', requireAuth, async (req: AuthenticatedReques
 
 /**
  * POST /api/auth/join-company
- * Joining an existing company via code/request.
- * CRITICAL SECURITY: Strictly forbids client from self-assigning OWNER role in an existing company.
+ * Disabled in strict Owner-Only architecture.
  */
-authRouter.post('/join-company', requireAuth, (req: AuthenticatedRequest, res) => {
-  const { companyId, requestedRole } = req.body;
-  const userId = req.user?.userId;
-
-  if (!companyId) {
-    res.status(400).json({ success: false, error: 'Company ID is required.' });
-    return;
-  }
-
-  // PREVENT PRIVILEGE ESCALATION
-  if (requestedRole === 'OWNER' || requestedRole === 'ADMIN') {
-    res.status(403).json({
-      success: false,
-      error: 'Forbidden: You cannot self-assign the OWNER or ADMIN role in an existing company.',
-    });
-    return;
-  }
-
-  const company = serverCompanies.find((c) => c.id === companyId);
-  if (!company) {
-    res.status(404).json({ success: false, error: 'Target company not found.' });
-    return;
-  }
-
-  // Check if membership already exists
-  let membership = serverCompanyUsers.find((cu) => cu.userId === userId && cu.companyId === companyId);
-  if (membership) {
-    res.status(409).json({ success: false, error: 'You are already a member of this company.' });
-    return;
-  }
-
-  // Add user as standard OPERATIONS staff (or requested non-owner role)
-  const safeRole: UserRole = requestedRole === 'ACCOUNTANT' ? 'ACCOUNTANT' : 'OPERATIONS';
-
-  const newMembership: StoredCompanyUser = {
-    id: `cu_${Date.now()}`,
-    userId: userId!,
-    companyId,
-    role: safeRole,
-    isActive: true,
-  };
-
-  serverCompanyUsers.push(newMembership);
-  const joinedUser = serverUsers.find((u) => u.id === userId);
-  if (joinedUser && !joinedUser.onboardingCompleted) {
-    joinedUser.onboardingCompleted = true;
-    joinedUser.onboardingCompletedAt = joinedUser.onboardingCompletedAt || new Date().toISOString();
-  }
-  saveAuthState();
-
-  res.status(201).json({
-    success: true,
-    message: `Joined ${company.name} as ${safeRole}.`,
-    role: safeRole,
-    company,
+authRouter.post('/join-company', requireAuth, (_req: AuthenticatedRequest, res) => {
+  res.status(403).json({
+    success: false,
+    error: 'Forbidden: Team memberships and joining external companies are disabled in Owner-Only mode.',
   });
 });
 
@@ -1282,9 +1261,9 @@ authRouter.get('/company/profile', requireAuth, (req: AuthenticatedRequest, res)
 
 /**
  * PUT /api/company/profile
- * Restricted to OWNER or ADMIN
+ * Restricted strictly to OWNER
  */
-authRouter.put('/company/profile', requireAuth, requireRoles(['OWNER', 'ADMIN']), (req: AuthenticatedRequest, res) => {
+authRouter.put('/company/profile', requireAuth, requireRoles(['OWNER']), (req: AuthenticatedRequest, res) => {
   const companyIndex = serverCompanies.findIndex((c) => c.id === req.companyId);
   if (companyIndex === -1) {
     res.status(404).json({ success: false, error: 'Company not found.' });
@@ -1324,103 +1303,40 @@ authRouter.put('/company/profile', requireAuth, requireRoles(['OWNER', 'ADMIN'])
 
 /**
  * GET /api/company/users
- * Returns list of team members in current company
+ * Owner-Only: returns only the authenticated company owner record
  */
-authRouter.get('/company/users', requireAuth, (req: AuthenticatedRequest, res) => {
-  const memberships = serverCompanyUsers.filter((cu) => cu.companyId === req.companyId && cu.isActive);
-  const usersWithRoles = memberships.map((m) => {
-    const u = serverUsers.find((user) => user.id === m.userId);
-    return {
-      membershipId: m.id,
-      userId: m.userId,
-      name: u?.name || 'Unknown',
-      email: u?.email || 'Unknown',
-      phone: u?.phone || '',
-      role: m.role,
-      active: m.isActive,
-    };
+authRouter.get('/company/users', requireAuth, requireRoles(['OWNER']), (req: AuthenticatedRequest, res) => {
+  const ownerMembership = serverCompanyUsers.find(
+    (cu) => cu.companyId === req.companyId && cu.userId === req.user?.userId && cu.role === 'OWNER' && cu.isActive
+  );
+  if (!ownerMembership) {
+    res.status(403).json({ success: false, error: 'Owner access required.' });
+    return;
+  }
+  const u = serverUsers.find((user) => user.id === ownerMembership.userId);
+  res.json({
+    success: true,
+    users: [
+      {
+        membershipId: ownerMembership.id,
+        userId: ownerMembership.userId,
+        name: u?.name || 'Owner',
+        email: u?.email || '',
+        phone: u?.phone || '',
+        role: 'OWNER' as UserRole,
+        active: true,
+      },
+    ],
   });
-
-  res.json({ success: true, users: usersWithRoles });
 });
 
 /**
  * POST /api/company/invite-user
- * Restricted to OWNER or ADMIN
- * Prevents non-owners from inviting an OWNER
+ * Disabled in strict Owner-Only architecture.
  */
-authRouter.post(
-  '/company/invite-user',
-  requireAuth,
-  requireRoles(['OWNER', 'ADMIN']),
-  async (req: AuthenticatedRequest, res) => {
-    try {
-      const { name, email, phone, role } = req.body;
-
-      if (!name || !email || !role) {
-        res.status(400).json({ success: false, error: 'Name, email, and role are required.' });
-        return;
-      }
-
-      // Do not allow assigning another OWNER in an existing company via invite
-      const allowedInviteRoles: UserRole[] = ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'];
-      if (!allowedInviteRoles.includes(role)) {
-        res.status(403).json({
-          success: false,
-          error: `Forbidden: Cannot invite user as '${role}'. Allowed member roles: ${allowedInviteRoles.join(', ')}`,
-        });
-        return;
-      }
-
-      // Check if user already exists
-      let user = serverUsers.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
-      if (!user) {
-        const defaultPassword = 'Password@123';
-        const hashedPassword = await hashPassword(defaultPassword);
-        user = {
-          id: `usr_${Date.now()}`,
-          email: email.trim().toLowerCase(),
-          name: name.trim(),
-          phone: phone || '',
-          passwordHash: hashedPassword,
-          isActive: true,
-        };
-        serverUsers.push(user);
-      }
-
-      // Check if membership already exists in this company
-      const existingMembership = serverCompanyUsers.find(
-        (cu) => cu.userId === user!.id && cu.companyId === req.companyId
-      );
-
-      if (existingMembership) {
-        res.status(409).json({ success: false, error: 'This user is already a member of your company.' });
-        return;
-      }
-
-      const newMembership: StoredCompanyUser = {
-        id: `cu_${Date.now()}`,
-        userId: user.id,
-        companyId: req.companyId!,
-        role,
-        isActive: true,
-      };
-
-      serverCompanyUsers.push(newMembership);
-      saveAuthState();
-
-      res.status(201).json({
-        success: true,
-        message: `User ${user.name} added to company as ${role}. Default password: Password@123`,
-        user: {
-          userId: user.id,
-          name: user.name,
-          email: user.email,
-          role,
-        },
-      });
-    } catch (err: any) {
-      res.status(500).json({ success: false, error: err.message || 'Failed to add user.' });
-    }
-  }
-);
+authRouter.post('/company/invite-user', requireAuth, (_req: AuthenticatedRequest, res) => {
+  res.status(403).json({
+    success: false,
+    error: 'Forbidden: Team invitations and non-owner roles are disabled in Owner-Only mode.',
+  });
+});

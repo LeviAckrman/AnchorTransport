@@ -102,6 +102,8 @@ export function handleFirestoreError(
   const currentUser = auth.currentUser;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path,
     authInfo: {
       userId: currentUser?.uid ?? null,
       email: currentUser?.email ?? null,
@@ -113,8 +115,6 @@ export function handleFirestoreError(
         email: p.email,
       })) || [],
     },
-    operationType,
-    path,
   };
 
   console.error('Firestore Error:', JSON.stringify(errInfo, null, 2));

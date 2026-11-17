@@ -35,9 +35,9 @@ export function calculateTripContribution(
 
   for (const exp of expenses) {
     totalExpenses += exp.amountPaise;
-    if (exp.category === 'DIESEL') {
+    if (exp.category === 'DIESEL' || exp.category === 'FUEL') {
       fuelExpenses += exp.amountPaise;
-    } else if (exp.category === 'TOLL_FASTAG') {
+    } else if (exp.category === 'TOLL_FASTAG' || exp.category === 'TOLL') {
       tollExpenses += exp.amountPaise;
     } else {
       otherExpenses += exp.amountPaise;
@@ -58,6 +58,13 @@ export function calculateTripContribution(
     tollExpensesPaise: tollExpenses,
     otherExpensesPaise: otherExpenses,
   };
+}
+
+export function calculateTripProfitLoss(
+  revenuePaise: number,
+  expenses: TripExpense[]
+): TripContributionResult {
+  return calculateTripContribution(revenuePaise, expenses);
 }
 
 export interface DriverSettlementCalculation {
@@ -84,8 +91,10 @@ export function calculateDriverSettlement(
   perDayBataPaise: number,
   approvedDeductionsPaise: number = 0
 ): DriverSettlementCalculation {
-  // Sum advances disbursed
-  const totalAdvances = advances.reduce((sum, a) => sum + a.amountPaise, 0);
+  // Sum active (non-cancelled) advances disbursed
+  const totalAdvances = advances
+    .filter((a) => a.status !== 'CANCELLED')
+    .reduce((sum, a) => sum + a.amountPaise, 0);
 
   // Filter expenses paid by the driver out of pocket / cash in hand
   const driverCashExpenses = expenses
@@ -135,47 +144,52 @@ export function calculateGstInvoice(
   companyStateCode: string,
   customerStateCode: string,
   isRcm: boolean = true,
-  taxRatePercent: number = 5
+  taxRatePercent: number = 5,
+  discountPaise: number = 0
 ): GstTaxCalculation {
+  const taxableAmountPaise = Math.max(0, (freightPaise || 0) - Math.max(0, discountPaise || 0));
+
   if (isRcm) {
     // Under RCM, the GST is payable by the recipient of service (consignor/consignee)
     return {
-      taxableAmountPaise: freightPaise,
+      taxableAmountPaise,
       cgstAmountPaise: 0,
       sgstAmountPaise: 0,
       igstAmountPaise: 0,
       totalTaxPaise: 0,
-      totalInvoiceAmountPaise: freightPaise,
+      totalInvoiceAmountPaise: taxableAmountPaise,
       isRcm: true,
     };
   }
 
-  const isIntraState = companyStateCode.trim() === customerStateCode.trim();
+  const isIntraState =
+    Boolean(companyStateCode?.trim()) &&
+    companyStateCode.trim() === (customerStateCode || '').trim();
 
   if (isIntraState) {
     const halfRate = taxRatePercent / 2 / 100;
-    const cgst = Math.round(freightPaise * halfRate);
-    const sgst = Math.round(freightPaise * halfRate);
+    const cgst = Math.round(taxableAmountPaise * halfRate);
+    const sgst = Math.round(taxableAmountPaise * halfRate);
     const totalTax = cgst + sgst;
     return {
-      taxableAmountPaise: freightPaise,
+      taxableAmountPaise,
       cgstAmountPaise: cgst,
       sgstAmountPaise: sgst,
       igstAmountPaise: 0,
       totalTaxPaise: totalTax,
-      totalInvoiceAmountPaise: freightPaise + totalTax,
+      totalInvoiceAmountPaise: taxableAmountPaise + totalTax,
       isRcm: false,
     };
   } else {
     const igstRate = taxRatePercent / 100;
-    const igst = Math.round(freightPaise * igstRate);
+    const igst = Math.round(taxableAmountPaise * igstRate);
     return {
-      taxableAmountPaise: freightPaise,
+      taxableAmountPaise,
       cgstAmountPaise: 0,
       sgstAmountPaise: 0,
       igstAmountPaise: igst,
       totalTaxPaise: igst,
-      totalInvoiceAmountPaise: freightPaise + igst,
+      totalInvoiceAmountPaise: taxableAmountPaise + igst,
       isRcm: false,
     };
   }

@@ -49,14 +49,45 @@ export interface AuthSessionResponse {
   error?: string;
 }
 
+export interface RegisterFirebaseResult {
+  user: FirebaseUser;
+  verificationSent: boolean;
+  verificationError?: string;
+}
+
+export function formatFirebaseAuthError(err: unknown): string {
+  const code = (err as any)?.code as string | undefined;
+  switch (code) {
+    case 'auth/email-already-in-use':
+      return 'An account with this email address already exists. Please sign in instead.';
+    case 'auth/invalid-email':
+      return 'Please enter a valid email address.';
+    case 'auth/weak-password':
+      return 'Password is too weak. Please use at least 6 characters.';
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+    case 'auth/invalid-credential':
+      return 'Invalid email or password. Please check your credentials and try again.';
+    case 'auth/too-many-requests':
+      return 'Too many requests in a short period. Please wait a minute and try again.';
+    case 'auth/user-disabled':
+      return 'This account has been disabled. Please contact your administrator.';
+    case 'auth/network-request-failed':
+      return 'Network error while contacting Firebase Authentication. Please check your connection.';
+    default:
+      return err instanceof Error ? err.message : 'Authentication request failed.';
+  }
+}
+
 /**
  * Register a new user using Firebase Email/Password Authentication
+ * and immediately dispatch a verification email via sendEmailVerification().
  */
 export async function registerFirebaseUser({
   email,
   password,
   displayName,
-}: RegisterParams): Promise<FirebaseUser> {
+}: RegisterParams): Promise<RegisterFirebaseResult> {
   const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
   if (displayName && userCredential.user) {
     try {
@@ -65,29 +96,64 @@ export async function registerFirebaseUser({
       console.warn('Failed to set displayName on Firebase user:', e);
     }
   }
+
+  let verificationSent = false;
+  let verificationError: string | undefined;
   if (userCredential.user && !userCredential.user.emailVerified) {
     try {
       await sendEmailVerification(userCredential.user);
+      verificationSent = true;
     } catch (e) {
+      verificationError = formatFirebaseAuthError(e);
       console.warn('Email verification dispatch notice:', e);
     }
+  } else if (userCredential.user?.emailVerified) {
+    verificationSent = true;
   }
-  return userCredential.user;
+
+  return {
+    user: userCredential.user,
+    verificationSent,
+    verificationError,
+  };
 }
 
 /**
  * Resends verification email for the currently signed-in unverified Firebase user
  */
-export async function resendVerificationEmail(): Promise<{ sent: boolean; error?: string }> {
+export async function resendVerificationEmail(): Promise<{
+  sent: boolean;
+  alreadyVerified?: boolean;
+  error?: string;
+}> {
   const user = auth.currentUser;
-  if (!user) return { sent: false, error: 'No active Firebase user.' };
-  if (user.emailVerified) return { sent: false, error: 'Email is already verified.' };
+  if (!user) return { sent: false, error: 'No active Firebase session. Please log in again.' };
+
   try {
-    await sendEmailVerification(user);
+    await reload(user);
+    const freshUser = auth.currentUser || user;
+    if (freshUser.emailVerified) {
+      await freshUser.getIdToken(true);
+      return { sent: false, alreadyVerified: true };
+    }
+    await sendEmailVerification(freshUser);
     return { sent: true };
   } catch (err: any) {
-    return { sent: false, error: err?.message || 'Failed to send verification email.' };
+    return { sent: false, error: formatFirebaseAuthError(err) };
   }
+}
+
+/**
+ * Reloads a specific Firebase user instance using user.reload()
+ * so emailVerified reflects the authoritative server state.
+ */
+export async function reloadTargetFirebaseUser(fbUser: FirebaseUser): Promise<FirebaseUser> {
+  await reload(fbUser);
+  const current = auth.currentUser || fbUser;
+  if (current.emailVerified) {
+    await current.getIdToken(true);
+  }
+  return current;
 }
 
 /**
@@ -96,9 +162,7 @@ export async function resendVerificationEmail(): Promise<{ sent: boolean; error?
 export async function reloadFirebaseUser(): Promise<FirebaseUser | null> {
   const user = auth.currentUser;
   if (!user) return null;
-  await reload(user);
-  await user.getIdToken(true);
-  return auth.currentUser;
+  return reloadTargetFirebaseUser(user);
 }
 
 /**
@@ -106,7 +170,7 @@ export async function reloadFirebaseUser(): Promise<FirebaseUser | null> {
  */
 export async function loginFirebaseUser(email: string, password: string): Promise<FirebaseUser> {
   const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
-  return userCredential.user;
+  return reloadTargetFirebaseUser(userCredential.user);
 }
 
 /**
@@ -115,7 +179,7 @@ export async function loginFirebaseUser(email: string, password: string): Promis
 export async function loginWithGoogle(): Promise<FirebaseUser> {
   const provider = new GoogleAuthProvider();
   const userCredential = await signInWithPopup(auth, provider);
-  return userCredential.user;
+  return reloadTargetFirebaseUser(userCredential.user);
 }
 
 /**

@@ -147,20 +147,59 @@ async function runAuthSecurityTests() {
   }
 
   // ============================================================
-  // TEST 5: Role-Based Access Control (RBAC) Authorization Matrix
+  // TEST 5: Multi-Role RBAC & Owner Access Control Matrix
   // ============================================================
   {
-    // Owner has full access
-    assert(ROLE_PERMISSIONS.OWNER.canManageCompany && ROLE_PERMISSIONS.OWNER.canManageUsers, 'RBAC: OWNER possesses full company & user governance', 'Owner lacked permissions');
+    const { hasPermission } = await import('../lib/permissions');
+    // Owner has complete operational, financial, company, and team governance
+    assert(
+      ROLE_PERMISSIONS.OWNER.canManageCompany &&
+        ROLE_PERMISSIONS.OWNER.canDispatchTrips &&
+        ROLE_PERMISSIONS.OWNER.canSettleTrips &&
+        ROLE_PERMISSIONS.OWNER.canGenerateInvoices &&
+        ROLE_PERMISSIONS.OWNER.canRecordPayments &&
+        ROLE_PERMISSIONS.OWNER.canLogExpenses &&
+        ROLE_PERMISSIONS.OWNER.canDisburseAdvances &&
+        ROLE_PERMISSIONS.OWNER.canViewReports &&
+        ROLE_PERMISSIONS.OWNER.canManageUsers,
+      'RBAC: OWNER possesses complete company, operational, financial, and team governance',
+      'Owner permission mismatch'
+    );
 
-    // Manager can dispatch trips, but cannot manage users or approve final settlements
-    assert(ROLE_PERMISSIONS.MANAGER.canDispatchTrips && !ROLE_PERMISSIONS.MANAGER.canManageUsers, 'RBAC: MANAGER can dispatch trips but cannot modify user credentials', 'Manager privilege escalation');
+    // OPERATIONS staff can dispatch/log expenses but cannot touch billing, settlements, or company settings
+    assert(
+      hasPermission('OPERATIONS', 'canDispatchTrips') &&
+        hasPermission('OPERATIONS', 'canLogExpenses') &&
+        !hasPermission('OPERATIONS', 'canManageCompany') &&
+        !hasPermission('OPERMISSIONS_INVALID' as unknown as UserRole, 'canManageCompany') &&
+        !hasPermission('OPERATIONS', 'canGenerateInvoices') &&
+        !hasPermission('OPERATIONS', 'canSettleTrips') &&
+        !hasPermission('OPERATIONS', 'canManageUsers'),
+      'RBAC: OPERATIONS restricted to dispatch/expense operations and denied billing/company controls',
+      'Operations role permissions invalid'
+    );
 
-    // Accountant can settle trips & generate GST invoices, but cannot dispatch trips
-    assert(ROLE_PERMISSIONS.ACCOUNTANT.canSettleTrips && !ROLE_PERMISSIONS.ACCOUNTANT.canDispatchTrips, 'RBAC: ACCOUNTANT can settle trips but cannot dispatch trucks', 'Accountant role violation');
+    // ACCOUNTANT can settle trips, invoice, and record payments, but cannot manage company or users
+    assert(
+      hasPermission('ACCOUNTANT', 'canGenerateInvoices') &&
+        hasPermission('ACCOUNTANT', 'canRecordPayments') &&
+        hasPermission('ACCOUNTANT', 'canSettleTrips') &&
+        !hasPermission('ACCOUNTANT', 'canManageCompany') &&
+        !hasPermission('ACCOUNTANT', 'canManageUsers'),
+      'RBAC: ACCOUNTANT granted financial capabilities and denied company/member management',
+      'Accountant role permissions invalid'
+    );
 
-    // Operations Staff can record advances and diesel expenses, but cannot view business P&L reports
-    assert(ROLE_PERMISSIONS.OPERATIONS.canLogExpenses && !ROLE_PERMISSIONS.OPERATIONS.canViewReports, 'RBAC: OPERATIONS staff can log fuel but cannot inspect company profit reports', 'Operations role violation');
+    // Unknown or tampered role claims are strictly rejected
+    const invalidRole = 'SUPER_HACKER' as unknown as UserRole;
+    assert(
+      !hasPermission(invalidRole, 'canManageCompany') &&
+        !hasPermission(invalidRole, 'canDispatchTrips') &&
+        !hasPermission(invalidRole, 'canSettleTrips') &&
+        !hasPermission(invalidRole, 'canGenerateInvoices'),
+      'RBAC: Unknown or forged role claims are strictly denied across all capabilities',
+      'Unknown role was granted permission'
+    );
   }
 
   // ============================================================

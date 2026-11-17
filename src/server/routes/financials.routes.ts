@@ -339,11 +339,11 @@ financialsRouter.put('/expenses/:id', requireAuth, async (req: AuthenticatedRequ
 
     // Check if expense has already been settled in a finalized driver settlement
     if (expense.isSettled) {
-      const isOwnerOrAdmin = req.role === 'OWNER' || req.role === 'ADMIN';
-      if (!isOwnerOrAdmin || !req.body.isAuthorizedCorrection) {
+      const isOwner = req.role === 'OWNER';
+      if (!isOwner || !req.body.isAuthorizedCorrection) {
         res.status(403).json({
           success: false,
-          error: 'This expense voucher has been finalized in a driver settlement. Modifications require an authorized correction reason from an Administrator.',
+          error: 'This expense voucher has been finalized in a driver settlement. Modifications require an authorized correction reason from the Owner.',
         });
         return;
       }
@@ -890,13 +890,13 @@ financialsRouter.put('/settlements/:id', requireAuth, async (req: AuthenticatedR
 
     // PREVENT UNAUTHORIZED CHANGES TO FINALIZED SETTLEMENTS
     if (isAlreadyFinalized) {
-      const isOwnerOrAdmin = req.role === 'OWNER' || req.role === 'ADMIN';
+      const isOwner = req.role === 'OWNER';
       const hasAuthCorrection = req.body.isCorrectionAuthorized && req.body.correctionReason;
 
-      if (!isOwnerOrAdmin || !hasAuthCorrection) {
+      if (!isOwner || !hasAuthCorrection) {
         res.status(403).json({
           success: false,
-          error: 'Modifications to finalized driver settlements are locked. An authorized correction reason and Administrator privileges are required to modify finalized settlements.',
+          error: 'Modifications to finalized driver settlements are locked. An authorized correction reason and Owner privileges are required to modify finalized settlements.',
         });
         return;
       }
@@ -904,7 +904,7 @@ financialsRouter.put('/settlements/:id', requireAuth, async (req: AuthenticatedR
       // Log authorized correction
       settlement.isCorrectionAuthorized = true;
       settlement.correctionReason = req.body.correctionReason.trim();
-      settlement.correctedBy = req.user?.name || 'Administrator';
+      settlement.correctedBy = req.user?.name || 'Owner';
       settlement.correctedAt = new Date().toISOString();
     }
 

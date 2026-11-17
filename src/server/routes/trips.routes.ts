@@ -1005,7 +1005,7 @@ tripsRouter.post('/trips/:id/advances', requireAuth, async (req: AuthenticatedRe
 tripsRouter.delete(
   '/trips/:id',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1130,6 +1130,6 @@ const handleResetCompanyTrips = async (req: AuthenticatedRequest, res: Response)
   }
 };
 
-tripsRouter.post('/trips/reset', requireAuth, requireRoles(['OWNER', 'ADMIN', 'MANAGER']), handleResetCompanyTrips);
-tripsRouter.post('/api/trips/reset', requireAuth, requireRoles(['OWNER', 'ADMIN', 'MANAGER']), handleResetCompanyTrips);
+tripsRouter.post('/trips/reset', requireAuth, requireRoles(['OWNER']), handleResetCompanyTrips);
+tripsRouter.post('/api/trips/reset', requireAuth, requireRoles(['OWNER']), handleResetCompanyTrips);
 

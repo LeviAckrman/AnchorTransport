@@ -7,7 +7,7 @@ import {
 import { TripSettlement, SettlementStatus } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { formatINR } from '../../lib/currency';
-import { calculateDriverSettlement, DriverSettlementCalculation } from '../../lib/financialEngine';
+import { calculateDriverSettlement, calculateTripProfitLoss, DriverSettlementCalculation } from '../../lib/financialEngine';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { saveSettlementInFirestore } from '../../lib/firebase/firestoreService';
@@ -28,7 +28,7 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
   settlementToEdit,
   defaultTripId,
 }) => {
-  const { user, role, company: authCompany } = useAuth();
+  const { user, company: authCompany } = useAuth();
   const {
     company: liveCompany,
     trips,
@@ -137,6 +137,12 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
     parsedDeductionsPaise
   );
 
+  const tripRevenuePaise = selectedTrip
+    ? selectedTrip.totalRevenuePaise ||
+      (selectedTrip.freightAmountPaise || 0) + (selectedTrip.otherChargesPaise || 0)
+    : 0;
+  const tripPnl = calculateTripProfitLoss(tripRevenuePaise, expenses);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -171,12 +177,14 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
     try {
       const nowIso = new Date().toISOString();
       const todayStr = nowIso.split('T')[0];
-      const actorName = (user?.name || user?.email || 'Accountant').slice(0, 100);
+      const actorName = (user?.name || user?.email || 'Owner').slice(0, 100);
       const settlementId =
         settlementToEdit?.id || `stl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const settlementNumber =
         settlementToEdit?.settlementNumber ||
         getNextSettlementNumber(allSettlements.length, allSettlements);
+
+      const isFinalOrApproved = targetStatus === 'FINALIZED' || targetStatus === 'APPROVED_SETTLED';
 
       const settlement: TripSettlement = {
         ...(settlementToEdit || {}),
@@ -189,6 +197,12 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
         vehicleId: selectedTrip.vehicleId,
         vehicleReg: selectedTrip.vehicleReg?.slice(0, 30),
         settlementNumber,
+        totalRevenuePaise: tripPnl.revenuePaise,
+        fuelExpensesPaise: tripPnl.fuelExpensesPaise,
+        tollExpensesPaise: tripPnl.tollExpensesPaise,
+        otherExpensesPaise: tripPnl.otherExpensesPaise,
+        totalExpensesPaise: tripPnl.expensesPaise,
+        tripProfitLossPaise: tripPnl.contributionPaise,
         totalAdvanceGivenPaise: calc.totalAdvancesGivenPaise,
         driverCashExpensesPaise: calc.driverPaidExpensesPaise,
         driverBataAllowancePaise: calc.driverBataAllowancePaise,
@@ -201,6 +215,8 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
         status: targetStatus,
         settledDate: settlementToEdit?.settledDate || todayStr,
         settledBy: actorName,
+        approvedBy: isFinalOrApproved ? settlementToEdit?.approvedBy || actorName : settlementToEdit?.approvedBy,
+        approvedAt: isFinalOrApproved ? settlementToEdit?.approvedAt || nowIso : settlementToEdit?.approvedAt,
         settlementNotes: settlementNotes.trim() ? settlementNotes.trim().slice(0, 400) : undefined,
         isCorrectionAuthorized: isAlreadyFinalized && isCorrectionAuthorized ? true : settlementToEdit?.isCorrectionAuthorized,
         correctionReason:
@@ -255,31 +271,29 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
               Finalized Audit Lock: This settlement has been finalized and audited into the company ledger.
             </div>
             <p>
-              Modifications to finalized settlements require an authorized correction reason and Administrator privileges.
+              Modifications to finalized settlements require an authorized correction reason from the company owner.
             </p>
-            {(role === 'OWNER' || role === 'ADMIN') && (
-              <div className="pt-2 border-t border-amber-200">
-                <label className="flex items-center gap-2 font-semibold cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={isCorrectionAuthorized}
-                    onChange={(e) => setIsCorrectionAuthorized(e.target.checked)}
-                    className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                  />
-                  <span>Authorize financial correction on finalized settlement</span>
-                </label>
-                {isCorrectionAuthorized && (
-                  <input
-                    type="text"
-                    required
-                    placeholder="Mandatory correction reason (e.g. Audit reconciliation adjustment for diesel slip #8492)..."
-                    value={correctionReason}
-                    onChange={(e) => setCorrectionReason(e.target.value)}
-                    className="mt-2 w-full px-3 py-1.5 text-xs rounded-lg border border-amber-300 bg-white"
-                  />
-                )}
-              </div>
-            )}
+            <div className="pt-2 border-t border-amber-200">
+              <label className="flex items-center gap-2 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isCorrectionAuthorized}
+                  onChange={(e) => setIsCorrectionAuthorized(e.target.checked)}
+                  className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                />
+                <span>Authorize financial correction on finalized settlement</span>
+              </label>
+              {isCorrectionAuthorized && (
+                <input
+                  type="text"
+                  required
+                  placeholder="Mandatory correction reason (e.g. Audit reconciliation adjustment for diesel slip #8492)..."
+                  value={correctionReason}
+                  onChange={(e) => setCorrectionReason(e.target.value)}
+                  className="mt-2 w-full px-3 py-1.5 text-xs rounded-lg border border-amber-300 bg-white"
+                />
+              )}
+            </div>
           </div>
         )}
 
@@ -410,6 +424,45 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
 
             <div className="text-xs px-3 py-1.5 rounded-lg font-bold bg-white/20 text-white">
               {calc.netPayableToDriverPaise >= 0 ? 'Payable Shortfall' : 'Surplus Float to Return'}
+            </div>
+          </div>
+
+          {/* Trip Profit & Loss Summary */}
+          <div className="p-3.5 rounded-xl bg-white/5 border border-white/10 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="uppercase tracking-wider text-slate-400 font-semibold">
+                Trip Profit & Loss Summary
+              </span>
+              <span
+                className={`font-bold ${
+                  tripPnl.contributionPaise >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                {tripPnl.contributionPaise >= 0 ? 'Net Profit' : 'Net Loss'}:{' '}
+                {formatINR(tripPnl.contributionPaise)} ({tripPnl.profitMarginPercent}%)
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
+              <div>
+                <span className="text-slate-400 block">Total Revenue</span>
+                <span className="font-bold text-white">{formatINR(tripPnl.revenuePaise)}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Fuel</span>
+                <span className="font-semibold text-rose-300">{formatINR(tripPnl.fuelExpensesPaise)}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Toll / FASTag</span>
+                <span className="font-semibold text-rose-300">{formatINR(tripPnl.tollExpensesPaise)}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Other Expenses</span>
+                <span className="font-semibold text-rose-300">{formatINR(tripPnl.otherExpensesPaise)}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block">Total Trip Cost</span>
+                <span className="font-bold text-rose-400">{formatINR(tripPnl.expensesPaise)}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -558,7 +611,11 @@ export const SettlementModal: React.FC<SettlementModalProps> = ({
             ) : (
               <>
                 <CheckCircle2 className="w-4 h-4" />
-                <span>{targetStatus === 'FINALIZED' ? 'Finalize Settlement' : 'Save Draft Settlement'}</span>
+                <span>
+                  {targetStatus === 'FINALIZED' || targetStatus === 'APPROVED_SETTLED'
+                    ? 'Finalize Settlement'
+                    : 'Save Draft Settlement'}
+                </span>
               </>
             )}
           </button>

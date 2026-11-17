@@ -161,8 +161,8 @@ invoicesRouter.get('/invoices', requireAuth, async (req: AuthenticatedRequest, r
         (i) =>
           i.invoiceNumber.toLowerCase().includes(search) ||
           i.customerName.toLowerCase().includes(search) ||
-          i.tripNumber.toLowerCase().includes(search) ||
-          i.lrNumber.toLowerCase().includes(search) ||
+          (i.tripNumber || '').toLowerCase().includes(search) ||
+          (i.lrNumber || '').toLowerCase().includes(search) ||
           (i.customerGstin && i.customerGstin.toLowerCase().includes(search))
       );
     }

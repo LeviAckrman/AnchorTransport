@@ -19,6 +19,8 @@ import {
   Download,
   Filter,
   AlertTriangle,
+  History,
+  Search,
 } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -34,7 +36,7 @@ import {
   REPORT_ACCOUNTING_DISCLAIMER,
 } from '../../lib/tmsCalculations';
 
-export type ReportType = 'trips' | 'vehicles' | 'expenses' | 'receivables' | 'monthly';
+export type ReportType = 'trips' | 'vehicles' | 'expenses' | 'receivables' | 'monthly' | 'audit';
 
 export interface ReportsViewProps {
   userRole?: string;
@@ -42,7 +44,7 @@ export interface ReportsViewProps {
 }
 
 export const ReportsView: React.FC<ReportsViewProps> = ({
-  userRole: _userRole = 'OPERATIONS',
+  userRole: _userRole = 'OWNER',
   initialReport = 'trips',
 }) => {
   const {
@@ -53,6 +55,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     expenses,
     invoices,
     maintenance,
+    auditLogs,
     loading,
     error,
   } = useFirestoreData();
@@ -68,6 +71,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [selectedTripStatus, setSelectedTripStatus] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string>('');
+  const [auditActionFilter, setAuditActionFilter] = useState<string>('');
+  const [auditEntityFilter, setAuditEntityFilter] = useState<string>('');
+  const [auditSearchQuery, setAuditSearchQuery] = useState<string>('');
 
   const reportData = useMemo(() => {
     const filters = {
@@ -92,6 +98,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         return computeReceivablesReport({ customers, invoices }, filters);
       case 'monthly':
         return computeMonthlyPerformanceReport({ trips, expenses, invoices }, 6);
+      case 'audit':
+      default:
+        return { audit: true };
     }
   }, [
     activeReport,
@@ -111,6 +120,34 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     invoices,
     maintenance,
   ]);
+
+  const filteredAuditLogs = useMemo(() => {
+    const q = auditSearchQuery.trim().toLowerCase();
+    return [...auditLogs]
+      .filter((log) => {
+        const tsDate = log.timestamp ? log.timestamp.slice(0, 10) : '';
+        if (startDate && tsDate && tsDate < startDate) return false;
+        if (endDate && tsDate && tsDate > endDate) return false;
+        if (auditActionFilter && log.action !== auditActionFilter) return false;
+        if (auditEntityFilter && log.entityType !== auditEntityFilter) return false;
+        if (q) {
+          const hay = [
+            log.action,
+            log.entityType,
+            log.entityId,
+            log.moduleName,
+            log.summary,
+            log.userName,
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+  }, [auditLogs, startDate, endDate, auditActionFilter, auditEntityFilter, auditSearchQuery]);
 
   const handleExportCsv = () => {
     const dateSuffix = new Date().toISOString().split('T')[0];
@@ -225,6 +262,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         paiseToRupees(r.outstandingInvoicesPaise).toFixed(2),
       ]);
       exportRowsToCsv(`monthly-performance-${dateSuffix}.csv`, headers, rows, `# ${REPORT_ACCOUNTING_DISCLAIMER}`);
+    } else if (activeReport === 'audit') {
+      const headers = ['Timestamp', 'Action', 'Entity Type', 'Entity ID', 'Module', 'Actor', 'Summary'];
+      const rows = filteredAuditLogs.map((log) => [
+        log.timestamp || '',
+        log.action,
+        log.entityType,
+        log.entityId,
+        log.moduleName || log.entityType,
+        log.userName || 'Owner',
+        log.summary,
+      ]);
+      exportRowsToCsv(`owner-audit-trail-${dateSuffix}.csv`, headers, rows);
     }
   };
 
@@ -237,6 +286,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     setSelectedTripStatus('');
     setSelectedCategory('');
     setSelectedPaymentMethod('');
+    setAuditActionFilter('');
+    setAuditEntityFilter('');
+    setAuditSearchQuery('');
   };
 
   const tripsReport = activeReport === 'trips' && 'trips' in reportData ? reportData : null;
@@ -335,6 +387,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
         >
           <TrendingUp className="w-4 h-4" />
           <span>Monthly Performance</span>
+        </button>
+
+        <button
+          onClick={() => setActiveReport('audit')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
+            activeReport === 'audit'
+              ? 'bg-indigo-600 text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <History className="w-4 h-4" />
+          <span>Audit Trail ({auditLogs.length})</span>
         </button>
       </div>
 
@@ -478,6 +542,67 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 <option value="OTHER">Other</option>
               </select>
             </div>
+          )}
+
+          {/* Audit Filters */}
+          {activeReport === 'audit' && (
+            <>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Action</label>
+                <select
+                  value={auditActionFilter}
+                  onChange={(e) => setAuditActionFilter(e.target.value)}
+                  className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">All Actions</option>
+                  <option value="CREATE">Create</option>
+                  <option value="UPDATE">Update</option>
+                  <option value="DELETE">Delete</option>
+                  <option value="DISPATCH">Dispatch</option>
+                  <option value="SETTLE">Settle</option>
+                  <option value="APPROVE">Approve</option>
+                  <option value="INVOICE">Invoice</option>
+                  <option value="PAYMENT">Payment</option>
+                  <option value="CANCEL">Cancel</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Module / Entity</label>
+                <select
+                  value={auditEntityFilter}
+                  onChange={(e) => setAuditEntityFilter(e.target.value)}
+                  className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">All Modules</option>
+                  <option value="TRIP">Trips</option>
+                  <option value="DISPATCH">Dispatch</option>
+                  <option value="EXPENSE">Expenses</option>
+                  <option value="FUEL">Fuel</option>
+                  <option value="ADVANCE">Advances</option>
+                  <option value="SETTLEMENT">Settlements</option>
+                  <option value="INVOICE">Invoices</option>
+                  <option value="PAYMENT">Payments</option>
+                  <option value="VEHICLE">Vehicles</option>
+                  <option value="DRIVER">Drivers</option>
+                  <option value="CUSTOMER">Customers</option>
+                  <option value="DOCUMENT">Documents</option>
+                  <option value="COMPANY">Company</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600 mb-1">Search Summary</label>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={auditSearchQuery}
+                    onChange={(e) => setAuditSearchQuery(e.target.value)}
+                    placeholder="Keyword or ID..."
+                    className="w-full pl-8 pr-2 py-2 text-xs border border-slate-300 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -996,6 +1121,81 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* 6. AUDIT TRAIL REPORT */}
+          {activeReport === 'audit' && (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Immutable Owner Activity & Financial Audit Log</h3>
+                  <span className="text-xs text-slate-500">
+                    {filteredAuditLogs.length} recorded actions
+                  </span>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-semibold uppercase tracking-wider text-[11px]">
+                      <th className="py-3 px-4">Timestamp</th>
+                      <th className="py-3 px-4">Action</th>
+                      <th className="py-3 px-4">Module / Entity</th>
+                      <th className="py-3 px-4">Summary</th>
+                      <th className="py-3 px-4">Actor</th>
+                      <th className="py-3 px-4">Change Snapshot</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredAuditLogs.length > 0 ? (
+                      filteredAuditLogs.slice(0, 150).map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="py-3 px-4 font-mono text-[11px] text-slate-500 whitespace-nowrap">
+                            {log.timestamp ? new Date(log.timestamp).toLocaleString('en-IN') : '—'}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                log.action === 'DELETE' || log.action === 'CANCEL'
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : log.action === 'APPROVE' || log.action === 'PAYMENT'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : 'bg-indigo-100 text-indigo-800'
+                              }`}
+                            >
+                              {log.action}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="font-semibold text-slate-800 block">
+                              {log.moduleName || log.entityType}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">{log.entityId}</span>
+                          </td>
+                          <td className="py-3 px-4 text-slate-800 max-w-md">{log.summary}</td>
+                          <td className="py-3 px-4 text-slate-600">{log.userName || 'Owner'}</td>
+                          <td className="py-3 px-4 text-[11px] font-mono text-slate-500 max-w-xs truncate">
+                            {log.updatedValues
+                              ? Object.entries(log.updatedValues)
+                                  .slice(0, 3)
+                                  .map(([k, v]) => `${k}: ${String(v)}`)
+                                  .join(' • ')
+                              : '—'}
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-400 italic">
+                          No audit log entries match the active filters.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}

@@ -10,22 +10,25 @@ import {
   Trash2,
   ChevronLeft,
   ChevronRight,
+  Briefcase,
 } from 'lucide-react';
-import { Customer, UserRole } from '../../types/tms';
+import { Customer, Broker, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { CustomerModal } from './CustomerModal';
 import { CustomerDetailModal } from './CustomerDetailModal';
+import { BrokerModal } from './BrokerModal';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
-import { deleteCustomerInFirestore } from '../../lib/firebase/firestoreService';
+import { deleteCustomerInFirestore, deleteBrokerInFirestore } from '../../lib/firebase/firestoreService';
 
 interface CustomersViewProps {
   userRole: UserRole;
 }
 
 export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
-  const { company, customers: allCustomers, loading, error } = useFirestoreData();
+  const { company, customers: allCustomers, brokers: allBrokers, loading, error } = useFirestoreData();
+  const [directoryTab, setDirectoryTab] = useState<'CUSTOMERS' | 'BROKERS'>('CUSTOMERS');
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Filters & Search
@@ -41,10 +44,13 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
   const [customerToEdit, setCustomerToEdit] = useState<Customer | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
+  const [isBrokerModalOpen, setIsBrokerModalOpen] = useState(false);
+  const [brokerToEdit, setBrokerToEdit] = useState<Broker | null>(null);
+  const [brokerToDelete, setBrokerToDelete] = useState<Broker | null>(null);
 
   useEffect(() => {
     setPage(1);
-  }, [searchQuery, balanceFilter, limit]);
+  }, [searchQuery, balanceFilter, limit, directoryTab]);
 
   const filteredCustomers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -105,6 +111,41 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
     }
   };
 
+  const filteredBrokers = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return [...allBrokers]
+      .filter((b) => {
+        if (!q) return true;
+        return (
+          b.name.toLowerCase().includes(q) ||
+          (b.companyName || '').toLowerCase().includes(q) ||
+          (b.city || '').toLowerCase().includes(q) ||
+          (b.phone || '').toLowerCase().includes(q)
+        );
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allBrokers, searchQuery]);
+
+  const handleBrokerSuccess = (broker: Broker, isEdit: boolean) => {
+    showNotification(
+      isEdit
+        ? `Broker ${broker.name} updated successfully.`
+        : `Broker ${broker.name} registered to company directory.`,
+      'success'
+    );
+  };
+
+  const confirmDeleteBroker = async () => {
+    if (!brokerToDelete || !company?.id) return;
+    try {
+      await deleteBrokerInFirestore(company.id, brokerToDelete.id, brokerToDelete.name);
+      showNotification(`Broker ${brokerToDelete.name} deleted.`);
+      setBrokerToDelete(null);
+    } catch (err: any) {
+      showNotification(err.message || 'Error deleting broker.', 'error');
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto antialiased">
       {/* Toast Notification */}
@@ -127,18 +168,59 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
 
       {/* Page Header */}
       <PageHeader
-        title="Customers & Consignors"
-        subtitle="Manage corporate consignors, GSTIN records, agreed payment terms, and outstanding balances"
+        title="Customers & Brokers Directory"
+        subtitle="Manage corporate consignors, freight brokers/agents, GSTIN records, and agreed terms"
         actions={
-          <button
-            onClick={() => setIsCreateOpen(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Add Customer</span>
-          </button>
+          directoryTab === 'CUSTOMERS' ? (
+            <button
+              onClick={() => setIsCreateOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Customer</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setBrokerToEdit(null);
+                setIsBrokerModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add Broker</span>
+            </button>
+          )
         }
       />
+
+      {/* Directory Switcher Tabs */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+        <button
+          type="button"
+          onClick={() => setDirectoryTab('CUSTOMERS')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors ${
+            directoryTab === 'CUSTOMERS'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          <Building2 className="w-3.5 h-3.5" />
+          <span>Customers ({allCustomers.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setDirectoryTab('BROKERS')}
+          className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors ${
+            directoryTab === 'BROKERS'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          <Briefcase className="w-3.5 h-3.5" />
+          <span>Brokers / Agents ({allBrokers.length})</span>
+        </button>
+      </div>
 
       {/* Controls Bar: Search & Balance Filters */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-xs space-y-3">
@@ -198,6 +280,107 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
           <AlertTriangle className="w-8 h-8 text-rose-500 mx-auto" />
           <p className="text-sm font-semibold text-slate-800">{error}</p>
         </div>
+      ) : directoryTab === 'BROKERS' ? (
+        filteredBrokers.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 mx-auto">
+              <Briefcase className="w-7 h-7" />
+            </div>
+            <div className="max-w-md mx-auto">
+              <h4 className="text-base font-bold text-slate-900">No freight brokers found</h4>
+              <p className="text-xs text-slate-500 mt-1">
+                {searchQuery
+                  ? 'No broker records match your search query.'
+                  : 'Register transport brokers and commissioning agents to auto-link them during trip dispatch.'}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setBrokerToEdit(null);
+                setIsBrokerModalOpen(true);
+              }}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs"
+            >
+              Add First Broker
+            </button>
+          </div>
+        ) : (
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/70 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="py-3 px-4">Broker / Agency</th>
+                    <th className="py-3 px-4">Phone & Email</th>
+                    <th className="py-3 px-4">City / State</th>
+                    <th className="py-3 px-4">Commission Terms</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {filteredBrokers.map((b) => (
+                    <tr key={b.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-3.5 px-4">
+                        <span className="font-bold text-slate-900 text-sm block">{b.name}</span>
+                        {b.companyName && (
+                          <span className="text-[11px] text-slate-500 block">{b.companyName}</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span className="font-mono text-slate-800 block">{b.phone}</span>
+                        {b.email && <span className="text-[11px] text-slate-500 block">{b.email}</span>}
+                      </td>
+                      <td className="py-3.5 px-4 text-slate-700">
+                        {[b.city, b.state].filter(Boolean).join(', ') || '—'}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        {b.commissionRatePercent !== undefined ? (
+                          <span className="font-semibold text-indigo-700 block">
+                            {b.commissionRatePercent}% of freight
+                          </span>
+                        ) : null}
+                        {b.defaultCommissionPaise !== undefined ? (
+                          <span className="text-[11px] text-slate-500 block">
+                            Flat: {formatINR(b.defaultCommissionPaise)}
+                          </span>
+                        ) : b.commissionRatePercent === undefined ? (
+                          <span className="text-slate-400">Custom per trip</span>
+                        ) : null}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          {b.status || 'ACTIVE'}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => {
+                              setBrokerToEdit(b);
+                              setIsBrokerModalOpen(true);
+                            }}
+                            title="Edit Broker"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setBrokerToDelete(b)}
+                            title="Delete Broker"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
       ) : customers.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4">
           <div className="w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 mx-auto">
@@ -262,7 +445,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                     </td>
 
                     <td className="py-3.5 px-4 font-mono">
-                      <span className="font-bold text-slate-800 block tracking-wide">{c.gstin}</span>
+                      <span className="font-bold text-slate-800 block tracking-wide">{c.gstin || 'Unregistered / N/A'}</span>
                       <span className="text-[10px] text-slate-500 font-sans">
                         {[c.city, c.state].filter(Boolean).join(', ') || '—'}
                         {c.stateCode ? ` (${c.stateCode})` : ''}
@@ -314,15 +497,13 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                         >
                           <Edit className="w-4 h-4" />
                         </button>
-                        {(userRole === 'OWNER' || userRole === 'ADMIN') && (
-                          <button
-                            onClick={() => setCustomerToDelete(c)}
-                            title="Delete Customer"
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => setCustomerToDelete(c)}
+                          title="Delete Customer"
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -343,7 +524,7 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                     >
                       {c.name}
                     </button>
-                    <span className="text-xs font-mono text-slate-500 block">{c.gstin}</span>
+                    <span className="text-xs font-mono text-slate-500 block">{c.gstin || 'Unregistered / N/A'}</span>
                     <span className="text-[11px] text-slate-400 block">
                       {[c.city, c.state].filter(Boolean).join(', ') || '—'}
                     </span>
@@ -384,14 +565,12 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
                   >
                     Edit
                   </button>
-                  {(userRole === 'OWNER' || userRole === 'ADMIN') && (
-                    <button
-                      onClick={() => setCustomerToDelete(c)}
-                      className="px-2.5 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 rounded-lg"
-                    >
-                      Delete
-                    </button>
-                  )}
+                  <button
+                    onClick={() => setCustomerToDelete(c)}
+                    className="px-2.5 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 rounded-lg"
+                  >
+                    Delete
+                  </button>
                 </div>
               </div>
             ))}
@@ -482,11 +661,37 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ userRole }) => {
         <ConfirmDialog
           isOpen={Boolean(customerToDelete)}
           title={`Delete Customer ${customerToDelete.name}?`}
-          message={`Are you sure you want to delete customer ${customerToDelete.name} (GSTIN: ${customerToDelete.gstin})? This action cannot be undone.`}
+          message={`Are you sure you want to delete customer ${customerToDelete.name} (GSTIN: ${customerToDelete.gstin || 'N/A'})? This action cannot be undone.`}
           confirmLabel="Delete Customer"
           variant="danger"
           onConfirm={confirmDeleteCustomer}
           onClose={() => setCustomerToDelete(null)}
+        />
+      )}
+
+      {/* Broker Create / Edit Modal */}
+      {isBrokerModalOpen && (
+        <BrokerModal
+          isOpen={isBrokerModalOpen}
+          onClose={() => {
+            setIsBrokerModalOpen(false);
+            setBrokerToEdit(null);
+          }}
+          onSuccess={handleBrokerSuccess}
+          brokerToEdit={brokerToEdit}
+        />
+      )}
+
+      {/* Broker Delete Confirmation */}
+      {brokerToDelete && (
+        <ConfirmDialog
+          isOpen={Boolean(brokerToDelete)}
+          title={`Delete Broker ${brokerToDelete.name}?`}
+          message={`Are you sure you want to remove broker ${brokerToDelete.name} from your directory?`}
+          confirmLabel="Delete Broker"
+          variant="danger"
+          onConfirm={confirmDeleteBroker}
+          onClose={() => setBrokerToDelete(null)}
         />
       )}
     </div>

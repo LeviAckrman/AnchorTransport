@@ -156,7 +156,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   )}
                   <div className="mt-1.5 flex flex-wrap items-center gap-2">
                     <Badge variant="purple" size="sm" dot>
-                      {role || 'OPERATIONS'}
+                      OWNER ACCOUNT
                     </Badge>
                     <span className="text-[11px] font-mono text-slate-400 truncate max-w-[180px]">
                       ID: {user.id}

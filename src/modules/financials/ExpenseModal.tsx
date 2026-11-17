@@ -4,12 +4,16 @@ import {
   Fuel,
   AlertTriangle,
   CheckCircle2,
+  Upload,
+  ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import { TripExpense, ExpenseCategory, PaymentMode } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { saveExpenseInFirestore } from '../../lib/firebase/firestoreService';
+import { uploadCompanyDocument } from '../../lib/firebase/storageService';
 
 interface ExpenseModalProps {
   isOpen: boolean;
@@ -46,14 +50,23 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   expenseToEdit,
   defaultTripId,
 }) => {
-  const { user, role, company: authCompany } = useAuth();
-  const { company: liveCompany, trips, expenses: allExpenses, loading: dataLoading } = useFirestoreData();
+  const { user, company: authCompany } = useAuth();
+  const {
+    company: liveCompany,
+    trips,
+    vehicles,
+    drivers,
+    expenses: allExpenses,
+    loading: dataLoading,
+  } = useFirestoreData();
   const company = liveCompany?.id ? liveCompany : authCompany;
 
   const isEdit = Boolean(expenseToEdit);
 
   // Form states
   const [tripId, setTripId] = useState(defaultTripId || '');
+  const [vehicleId, setVehicleId] = useState('');
+  const [driverId, setDriverId] = useState('');
   const [category, setCategory] = useState<ExpenseCategory>('FUEL');
   const [amountRupees, setAmountRupees] = useState('');
   const [expenseDate, setExpenseDate] = useState(new Date().toISOString().split('T')[0]);
@@ -66,6 +79,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [voucherNumber, setVoucherNumber] = useState('');
   const [receiptNumber, setReceiptNumber] = useState('');
   const [receiptUrl, setReceiptUrl] = useState('');
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [notes, setNotes] = useState('');
   const [isDriverDisbursed, setIsDriverDisbursed] = useState(true);
 
@@ -81,7 +95,9 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     if (!isOpen) return;
     setError(null);
     if (expenseToEdit) {
-      setTripId(expenseToEdit.tripId);
+      setTripId(expenseToEdit.tripId || '');
+      setVehicleId(expenseToEdit.vehicleId || '');
+      setDriverId(expenseToEdit.driverId || '');
       setCategory(expenseToEdit.category);
       setAmountRupees((expenseToEdit.amountPaise / 100).toString());
       setExpenseDate(
@@ -107,7 +123,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       setIsAuthorizedCorrection(false);
       setCorrectionReason('');
     } else {
+      const initialTrip = defaultTripId ? trips.find((t) => t.id === defaultTripId) : undefined;
       setTripId(defaultTripId || '');
+      setVehicleId(initialTrip?.vehicleId || '');
+      setDriverId(initialTrip?.driverId || '');
       setCategory('FUEL');
       setAmountRupees('');
       setExpenseDate(new Date().toISOString().split('T')[0]);
@@ -127,12 +146,21 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     }
   }, [expenseToEdit, defaultTripId, isOpen]);
 
+  const handleTripSelect = (nextTripId: string) => {
+    setTripId(nextTripId);
+    const matched = trips.find((t) => t.id === nextTripId);
+    if (matched) {
+      setVehicleId(matched.vehicleId || '');
+      setDriverId(matched.driverId || '');
+    }
+  };
+
   const handleLitresChange = (val: string) => {
     setLitres(val);
     const l = parseFloat(val);
     const r = parseFloat(ratePerLitreRupees);
     if (!isNaN(l) && l > 0 && !isNaN(r) && r > 0) {
-      setAmountRupees((l * r).toFixed(0));
+      setAmountRupees((l * r).toFixed(2));
     }
   };
 
@@ -141,11 +169,32 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     const l = parseFloat(litres);
     const r = parseFloat(val);
     if (!isNaN(l) && l > 0 && !isNaN(r) && r > 0) {
-      setAmountRupees((l * r).toFixed(0));
+      setAmountRupees((l * r).toFixed(2));
+    }
+  };
+
+  const handleReceiptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !company?.id) return;
+    setError(null);
+    setUploadingReceipt(true);
+    try {
+      const folder = category === 'FUEL' || category === 'DIESEL' ? 'fuel' : 'expenses';
+      const url = await uploadCompanyDocument(company.id, folder, file);
+      setReceiptUrl(url);
+    } catch (err: any) {
+      setError(err.message || 'Receipt upload failed.');
+    } finally {
+      setUploadingReceipt(false);
     }
   };
 
   const selectedTrip = trips.find((t) => t.id === tripId);
+  const effectiveVehicleId = selectedTrip?.vehicleId || vehicleId;
+  const effectiveDriverId = selectedTrip?.driverId || driverId;
+  const selectedVehicle = vehicles.find((v) => v.id === effectiveVehicleId);
+  const selectedDriver = drivers.find((d) => d.id === effectiveDriverId);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -162,8 +211,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
       return;
     }
 
-    if (!tripId) {
-      setError('Please select an active trip for this expense.');
+    if (!tripId && !effectiveVehicleId) {
+      setError('Please select either an associated trip or a vehicle for this expense.');
       return;
     }
 
@@ -193,12 +242,12 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         ...(expenseToEdit || {}),
         id: expenseToEdit?.id || `exp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         companyId: company.id,
-        tripId,
-        tripNumber: selectedTrip?.tripNumber || expenseToEdit?.tripNumber,
-        vehicleId: selectedTrip?.vehicleId || expenseToEdit?.vehicleId,
-        vehicleReg: selectedTrip?.vehicleReg || expenseToEdit?.vehicleReg,
-        driverId: selectedTrip?.driverId || expenseToEdit?.driverId,
-        driverName: selectedTrip?.driverName || expenseToEdit?.driverName,
+        tripId: tripId || undefined,
+        tripNumber: selectedTrip?.tripNumber || (tripId ? expenseToEdit?.tripNumber : undefined),
+        vehicleId: selectedVehicle?.id || selectedTrip?.vehicleId || vehicleId || undefined,
+        vehicleReg: selectedVehicle?.registrationNumber || selectedTrip?.vehicleReg || expenseToEdit?.vehicleReg,
+        driverId: selectedDriver?.id || selectedTrip?.driverId || driverId || undefined,
+        driverName: selectedDriver?.fullName || selectedTrip?.driverName || expenseToEdit?.driverName,
         category,
         amountPaise: amount,
         paymentMode,
@@ -216,14 +265,14 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         voucherNumber: voucherNumber.trim() ? voucherNumber.trim().slice(0, 60) : undefined,
         receiptUrl: receiptUrl.trim() ? receiptUrl.trim().slice(0, 500) : undefined,
         notes: cleanNotes || undefined,
-        recordedBy: expenseToEdit?.recordedBy || (user?.name || user?.email || 'Dispatcher').slice(0, 100),
+        recordedBy: expenseToEdit?.recordedBy || (user?.name || user?.email || 'Owner').slice(0, 100),
         isDriverDisbursed,
         isSettled: expenseToEdit?.isSettled ?? false,
         settlementId: expenseToEdit?.settlementId,
         createdAt: expenseToEdit?.createdAt || new Date().toISOString(),
       };
 
-      const existingTripExpenses = allExpenses.filter((exp) => exp.tripId === tripId);
+      const existingTripExpenses = tripId ? allExpenses.filter((exp) => exp.tripId === tripId) : [];
       await saveExpenseInFirestore(company.id, savedExpense, selectedTrip, existingTripExpenses);
 
       onSuccess(savedExpense, isEdit);
@@ -239,7 +288,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={isEdit ? `Edit Expense Voucher: ${expenseToEdit?.voucherNumber || expenseToEdit?.id}` : 'Record Trip Expense'}
+      title={isEdit ? `Edit Expense Voucher: ${expenseToEdit?.voucherNumber || expenseToEdit?.id}` : 'Record Expense / Fuel Purchase'}
       maxWidth="2xl"
     >
       <form onSubmit={handleSubmit} className="space-y-5">
@@ -258,72 +307,101 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               Settlement Lock: This expense voucher was audited in driver settlement #{expenseToEdit.settlementId || 'FINALIZED'}
             </div>
             <p>
-              Modifications will alter financial ledger records. Administrator override is required.
+              Modifications will alter financial ledger records. Owner authorization is required.
             </p>
-            {(role === 'OWNER' || role === 'ADMIN') && (
-              <div className="pt-2 border-t border-amber-200">
-                <label className="flex items-center gap-2 font-semibold cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={isAuthorizedCorrection}
-                    onChange={(e) => setIsAuthorizedCorrection(e.target.checked)}
-                    className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                  />
-                  <span>Authorize financial correction on settled voucher</span>
-                </label>
-                {isAuthorizedCorrection && (
-                  <input
-                    type="text"
-                    required
-                    placeholder="Enter mandatory audit correction reason (e.g. Pump invoice rate discrepancy)..."
-                    value={correctionReason}
-                    onChange={(e) => setCorrectionReason(e.target.value)}
-                    className="mt-2 w-full px-3 py-1.5 text-xs rounded-lg border border-amber-300 bg-white"
-                  />
-                )}
-              </div>
-            )}
+            <div className="pt-2 border-t border-amber-200">
+              <label className="flex items-center gap-2 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isAuthorizedCorrection}
+                  onChange={(e) => setIsAuthorizedCorrection(e.target.checked)}
+                  className="rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                />
+                <span>Authorize financial correction on settled voucher</span>
+              </label>
+              {isAuthorizedCorrection && (
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter mandatory audit correction reason (e.g. Pump invoice rate discrepancy)..."
+                  value={correctionReason}
+                  onChange={(e) => setCorrectionReason(e.target.value)}
+                  className="mt-2 w-full px-3 py-1.5 text-xs rounded-lg border border-amber-300 bg-white"
+                />
+              )}
+            </div>
           </div>
         )}
 
-        {/* 1. Trip Association */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
-            Associated Trip <span className="text-rose-500">*</span>
-          </label>
-          <div className="relative">
-            <select
-              value={tripId}
-              onChange={(e) => setTripId(e.target.value)}
-              disabled={isEdit}
-              required
-              className="w-full pl-3 pr-10 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-100"
-            >
-              {dataLoading && trips.length === 0 ? (
-                <option value="">Loading active trips...</option>
-              ) : trips.length === 0 ? (
-                <option value="">No trips available</option>
-              ) : (
-                <>
-                  <option value="">-- Choose Associated Trip --</option>
-                  {trips.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.tripNumber} — {t.vehicleReg} ({t.originCity} → {t.destinationCity}) [{t.driverName}]
-                    </option>
-                  ))}
-                </>
-              )}
-            </select>
-          </div>
-          {selectedTrip && (
-            <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
-              <span className="font-semibold text-slate-700">Truck:</span> {selectedTrip.vehicleReg}
-              <span className="text-slate-300">|</span>
-              <span className="font-semibold text-slate-700">Driver:</span> {selectedTrip.driverName}
-              <span className="text-slate-300">|</span>
-              <span className="font-semibold text-slate-700">Status:</span> {selectedTrip.status}
+        {/* 1. Trip, Vehicle & Driver Association */}
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Associated Trip <span className="text-slate-400 font-normal">(Optional for standalone fuel/vehicle expenses)</span>
+            </label>
+            <div className="relative">
+              <select
+                value={tripId}
+                onChange={(e) => handleTripSelect(e.target.value)}
+                disabled={isEdit}
+                className="w-full pl-3 pr-10 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:bg-slate-100"
+              >
+                {dataLoading && trips.length === 0 ? (
+                  <option value="">Loading active trips...</option>
+                ) : (
+                  <>
+                    <option value="">-- Direct Vehicle / General Expense (No Trip) --</option>
+                    {trips.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.tripNumber} — {t.vehicleReg} ({t.originCity} → {t.destinationCity}) [{t.driverName}]
+                      </option>
+                    ))}
+                  </>
+                )}
+              </select>
             </div>
-          )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Vehicle {!tripId && <span className="text-rose-500">*</span>}
+              </label>
+              <select
+                value={effectiveVehicleId}
+                onChange={(e) => setVehicleId(e.target.value)}
+                disabled={Boolean(selectedTrip)}
+                required={!tripId}
+                className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
+              >
+                <option value="">-- Select Truck --</option>
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.registrationNumber} ({v.makeModel})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Driver <span className="text-slate-400 font-normal">(Optional)</span>
+              </label>
+              <select
+                value={effectiveDriverId}
+                onChange={(e) => setDriverId(e.target.value)}
+                disabled={Boolean(selectedTrip)}
+                className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
+              >
+                <option value="">-- Unassigned / Yard --</option>
+                {drivers.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.fullName} ({d.phone})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
         </div>
 
         {/* 2. Category Selection (Visual Grid) */}
@@ -397,7 +475,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               <Fuel className="w-4 h-4 text-indigo-600" />
               Fuel Dispensation Details
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               <div>
                 <label className="block text-xs text-slate-600 mb-1">Litres</label>
                 <input
@@ -418,6 +496,18 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
                   placeholder="e.g. 94.50"
                   value={ratePerLitreRupees}
                   onChange={(e) => handleRateChange(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-600 mb-1">Odometer (km)</label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="e.g. 145280"
+                  value={odometerReading}
+                  onChange={(e) => setOdometerReading(e.target.value)}
                   className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -516,14 +606,48 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           </div>
         </div>
 
-        {/* Receipt Attachment URL */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
-            Receipt Attachment Document URL
+        {/* Receipt Attachment Upload & URL */}
+        <div className="space-y-2">
+          <label className="block text-xs font-semibold text-slate-700">
+            Receipt / Fuel Slip Attachment
           </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold cursor-pointer transition-colors">
+              <Upload className="w-3.5 h-3.5" />
+              <span>{uploadingReceipt ? 'Uploading...' : 'Upload Receipt (PDF / Image)'}</span>
+              <input
+                type="file"
+                accept="image/*,.pdf"
+                disabled={uploadingReceipt}
+                onChange={handleReceiptUpload}
+                className="hidden"
+              />
+            </label>
+            {receiptUrl && (
+              <>
+                <a
+                  href={receiptUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold hover:bg-emerald-100"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>View Receipt</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setReceiptUrl('')}
+                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold hover:bg-rose-100 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Remove</span>
+                </button>
+              </>
+            )}
+          </div>
           <input
             type="text"
-            placeholder="Receipt document URL or reference identifier (optional)"
+            placeholder="Or paste receipt document URL (optional)"
             value={receiptUrl}
             onChange={(e) => setReceiptUrl(e.target.value)}
             className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"

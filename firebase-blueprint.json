@@ -11,8 +11,8 @@
         "phone": { "type": "string", "maxLength": 20, "description": "Contact phone number" },
         "defaultCompanyId": { "type": "string", "maxLength": 128, "description": "Default active company UUID" },
         "activeCompanyId": { "type": "string", "maxLength": 128, "description": "Currently active company UUID" },
-        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MANAGER", "ACCOUNTANT", "OPERATIONS"] },
-        "photoUrl": { "type": "string", "maxLength": 500 },
+        "role": { "type": "string", "enum": ["USER", "OWNER", "ADMIN", "MANAGER", "ACCOUNTANT", "OPERATIONS"] },
+        "photoUrl": { "type": "string", "maxLength": 1500 },
         "onboardingCompleted": { "type": "boolean", "description": "Whether the user has permanently completed initial welcome/company onboarding" },
         "onboardingCompletedAt": { "type": "string", "format": "date-time", "maxLength": 40, "description": "ISO timestamp when onboarding was completed" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -45,7 +45,7 @@
         "invoicePrefix": { "type": "string", "maxLength": 30 },
         "tripPrefix": { "type": "string", "maxLength": 30 },
         "fleetSize": { "type": "string", "maxLength": 50 },
-        "logoUrl": { "type": "string", "maxLength": 500 },
+        "logoUrl": { "type": "string", "maxLength": 1500 },
         "ownerId": { "type": "string", "maxLength": 128, "description": "User ID of the fleet business owner" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -54,20 +54,46 @@
     },
     "CompanyMember": {
       "title": "CompanyMember",
-      "description": "Membership and role assignment in a transport company",
+      "description": "Authorized employee or owner membership inside a transport company",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "userId": { "type": "string", "maxLength": 128 },
         "companyId": { "type": "string", "maxLength": 128 },
-        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MANAGER", "ACCOUNTANT", "OPERATIONS", "OPERATIONS_STAFF"] },
+        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "MANAGER", "ACCOUNTANT", "OPERATIONS"] },
         "name": { "type": "string", "maxLength": 100 },
         "email": { "type": "string", "format": "email", "maxLength": 200 },
         "status": { "type": "string", "enum": ["ACTIVE", "INVITED", "SUSPENDED"] },
-        "joinedAt": { "type": "string", "format": "date-time" },
+        "invitedByUid": { "type": "string", "maxLength": 128 },
+        "joinedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "companyId", "role", "email", "status", "joinedAt"]
+      "required": ["id", "userId", "companyId", "role", "email", "status", "createdAt", "updatedAt"]
+    },
+    "Broker": {
+      "title": "Broker",
+      "description": "Freight broker or commission agent providing loads to the company",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "companyId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 150 },
+        "companyName": { "type": "string", "maxLength": 150 },
+        "phone": { "type": "string", "maxLength": 20 },
+        "email": { "type": "string", "maxLength": 200 },
+        "gstin": { "type": "string", "maxLength": 20 },
+        "pan": { "type": "string", "maxLength": 15 },
+        "city": { "type": "string", "maxLength": 80 },
+        "state": { "type": "string", "maxLength": 60 },
+        "commissionRatePercent": { "type": "number" },
+        "defaultCommissionPaise": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE", "BLOCKED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "name", "phone", "createdAt", "updatedAt"]
     },
     "Vehicle": {
       "title": "Vehicle",
@@ -169,7 +195,7 @@
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "companyId", "name", "phone", "gstin", "createdAt", "updatedAt"]
+      "required": ["id", "companyId", "name", "phone", "createdAt", "updatedAt"]
     },
     "Trip": {
       "title": "Trip",
@@ -190,6 +216,10 @@
         "driverPhone": { "type": "string", "maxLength": 20 },
         "originCity": { "type": "string", "maxLength": 100 },
         "destinationCity": { "type": "string", "maxLength": 100 },
+        "pickupAddress": { "type": "string", "maxLength": 300 },
+        "deliveryAddress": { "type": "string", "maxLength": 300 },
+        "loadingDetails": { "type": "string", "maxLength": 400 },
+        "unloadingDetails": { "type": "string", "maxLength": 400 },
         "goodsType": { "type": "string", "maxLength": 120 },
         "weightTonnes": { "type": "number" },
         "ratePerTonnePaise": { "type": "number" },
@@ -203,8 +233,13 @@
         "startOdometerKm": { "type": "number" },
         "endOdometerKm": { "type": "number" },
         "podReceived": { "type": "boolean" },
-        "podDocumentUrl": { "type": "string", "maxLength": 500 },
+        "podDocumentUrl": { "type": "string", "maxLength": 1500 },
+        "lrDocumentUrl": { "type": "string", "maxLength": 1500 },
+        "dispatchDocumentUrl": { "type": "string", "maxLength": 1500 },
         "podRemarks": { "type": "string", "maxLength": 300 },
+        "brokerId": { "type": "string", "maxLength": 128 },
+        "brokerName": { "type": "string", "maxLength": 150 },
+        "brokerCommissionPaise": { "type": "number" },
         "totalExpensesPaise": { "type": "number" },
         "totalAdvancesPaise": { "type": "number" },
         "tripContributionPaise": { "type": "number" },
@@ -249,8 +284,8 @@
         "odometerReading": { "type": "number" },
         "receiptNumber": { "type": "string", "maxLength": 60 },
         "voucherNumber": { "type": "string", "maxLength": 60 },
-        "receiptUrl": { "type": "string", "maxLength": 500 },
-        "receiptAttachmentUrl": { "type": "string", "maxLength": 500 },
+        "receiptUrl": { "type": "string", "maxLength": 1500 },
+        "receiptAttachmentUrl": { "type": "string", "maxLength": 1500 },
         "notes": { "type": "string", "maxLength": 400 },
         "recordedBy": { "type": "string", "maxLength": 100 },
         "createdBy": { "type": "string", "maxLength": 100 },
@@ -260,7 +295,7 @@
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "companyId", "tripId", "category", "amountPaise", "paymentMode", "createdAt", "updatedAt"]
+      "required": ["id", "companyId", "category", "amountPaise", "paymentMode", "createdAt", "updatedAt"]
     },
     "DriverAdvance": {
       "title": "DriverAdvance",
@@ -282,12 +317,16 @@
         "referenceNotes": { "type": "string", "maxLength": 300 },
         "notes": { "type": "string", "maxLength": 300 },
         "disbursedBy": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["ACTIVE", "CANCELLED", "SETTLED"] },
+        "cancelledAt": { "type": "string", "maxLength": 40 },
+        "cancellationReason": { "type": "string", "maxLength": 300 },
+        "cancelledBy": { "type": "string", "maxLength": 100 },
         "isSettled": { "type": "boolean" },
         "settlementId": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "companyId", "tripId", "driverId", "amountPaise", "advanceType", "date", "isSettled", "createdAt", "updatedAt"]
+      "required": ["id", "companyId", "driverId", "amountPaise", "advanceType", "date", "isSettled", "createdAt", "updatedAt"]
     },
     "TripSettlement": {
       "title": "TripSettlement",
@@ -303,6 +342,12 @@
         "vehicleId": { "type": "string", "maxLength": 128 },
         "vehicleReg": { "type": "string", "maxLength": 30 },
         "settlementNumber": { "type": "string", "maxLength": 50 },
+        "totalRevenuePaise": { "type": "number" },
+        "fuelExpensesPaise": { "type": "number" },
+        "tollExpensesPaise": { "type": "number" },
+        "otherExpensesPaise": { "type": "number" },
+        "totalExpensesPaise": { "type": "number" },
+        "tripProfitLossPaise": { "type": "number" },
         "totalAdvanceGivenPaise": { "type": "number" },
         "driverCashExpensesPaise": { "type": "number" },
         "driverBataAllowancePaise": { "type": "number" },
@@ -315,6 +360,8 @@
         "status": { "type": "string", "enum": ["DRAFT", "PENDING_APPROVAL", "APPROVED_SETTLED", "FINALIZED"] },
         "settledDate": { "type": "string", "maxLength": 40 },
         "settledBy": { "type": "string", "maxLength": 100 },
+        "approvedBy": { "type": "string", "maxLength": 100 },
+        "approvedAt": { "type": "string", "maxLength": 40 },
         "settlementNotes": { "type": "string", "maxLength": 400 },
         "isCorrectionAuthorized": { "type": "boolean" },
         "correctionReason": { "type": "string", "maxLength": 300 },
@@ -354,6 +401,7 @@
         "unloadingChargesPaise": { "type": "number" },
         "detentionChargesPaise": { "type": "number" },
         "otherChargesPaise": { "type": "number" },
+        "discountPaise": { "type": "number" },
         "taxableAmountPaise": { "type": "number" },
         "isRcmApplicable": { "type": "boolean" },
         "gstRatePercent": { "type": "number" },
@@ -376,7 +424,7 @@
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "companyId", "invoiceNumber", "tripId", "customerId", "totalAmountPaise", "status", "issueDate", "createdAt", "updatedAt"]
+      "required": ["id", "companyId", "invoiceNumber", "customerId", "totalAmountPaise", "status", "issueDate", "createdAt", "updatedAt"]
     },
     "Payment": {
       "title": "Payment",
@@ -416,7 +464,7 @@
         "issuingAuthority": { "type": "string", "maxLength": 120 },
         "issueDate": { "type": "string", "maxLength": 40 },
         "expiryDate": { "type": "string", "maxLength": 40 },
-        "documentUrl": { "type": "string", "maxLength": 500 },
+        "documentUrl": { "type": "string", "maxLength": 1500 },
         "daysUntilExpiry": { "type": "number" },
         "status": { "type": "string", "enum": ["VALID", "EXPIRING_SOON", "EXPIRED"] },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -455,13 +503,59 @@
         "companyId": { "type": "string", "maxLength": 128 },
         "userId": { "type": "string", "maxLength": 128 },
         "userName": { "type": "string", "maxLength": 100 },
-        "action": { "type": "string", "enum": ["CREATE", "UPDATE", "DELETE", "DISPATCH", "SETTLE", "INVOICE", "PAYMENT"] },
-        "entityType": { "type": "string", "enum": ["TRIP", "VEHICLE", "DRIVER", "SETTLEMENT", "INVOICE", "PAYMENT", "EXPENSE", "CUSTOMER", "DOCUMENT"] },
+        "action": { "type": "string", "enum": ["CREATE", "UPDATE", "DELETE", "DISPATCH", "SETTLE", "APPROVE", "INVOICE", "PAYMENT", "CANCEL"] },
+        "entityType": { "type": "string", "enum": ["TRIP", "DISPATCH", "VEHICLE", "DRIVER", "ADVANCE", "SETTLEMENT", "INVOICE", "BILLING", "PAYMENT", "EXPENSE", "FUEL", "CUSTOMER", "BROKER", "DOCUMENT", "FILE_RECORD", "SETTINGS", "COMPANY", "MEMBER"] },
         "entityId": { "type": "string", "maxLength": 128 },
+        "moduleName": { "type": "string", "maxLength": 60 },
         "summary": { "type": "string", "maxLength": 500 },
+        "previousValues": { "type": "object", "description": "Snapshot of previous field values before modification" },
+        "updatedValues": { "type": "object", "description": "Snapshot of updated field values after modification" },
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "companyId", "userId", "action", "entityType", "entityId", "summary", "timestamp"]
+    },
+    "FileRecord": {
+      "title": "FileRecord",
+      "description": "Metadata index for uploaded compliance documents, PODs, LR copies, and receipts in Firebase Storage",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "companyId": { "type": "string", "maxLength": 128 },
+        "uploadedByUid": { "type": "string", "maxLength": 128 },
+        "uploadedByName": { "type": "string", "maxLength": 100 },
+        "folder": { "type": "string", "enum": ["trips", "dispatches", "pod", "expenses", "fuel", "documents", "company"] },
+        "fileName": { "type": "string", "maxLength": 200 },
+        "mimeType": { "type": "string", "maxLength": 100 },
+        "sizeBytes": { "type": "number" },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "downloadUrl": { "type": "string", "maxLength": 1500 },
+        "entityType": { "type": "string", "maxLength": 40 },
+        "entityId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "uploadedByUid", "folder", "fileName", "storagePath", "downloadUrl", "createdAt", "updatedAt"]
+    },
+    "CompanySettings": {
+      "title": "CompanySettings",
+      "description": "Company-wide TMS operational, GST, and alert preferences",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "companyId": { "type": "string", "maxLength": 128 },
+        "defaultGstRatePercent": { "type": "number" },
+        "defaultRcmEnabled": { "type": "boolean" },
+        "defaultCreditPeriodDays": { "type": "number" },
+        "defaultFuelUnit": { "type": "string", "enum": ["LITRES", "GALLONS"] },
+        "lowFastagThresholdPaise": { "type": "number" },
+        "expiryAlertDays": { "type": "number" },
+        "autoGenerateLr": { "type": "boolean" },
+        "currency": { "type": "string", "maxLength": 10 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "companyId", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -473,9 +567,9 @@
       "schema": "Company",
       "description": "Multi-tenant company profiles owned by transport operators"
     },
-    "/companies/{companyId}/members/{userId}": {
+    "/companies/{companyId}/members/{memberUid}": {
       "schema": "CompanyMember",
-      "description": "Role-based membership assignments within a company"
+      "description": "Authorized company owner and employee role assignments"
     },
     "/companies/{companyId}/vehicles/{vehicleId}": {
       "schema": "Vehicle",
@@ -488,6 +582,10 @@
     "/companies/{companyId}/customers/{customerId}": {
       "schema": "Customer",
       "description": "Shippers, consignors, and freight party accounts"
+    },
+    "/companies/{companyId}/brokers/{brokerId}": {
+      "schema": "Broker",
+      "description": "Freight brokers and commission agents associated with company trips"
     },
     "/companies/{companyId}/trips/{tripId}": {
       "schema": "Trip",
@@ -520,6 +618,14 @@
     "/companies/{companyId}/maintenance/{maintenanceId}": {
       "schema": "MaintenanceRecord",
       "description": "Vehicle service and maintenance workshop records"
+    },
+    "/companies/{companyId}/fileRecords/{fileId}": {
+      "schema": "FileRecord",
+      "description": "Persistent index of uploaded Storage documents and receipts"
+    },
+    "/companies/{companyId}/settings/{settingId}": {
+      "schema": "CompanySettings",
+      "description": "Persistent company operational preferences and billing defaults"
     },
     "/companies/{companyId}/auditLogs/{logId}": {
       "schema": "AuditLog",

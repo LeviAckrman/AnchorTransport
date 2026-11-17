@@ -26,9 +26,9 @@ export const DriverModal: React.FC<DriverModalProps> = ({
   const vehicles = firestoreVehicles.length > 0 ? firestoreVehicles : propVehicles;
 
   const isEdit = Boolean(driverToEdit);
-  const canAccessSensitive = userRole === 'OWNER' || userRole === 'ADMIN' || userRole === 'ACCOUNTANT';
-  const canEditSensitive = userRole === 'OWNER' || userRole === 'ADMIN';
-  const sensitiveReadOnly = isEdit && canAccessSensitive && !canEditSensitive;
+  const canAccessSensitive = true;
+  const canEditSensitive = true;
+  const sensitiveReadOnly = false;
 
   // Basic Form States
   const [fullName, setFullName] = useState('');
@@ -449,13 +449,7 @@ export const DriverModal: React.FC<DriverModalProps> = ({
               </h4>
               <span className="text-[10px] font-semibold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full flex items-center gap-1">
                 <ShieldCheck className="w-3 h-3 text-amber-700" />
-                <span>
-                  {canEditSensitive
-                    ? 'Authorized Access'
-                    : sensitiveReadOnly
-                    ? 'Read-Only (Owner/Admin Edit)'
-                    : 'Restricted (Owner/Accountant Only)'}
-                </span>
+                <span>Owner Full Access</span>
               </span>
             </div>
 

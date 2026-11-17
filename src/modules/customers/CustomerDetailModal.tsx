@@ -31,7 +31,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
 }) => {
   const { customers, invoices: allInvoices, trips: allTrips } = useFirestoreData();
 
-  const canDelete = userRole === 'OWNER' || userRole === 'ADMIN';
+  const canDelete = true;
 
   const customer = useMemo(
     () => (customerId ? customers.find((c) => c.id === customerId) || null : null),
@@ -92,7 +92,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                 </h3>
               </div>
               <p className="text-xs text-slate-400">
-                GSTIN: <span className="font-mono text-white">{customer?.gstin}</span> •{' '}
+                GSTIN: <span className="font-mono text-white">{customer?.gstin || 'Unregistered / N/A'}</span> •{' '}
                 {[customer?.city, customer?.state].filter(Boolean).join(', ') || '—'}
               </p>
             </div>
@@ -190,18 +190,18 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                   <div>
                     <span className="text-slate-500 block">Customer GSTIN</span>
-                    <span className="font-mono font-bold text-slate-900 text-sm tracking-wide">{customer.gstin}</span>
+                    <span className="font-mono font-bold text-slate-900 text-sm tracking-wide">{customer.gstin || 'Unregistered / N/A'}</span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">Permanent Account No. (PAN)</span>
-                    <span className="font-mono font-bold text-slate-900 text-sm uppercase">{customer.pan}</span>
+                    <span className="font-mono font-bold text-slate-900 text-sm uppercase">{customer.pan || 'N/A'}</span>
                   </div>
 
                   <div>
                     <span className="text-slate-500 block">GST State & Code</span>
                     <span className="font-semibold text-slate-900 block">
-                      {customer.state} ({customer.stateCode})
+                      {customer.state ? `${customer.state}${customer.stateCode ? ` (${customer.stateCode})` : ''}` : 'N/A'}
                     </span>
                   </div>
 

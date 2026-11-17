@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Scale,
   ShieldCheck,
@@ -7,17 +7,24 @@ import {
   AlertTriangle,
   Edit,
   Printer,
+  Download,
+  CheckCircle2,
 } from 'lucide-react';
 import { TripSettlement, UserRole } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { formatINR } from '../../lib/currency';
+import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { approveSettlementInFirestore } from '../../lib/firebase/firestoreService';
+import { calculateTripProfitLoss } from '../../lib/financialEngine';
+import { downloadSettlementPdf } from '../../lib/pdfGenerator';
 
 interface SettlementDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   settlementId: string | null;
   onEdit?: (settlement: TripSettlement) => void;
+  onApproved?: (settlement: TripSettlement) => void;
   userRole?: UserRole;
 }
 
@@ -26,13 +33,38 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
   onClose,
   settlementId,
   onEdit,
+  onApproved,
   userRole: _userRole,
 }) => {
-  const { settlements, expenses: allExpenses, advances: allAdvances, loading, error } = useFirestoreData();
+  const { user, company: authCompany } = useAuth();
+  const {
+    company: liveCompany,
+    settlements,
+    trips,
+    drivers,
+    expenses: allExpenses,
+    advances: allAdvances,
+    loading,
+    error,
+  } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
+
+  const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
 
   const settlement = useMemo(
     () => (settlementId ? settlements.find((s) => s.id === settlementId) || null : null),
     [settlements, settlementId]
+  );
+
+  const matchedTrip = useMemo(
+    () => (settlement?.tripId ? trips.find((t) => t.id === settlement.tripId) : undefined),
+    [trips, settlement?.tripId]
+  );
+
+  const matchedDriver = useMemo(
+    () => (settlement?.driverId ? drivers.find((d) => d.id === settlement.driverId) : undefined),
+    [drivers, settlement?.driverId]
   );
 
   const expenses = useMemo(
@@ -45,7 +77,58 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
     [allAdvances, settlement?.tripId]
   );
 
+  const tripPnl = useMemo(() => {
+    const rev =
+      settlement?.totalRevenuePaise ??
+      matchedTrip?.totalRevenuePaise ??
+      ((matchedTrip?.freightAmountPaise || 0) + (matchedTrip?.otherChargesPaise || 0));
+    const computed = calculateTripProfitLoss(rev, expenses);
+    return {
+      revenuePaise: settlement?.totalRevenuePaise ?? computed.revenuePaise,
+      fuelExpensesPaise: settlement?.fuelExpensesPaise ?? computed.fuelExpensesPaise,
+      tollExpensesPaise: settlement?.tollExpensesPaise ?? computed.tollExpensesPaise,
+      otherExpensesPaise: settlement?.otherExpensesPaise ?? computed.otherExpensesPaise,
+      expensesPaise: settlement?.totalExpensesPaise ?? computed.expensesPaise,
+      contributionPaise: settlement?.tripProfitLossPaise ?? computed.contributionPaise,
+      profitMarginPercent: computed.profitMarginPercent,
+    };
+  }, [settlement, matchedTrip, expenses]);
+
   if (!isOpen || !settlementId) return null;
+
+  const isLockedOrApproved =
+    settlement?.status === 'FINALIZED' || settlement?.status === 'APPROVED_SETTLED';
+
+  const handleApproveSettlement = async () => {
+    if (!settlement || !company?.id) return;
+    setApproving(true);
+    setApproveError(null);
+    try {
+      const approver = (user?.name || user?.email || 'Owner').slice(0, 100);
+      await approveSettlementInFirestore(
+        company.id,
+        {
+          ...settlement,
+          totalRevenuePaise: tripPnl.revenuePaise,
+          fuelExpensesPaise: tripPnl.fuelExpensesPaise,
+          tollExpensesPaise: tripPnl.tollExpensesPaise,
+          otherExpensesPaise: tripPnl.otherExpensesPaise,
+          totalExpensesPaise: tripPnl.expensesPaise,
+          tripProfitLossPaise: tripPnl.contributionPaise,
+        },
+        approver,
+        matchedTrip,
+        matchedDriver,
+        advances,
+        expenses
+      );
+      onApproved?.({ ...settlement, status: 'APPROVED_SETTLED', approvedBy: approver });
+    } catch (err: any) {
+      setApproveError(err?.message || 'Failed to approve settlement.');
+    } finally {
+      setApproving(false);
+    }
+  };
 
   return (
     <Modal
@@ -65,6 +148,13 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
         </div>
       ) : settlement ? (
         <div className="space-y-5 text-xs text-slate-700">
+          {approveError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{approveError}</span>
+            </div>
+          )}
+
           {/* Header Card */}
           <div className="bg-slate-900 text-white p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
@@ -72,9 +162,10 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
                 <span className="font-mono text-xs uppercase px-2 py-0.5 rounded-full font-bold bg-indigo-500/30 text-indigo-200 border border-indigo-400/40">
                   {settlement.settlementNumber || 'STL-RECORD'}
                 </span>
-                {settlement.status === 'FINALIZED' || settlement.status === 'APPROVED_SETTLED' ? (
+                {isLockedOrApproved ? (
                   <span className="px-2.5 py-0.5 rounded-full font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5" /> Finalized & Audited
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    {settlement.status === 'APPROVED_SETTLED' ? 'Approved & Settled' : 'Finalized & Audited'}
                   </span>
                 ) : (
                   <span className="px-2.5 py-0.5 rounded-full font-bold bg-amber-950 text-amber-300 border border-amber-800">
@@ -87,6 +178,7 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
               </h3>
               <p className="text-slate-400 text-xs mt-0.5">
                 Settled on {settlement.settledDate} by {settlement.settledBy}
+                {settlement.approvedBy ? ` • Approved by ${settlement.approvedBy}` : ''}
               </p>
             </div>
 
@@ -99,6 +191,40 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
               </span>
               <span className="text-[11px] font-semibold text-indigo-300">
                 {settlement.netPayableToDriverPaise >= 0 ? 'Company Pays Driver' : 'Driver Refunds Cash to Company'}
+              </span>
+            </div>
+          </div>
+
+          {/* Trip Profit & Loss Summary */}
+          <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 bg-slate-50 border border-slate-200 rounded-xl p-3.5">
+            <div>
+              <span className="text-[11px] text-slate-500 block">Trip Revenue</span>
+              <span className="font-bold text-slate-900">{formatINR(tripPnl.revenuePaise)}</span>
+            </div>
+            <div>
+              <span className="text-[11px] text-slate-500 block">Fuel Cost</span>
+              <span className="font-semibold text-rose-700">{formatINR(tripPnl.fuelExpensesPaise)}</span>
+            </div>
+            <div>
+              <span className="text-[11px] text-slate-500 block">Toll / FASTag</span>
+              <span className="font-semibold text-rose-700">{formatINR(tripPnl.tollExpensesPaise)}</span>
+            </div>
+            <div>
+              <span className="text-[11px] text-slate-500 block">Other Exp.</span>
+              <span className="font-semibold text-rose-700">{formatINR(tripPnl.otherExpensesPaise)}</span>
+            </div>
+            <div>
+              <span className="text-[11px] text-slate-500 block">Total Expenses</span>
+              <span className="font-bold text-rose-800">{formatINR(tripPnl.expensesPaise)}</span>
+            </div>
+            <div>
+              <span className="text-[11px] text-slate-500 block">Trip Profit / Loss</span>
+              <span
+                className={`font-black ${
+                  tripPnl.contributionPaise >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                }`}
+              >
+                {formatINR(tripPnl.contributionPaise)}
               </span>
             </div>
           </div>
@@ -202,14 +328,24 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
             {/* Attached Advances */}
             <div className="border border-slate-200 rounded-xl p-3 bg-white">
               <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-slate-100">
-                <span className="font-bold text-slate-900">Disbursed Advances ({advances.length})</span>
+                <span className="font-bold text-slate-900">
+                  Disbursed Advances ({advances.filter((a) => a.status !== 'CANCELLED').length})
+                </span>
                 <Wallet className="w-3.5 h-3.5 text-slate-400" />
               </div>
               <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
                 {advances.map((a) => (
-                  <div key={a.id} className="p-2 bg-slate-50 rounded-lg flex items-center justify-between text-[11px]">
+                  <div
+                    key={a.id}
+                    className={`p-2 bg-slate-50 rounded-lg flex items-center justify-between text-[11px] ${
+                      a.status === 'CANCELLED' ? 'opacity-50 line-through' : ''
+                    }`}
+                  >
                     <div>
-                      <span className="font-semibold text-slate-800 block">{a.advanceType.replace('_', ' ')}</span>
+                      <span className="font-semibold text-slate-800 block">
+                        {a.advanceType.replace('_', ' ')}
+                        {a.status === 'CANCELLED' ? ' (CANCELLED)' : ''}
+                      </span>
                       <span className="text-slate-500">{a.reference || a.referenceNotes || a.date}</span>
                     </div>
                     <span className="font-bold text-slate-900">{formatINR(a.amountPaise)}</span>
@@ -228,17 +364,38 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
           )}
 
           {/* Actions */}
-          <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-            <button
-              type="button"
-              onClick={() => window.print()}
-              className="px-3.5 py-2 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 flex items-center gap-1.5 cursor-pointer"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Print Voucher</span>
-            </button>
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="px-3.5 py-2 text-xs font-semibold rounded-xl text-slate-700 hover:bg-slate-100 border border-slate-300 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print Voucher</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadSettlementPdf(settlement, matchedTrip, company || null)}
+                className="px-3.5 py-2 text-xs font-semibold rounded-xl text-indigo-700 hover:bg-indigo-50 border border-indigo-200 flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download PDF</span>
+              </button>
+            </div>
 
             <div className="flex items-center gap-2">
+              {!isLockedOrApproved && (
+                <button
+                  type="button"
+                  onClick={handleApproveSettlement}
+                  disabled={approving}
+                  className="px-4 py-2 text-xs font-semibold rounded-xl text-white bg-emerald-600 hover:bg-emerald-700 flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{approving ? 'Approving...' : 'Approve Settlement'}</span>
+                </button>
+              )}
               {onEdit && (
                 <button
                   type="button"
@@ -270,3 +427,4 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
     </Modal>
   );
 };
+

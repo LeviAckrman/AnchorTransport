@@ -108,7 +108,7 @@ export const Topbar: React.FC<TopbarProps> = ({
                         <span className="text-[10px] text-indigo-600 font-bold">Active</span>
                       )}
                     </div>
-                    <span className="text-[10px] text-slate-400 uppercase">Role: {c.role}</span>
+                    <span className="text-[10px] text-slate-400 uppercase">Owner Account</span>
                   </button>
                 ))}
               </div>
@@ -117,18 +117,18 @@ export const Topbar: React.FC<TopbarProps> = ({
         </div>
       </div>
 
-      {/* Right Controls: Authoritative Role Badge, Quick Actions, User Profile */}
+      {/* Right Controls: Owner Access Badge, Quick Actions, User Profile */}
       <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
         <div
-          title="Active Firestore company membership role"
+          title="Verified Company Owner Account"
           className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 border border-slate-200"
         >
           <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
-          <span className="hidden sm:inline">Role:</span>
-          <span className="text-indigo-700 font-bold">{currentRole}</span>
+          <span className="hidden sm:inline">Access:</span>
+          <span className="text-indigo-700 font-bold">OWNER</span>
         </div>
 
-        {/* Reset Data Button (Strictly OWNER / ADMIN) */}
+        {/* Reset Data Button (Owner-Only) */}
         {permissions?.canManageCompany && (
           <button
             type="button"

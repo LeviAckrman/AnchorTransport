@@ -17,6 +17,8 @@ import {
   resetFirebasePassword,
   resendVerificationEmail,
   reloadFirebaseUser,
+  reloadTargetFirebaseUser,
+  formatFirebaseAuthError,
   syncSessionWithBackend,
   onFirebaseAuthStateChange,
 } from '../lib/firebase/auth';
@@ -77,7 +79,8 @@ interface AuthContextType {
   isLoading: boolean;
   isEmailVerified: boolean;
   isFirebaseUser: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
+  verificationDispatchError: string | null;
+  login: (email: string, password: string) => Promise<{ success: boolean; requiresVerification?: boolean; error?: string }>;
   loginWithGoogleAuth: () => Promise<{ success: boolean; error?: string }>;
   register: (
     email: string,
@@ -86,10 +89,10 @@ interface AuthContextType {
     phone?: string,
     companyName?: string,
     gstin?: string
-  ) => Promise<{ success: boolean; error?: string }>;
+  ) => Promise<{ success: boolean; requiresVerification?: boolean; error?: string }>;
   onboardCompany: (payload: OnboardCompanyPayload) => Promise<{ success: boolean; error?: string }>;
   resetPassword: (email: string) => Promise<{ success: boolean; message?: string; error?: string }>;
-  resendVerification: () => Promise<{ sent: boolean; error?: string }>;
+  resendVerification: () => Promise<{ sent: boolean; alreadyVerified?: boolean; error?: string }>;
   refreshVerificationStatus: () => Promise<{ verified: boolean; error?: string }>;
   logout: () => Promise<void>;
   switchCompany: (companyId: string) => Promise<{ success: boolean; error?: string }>;
@@ -110,10 +113,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [onboardingCompleted, setOnboardingCompleted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [isEmailVerified, setIsEmailVerified] = useState(true);
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
   const [isFirebaseUser, setIsFirebaseUser] = useState(false);
+  const [verificationDispatchError, setVerificationDispatchError] = useState<string | null>(null);
 
   const manualAuthInProgressRef = useRef(false);
+  const pendingRegistrationCompanyRef = useRef<{
+    companyName: string;
+    gstin: string;
+    phone?: string;
+  } | null>(null);
   const logoutCleanupFnsRef = useRef<Set<() => void>>(new Set());
 
   const registerLogoutCleanup = useCallback((cleanupFn: () => void) => {
@@ -184,14 +193,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     []
   );
 
+  const setUnverifiedFirebaseSession = useCallback(
+    (firebaseUser: FirebaseUser) => {
+      runLogoutCleanupsSynchronously();
+      clearClientTmsCaches();
+      setIsFirebaseUser(true);
+      setIsEmailVerified(false);
+      setToken(null);
+      setCompany(null);
+      setRole(null);
+      setAccessibleCompanies([]);
+      setOnboardingCompleted(false);
+      setNeedsOnboarding(false);
+      setUser({
+        id: firebaseUser.uid,
+        email: (firebaseUser.email || '').toLowerCase(),
+        name:
+          firebaseUser.displayName ||
+          firebaseUser.email?.split('@')[0] ||
+          'Fleet User',
+        phone: firebaseUser.phoneNumber || '',
+        onboardingCompleted: false,
+      });
+    },
+    [runLogoutCleanupsSynchronously]
+  );
+
   /**
-   * Authoritatively resolves Firebase Auth UID, /users/{uid}, company & membership from Firestore.
-   * Also syncs with backend REST session if available for secondary endpoints (like team invite).
+   * Authoritatively resolves Firebase Auth UID, /users/{uid}, company & owner access from Firestore.
+   * Also syncs with backend REST session when available.
    */
   const syncAuthenticatedFirebaseUser = useCallback(
     async (firebaseUser: FirebaseUser) => {
+      if (!firebaseUser.emailVerified) {
+        setUnverifiedFirebaseSession(firebaseUser);
+        return {
+          success: false,
+          user: null,
+          company: null,
+          role: null,
+          token: '',
+        };
+      }
+
       setIsFirebaseUser(true);
-      setIsEmailVerified(Boolean(firebaseUser.emailVerified));
+      setIsEmailVerified(true);
+      setVerificationDispatchError(null);
 
       // 1. Identify UID & retrieve /users/{uid} profile from Firestore
       let userDoc = null;
@@ -203,19 +250,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Ignore if unverified or unavailable
       }
 
-      // 2. Retrieve associated companyId and membership directly from Firestore
-      let targetCompanyId = userDoc?.activeCompanyId || userDoc?.defaultCompanyId;
-      if (!targetCompanyId) {
-        try {
-          const owned = await listOwnedCompaniesFromFirestore(firebaseUser.uid);
-          targetCompanyId = owned[0]?.id;
-        } catch {
-          // Ignore if no companies exist yet
-        }
-      }
-
+      // 2. Retrieve associated owned company directly from Firestore (strict Owner-Only)
       let firestoreCompany: Company | undefined;
       let firestoreRole: UserRole | undefined;
+      let targetCompanyId = userDoc?.activeCompanyId || userDoc?.defaultCompanyId;
+
       if (targetCompanyId) {
         try {
           const companyRes = await fetchUserCompanyFromFirestore(targetCompanyId, firebaseUser.uid);
@@ -224,7 +263,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             firestoreRole = companyRes.role;
           }
         } catch {
-          // Ignore until verified/member
+          // Stale or inaccessible targetCompanyId — fall through to query owned companies
+        }
+      }
+
+      if (!firestoreCompany) {
+        try {
+          const owned = await listOwnedCompaniesFromFirestore(firebaseUser.uid);
+          if (owned.length > 0) {
+            firestoreCompany = owned[0];
+            firestoreRole = 'OWNER';
+          }
+        } catch {
+          // Ignore if no owned companies exist yet
         }
       }
 
@@ -247,14 +298,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         onboardingCompleted: firestoreCompleted,
         onboardingCompletedAt: userDoc?.onboardingCompletedAt,
         firestoreCompany,
-        firestoreRole,
+        firestoreRole: firestoreRole || (firestoreCompany ? 'OWNER' : undefined),
+        accessibleCompanies: fsAccessible,
       });
 
       const resolvedUser: AuthUser = session.user
         ? {
-            id: session.user.id || firebaseUser.uid,
+            id: firebaseUser.uid,
             email: (firebaseUser.email || session.user.email || '').toLowerCase(),
-            name: userDoc?.name || session.user.name || firebaseUser.displayName || 'Fleet User',
+            name: userDoc?.name || session.user.name || firebaseUser.displayName || 'Fleet Owner',
             phone: userDoc?.phone || session.user.phone || firebaseUser.phoneNumber || '',
             onboardingCompleted:
               firestoreCompleted ||
@@ -266,27 +318,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         : {
             id: firebaseUser.uid,
             email: (firebaseUser.email || '').toLowerCase(),
-            name: userDoc?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Fleet User',
+            name: userDoc?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Fleet Owner',
             phone: userDoc?.phone || firebaseUser.phoneNumber || '',
             onboardingCompleted: firestoreCompleted,
             onboardingCompletedAt: userDoc?.onboardingCompletedAt,
           };
 
-      const resolvedCompany = firestoreCompany || session.company || null;
+      // Never fall back to a backend session company owned by a different UID
+      const ownedSessionCompany =
+        session.company && session.company.ownerId === firebaseUser.uid
+          ? (session.company as Company)
+          : null;
+      const resolvedCompany = firestoreCompany || ownedSessionCompany || null;
       const resolvedRole: UserRole | null =
-        firestoreRole || (session.role as UserRole) || (resolvedCompany ? 'OWNER' : null);
+        firestoreRole || (resolvedCompany?.ownerId === firebaseUser.uid ? 'OWNER' : null);
 
       const resolvedCompleted =
-        Boolean(resolvedUser.onboardingCompleted) || Boolean(resolvedCompany);
-      const resolvedNeedsOnboarding = !resolvedCompleted;
+        Boolean(resolvedCompany) ||
+        (Boolean(resolvedUser.onboardingCompleted) && !targetCompanyId);
+      const resolvedNeedsOnboarding = !resolvedCompany;
 
-      // Merge accessible company lists (preferring Firestore memberships)
+      // Accessible companies restricted strictly to Firestore-owned companies for this UID
       const mergedAccessible: AccessibleCompany[] = [...fsAccessible];
-      for (const sc of (session.accessibleCompanies as AccessibleCompany[]) || []) {
-        if (!mergedAccessible.some((m) => m.companyId === sc.companyId)) {
-          mergedAccessible.push(sc);
-        }
-      }
       if (
         resolvedCompany &&
         resolvedRole &&
@@ -299,22 +352,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
       }
 
-      // If backend knows of an owned company not yet in Firestore, persist it to Firestore
-      if (firebaseUser.emailVerified && resolvedCompleted) {
+      // Keep Firestore /users/{uid} company references aligned with owned company
+      if (firebaseUser.emailVerified && resolvedCompany) {
         try {
-          if (
-            resolvedCompany &&
-            !firestoreCompany &&
-            (!resolvedCompany.ownerId || resolvedCompany.ownerId === firebaseUser.uid)
-          ) {
+          if (!firestoreCompany && resolvedCompany.ownerId === firebaseUser.uid) {
             await createCompanyInFirestoreAtomic(resolvedCompany, firebaseUser);
-          } else if (!userDoc?.onboardingCompleted) {
+          } else if (
+            !userDoc?.onboardingCompleted ||
+            userDoc?.activeCompanyId !== resolvedCompany.id ||
+            userDoc?.defaultCompanyId !== resolvedCompany.id
+          ) {
             await updateFirestoreUserProfile(firebaseUser.uid, {
               onboardingCompleted: true,
               onboardingCompletedAt: resolvedUser.onboardingCompletedAt,
-              ...(resolvedCompany?.id
-                ? { activeCompanyId: resolvedCompany.id, defaultCompanyId: resolvedCompany.id }
-                : {}),
+              activeCompanyId: resolvedCompany.id,
+              defaultCompanyId: resolvedCompany.id,
             });
           }
         } catch (syncErr) {
@@ -341,7 +393,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         token: activeTok,
       };
     },
-    [saveSession]
+    [saveSession, setUnverifiedFirebaseSession]
   );
 
   // Authoritative Firebase onAuthStateChanged listener across refreshes & browser close/reopen
@@ -355,7 +407,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
         try {
-          await syncAuthenticatedFirebaseUser(firebaseUser);
+          // Always reload from Firebase Auth server so emailVerified is never stale
+          const freshUser = await reloadTargetFirebaseUser(firebaseUser).catch(
+            () => firebaseUser
+          );
+          if (!mounted) return;
+          if (!freshUser.emailVerified) {
+            setUnverifiedFirebaseSession(freshUser);
+            return;
+          }
+          await syncAuthenticatedFirebaseUser(freshUser);
         } catch (err) {
           console.warn('Firebase auth state sync notice:', err);
         } finally {
@@ -367,7 +428,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // No Firebase user signed in — tear down listeners & verify if a non-Firebase token exists
       runLogoutCleanupsSynchronously();
       setIsFirebaseUser(false);
-      setIsEmailVerified(true);
+      setIsEmailVerified(false);
+      setVerificationDispatchError(null);
 
       const storedToken = localStorage.getItem('token');
       if (storedToken) {
@@ -406,16 +468,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       mounted = false;
       unsubscribe();
     };
-  }, [syncAuthenticatedFirebaseUser, runLogoutCleanupsSynchronously, saveSession]);
+  }, [syncAuthenticatedFirebaseUser, setUnverifiedFirebaseSession, runLogoutCleanupsSynchronously, saveSession]);
 
   /**
-   * Login with email and password (Firebase Auth primary)
+   * Login with email and password (Firebase Auth primary, enforcing user.reload() + emailVerified)
    */
-  const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const login = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; requiresVerification?: boolean; error?: string }> => {
     manualAuthInProgressRef.current = true;
+    setVerificationDispatchError(null);
     try {
       let firebaseUser: FirebaseUser | null = null;
-      let firebaseErr: Error | null = null;
+      let firebaseErr: any = null;
       try {
         firebaseUser = await loginFirebaseUser(email, password);
       } catch (fbErr: any) {
@@ -423,11 +489,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (firebaseUser) {
+        if (!firebaseUser.emailVerified) {
+          setUnverifiedFirebaseSession(firebaseUser);
+          return { success: true, requiresVerification: true };
+        }
         await syncAuthenticatedFirebaseUser(firebaseUser);
         return { success: true };
       }
 
-      // Fallback to server auth only if Firebase user doesn't exist there yet
+      const code = firebaseErr?.code as string | undefined;
+      if (
+        code === 'auth/wrong-password' ||
+        code === 'auth/too-many-requests' ||
+        code === 'auth/user-disabled' ||
+        code === 'auth/invalid-email'
+      ) {
+        return { success: false, error: formatFirebaseAuthError(firebaseErr) };
+      }
+
+      // Fallback to server auth only if no Firebase account matched
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -436,7 +516,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const data = await parseResponseJson<any>(res);
       if (!res.ok || !data || !data.success) {
-        return { success: false, error: firebaseErr?.message || data?.error || 'Invalid credentials' };
+        return {
+          success: false,
+          error: firebaseErr ? formatFirebaseAuthError(firebaseErr) : data?.error || 'Invalid credentials',
+        };
       }
 
       const dbCompleted =
@@ -444,6 +527,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         Boolean(data.user?.onboardingCompleted) ||
         Boolean(data.company);
 
+      setIsEmailVerified(true);
       saveSession(
         data.user,
         data.company || null,
@@ -481,7 +565,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   /**
-   * Register with email and password
+   * Register with email and password -> immediately dispatches Firebase verification email
+   * and enforces email verification before any dashboard or onboarding access.
    */
   const register = async (
     email: string,
@@ -490,59 +575,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     phone?: string,
     companyName?: string,
     gstin?: string
-  ): Promise<{ success: boolean; error?: string }> => {
+  ): Promise<{ success: boolean; requiresVerification?: boolean; error?: string }> => {
     manualAuthInProgressRef.current = true;
+    setVerificationDispatchError(null);
     try {
-      let fbUser: FirebaseUser | null = null;
+      let fbUser: FirebaseUser;
+      let verificationSent = false;
+      let verificationError: string | undefined;
       try {
-        fbUser = await registerFirebaseUser({ email, password, displayName: name, phone });
-        setIsFirebaseUser(true);
-        setIsEmailVerified(Boolean(fbUser.emailVerified));
-      } catch (fbErr: any) {
-        return { success: false, error: fbErr?.message || 'Registration failed.' };
-      }
-
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          firebaseUid: fbUser?.uid,
-          ownerEmail: email,
+        const regResult = await registerFirebaseUser({
+          email,
           password,
-          ownerName: name,
+          displayName: name,
           phone,
-          companyName,
-          gstin,
-        }),
-      }).catch(() => null);
-
-      const data = res ? await parseResponseJson<any>(res) : null;
-
-      if (fbUser && fbUser.emailVerified) {
-        await ensureFirestoreUserProfile(fbUser);
-        if (data?.company) {
-          await createCompanyInFirestoreAtomic(data.company, fbUser);
-        }
+        });
+        fbUser = regResult.user;
+        verificationSent = regResult.verificationSent;
+        verificationError = regResult.verificationError;
+      } catch (fbErr: any) {
+        return { success: false, error: formatFirebaseAuthError(fbErr) };
       }
 
-      const completed = Boolean(data?.onboardingCompleted) || Boolean(data?.company);
-      const regUser: AuthUser = data?.user || {
-        id: fbUser.uid,
-        email: email.toLowerCase(),
-        name,
-        phone: phone || '',
-        onboardingCompleted: completed,
-      };
+      if (companyName && gstin) {
+        pendingRegistrationCompanyRef.current = {
+          companyName: companyName.trim(),
+          gstin: gstin.trim().toUpperCase(),
+          phone: phone?.trim(),
+        };
+      } else {
+        pendingRegistrationCompanyRef.current = null;
+      }
 
-      saveSession(
-        regUser,
-        data?.company || null,
-        data?.role || (data?.company ? 'OWNER' : null),
-        data?.accessibleCompanies || [],
-        !completed,
-        data?.token || '',
-        completed
-      );
+      if (!fbUser.emailVerified) {
+        setUnverifiedFirebaseSession(fbUser);
+        if (!verificationSent && verificationError) {
+          setVerificationDispatchError(verificationError);
+        }
+        return { success: true, requiresVerification: true };
+      }
+
+      await syncAuthenticatedFirebaseUser(fbUser);
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message || 'Registration failed.' };
@@ -617,8 +689,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setIsEmailVerified(Boolean(auth.currentUser?.emailVerified));
         }
         if (auth.currentUser && auth.currentUser.emailVerified) {
+          await auth.currentUser.getIdToken(true).catch(() => null);
           await createCompanyInFirestoreAtomic(
-            { ...newCompany, fleetSize: payload.fleetSize },
+            { ...newCompany, fleetSize: payload.fleetSize, ownerId: auth.currentUser.uid },
             auth.currentUser
           );
         }
@@ -670,23 +743,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const resendVerification = async (): Promise<{ sent: boolean; error?: string }> => {
-    return resendVerificationEmail();
-  };
-
-  const refreshVerificationStatus = async (): Promise<{ verified: boolean; error?: string }> => {
+  const refreshVerificationStatus = useCallback(async (): Promise<{
+    verified: boolean;
+    error?: string;
+  }> => {
     try {
       const reloaded = await reloadFirebaseUser();
       if (!reloaded) {
-        return { verified: false, error: 'No active Firebase session.' };
+        return { verified: false, error: 'No active Firebase session. Please log in again.' };
       }
-      setIsEmailVerified(Boolean(reloaded.emailVerified));
       if (!reloaded.emailVerified) {
+        setIsEmailVerified(false);
         return { verified: false };
       }
 
+      setIsEmailVerified(true);
+      setVerificationDispatchError(null);
       await ensureFirestoreUserProfile(reloaded);
-      if (company?.id) {
+
+      // Complete pending 1-step registration company creation if user entered company details before verifying
+      const pendingCo = pendingRegistrationCompanyRef.current;
+      if (pendingCo) {
+        pendingRegistrationCompanyRef.current = null;
+        const companyId = `comp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const createdCo: Company & { ownerId?: string } = {
+          id: companyId,
+          name: pendingCo.companyName,
+          tradeName: pendingCo.companyName,
+          gstin: pendingCo.gstin,
+          pan: pendingCo.gstin.length >= 12 ? pendingCo.gstin.substring(2, 12) : '',
+          phone: pendingCo.phone || '',
+          email: reloaded.email || '',
+          address: '',
+          city: '',
+          state: '',
+          stateCode: pendingCo.gstin.length >= 2 ? pendingCo.gstin.substring(0, 2) : '',
+          pincode: '',
+          bankName: '',
+          accountNumber: '',
+          ifscCode: '',
+          branch: '',
+          lrPrefix: 'AT/25-26/',
+          invoicePrefix: 'INV/25-26/',
+          tripPrefix: 'TR-',
+          createdAt: new Date().toISOString(),
+          ownerId: reloaded.uid,
+        };
+        await createCompanyInFirestoreAtomic(createdCo, reloaded);
+      } else if (company?.id) {
         const existingCompany = await fetchUserCompanyFromFirestore(company.id, reloaded.uid);
         if (!existingCompany) {
           await createCompanyInFirestoreAtomic(company, reloaded);
@@ -706,9 +810,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await syncAuthenticatedFirebaseUser(reloaded);
       return { verified: true };
     } catch (err: any) {
-      return { verified: false, error: err?.message || 'Failed to verify email status.' };
+      return { verified: false, error: formatFirebaseAuthError(err) };
     }
-  };
+  }, [company, onboardingCompleted, syncAuthenticatedFirebaseUser]);
+
+  const resendVerification = useCallback(async (): Promise<{
+    sent: boolean;
+    alreadyVerified?: boolean;
+    error?: string;
+  }> => {
+    const res = await resendVerificationEmail();
+    if (res.sent) {
+      setVerificationDispatchError(null);
+    } else if (res.alreadyVerified) {
+      await refreshVerificationStatus();
+    }
+    return res;
+  }, [refreshVerificationStatus]);
 
   /**
    * Logout:
@@ -718,10 +836,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
    * NEVER deletes Firestore documents or resets company operational data.
    */
   const logout = async () => {
+    pendingRegistrationCompanyRef.current = null;
+    setVerificationDispatchError(null);
     runLogoutCleanupsSynchronously();
     clearClientTmsCaches();
     setIsFirebaseUser(false);
-    setIsEmailVerified(true);
+    setIsEmailVerified(false);
     saveSession(null, null, null, [], false, null, false);
 
     try {
@@ -905,6 +1025,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         isEmailVerified,
         isFirebaseUser,
+        verificationDispatchError,
         login,
         loginWithGoogleAuth,
         register,

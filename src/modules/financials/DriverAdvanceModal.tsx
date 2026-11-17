@@ -8,12 +8,16 @@ import { DriverAdvance, AdvanceType, PaymentMode } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
-import { createAdvanceInFirestore } from '../../lib/firebase/firestoreService';
+import {
+  createAdvanceInFirestore,
+  updateAdvanceInFirestore,
+} from '../../lib/firebase/firestoreService';
 
 interface DriverAdvanceModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (advance: DriverAdvance) => void;
+  onSuccess: (advance: DriverAdvance, isEdit?: boolean) => void;
+  advanceToEdit?: DriverAdvance | null;
   defaultTripId?: string;
 }
 
@@ -29,13 +33,17 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
+  advanceToEdit,
   defaultTripId,
 }) => {
   const { user, company: authCompany } = useAuth();
-  const { company: liveCompany, trips, drivers, loading: dataLoading } = useFirestoreData();
+  const { company: liveCompany, trips, drivers, advances, loading: dataLoading } = useFirestoreData();
   const company = liveCompany?.id ? liveCompany : authCompany;
 
+  const isEdit = Boolean(advanceToEdit);
+
   const [tripId, setTripId] = useState(defaultTripId || '');
+  const [driverId, setDriverId] = useState('');
   const [amountRupees, setAmountRupees] = useState('');
   const [advanceType, setAdvanceType] = useState<AdvanceType>('CASH_DISPATCH');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
@@ -46,18 +54,38 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) return;
+    setError(null);
+    if (advanceToEdit) {
+      setTripId(advanceToEdit.tripId || '');
+      setDriverId(advanceToEdit.driverId || '');
+      setAmountRupees((advanceToEdit.amountPaise / 100).toString());
+      setAdvanceType(advanceToEdit.advanceType);
+      setDate((advanceToEdit.date || '').split('T')[0] || new Date().toISOString().split('T')[0]);
+      setReference(advanceToEdit.reference || advanceToEdit.referenceNotes || '');
+      setNotes(advanceToEdit.notes || '');
+    } else {
+      const initialTrip = defaultTripId ? trips.find((t) => t.id === defaultTripId) : undefined;
       setTripId(defaultTripId || '');
+      setDriverId(initialTrip?.driverId || '');
       setAmountRupees('');
       setAdvanceType('CASH_DISPATCH');
       setDate(new Date().toISOString().split('T')[0]);
       setReference('');
       setNotes('');
-      setError(null);
     }
-  }, [isOpen, defaultTripId]);
+  }, [isOpen, defaultTripId, advanceToEdit]);
 
   const selectedTrip = trips.find((t) => t.id === tripId);
+  const selectedDriver = drivers.find((d) => d.id === driverId);
+
+  const handleTripSelect = (nextTripId: string) => {
+    setTripId(nextTripId);
+    const matched = trips.find((t) => t.id === nextTripId);
+    if (matched?.driverId) {
+      setDriverId(matched.driverId);
+    }
+  };
 
   const mapAdvancePaymentMode = (type: AdvanceType): PaymentMode => {
     if (type === 'UPI_ONLINE') return 'UPI';
@@ -81,31 +109,27 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
       return;
     }
 
-    if (!tripId || !selectedTrip) {
-      setError('Please select an active trip for this advance disbursement.');
-      return;
-    }
-
-    if (!selectedTrip.driverId) {
-      setError('Selected trip does not have an assigned driver.');
+    if (!driverId) {
+      setError('Please select a driver for this advance disbursement.');
       return;
     }
 
     setLoading(true);
 
     try {
-      const matchedDriver = drivers.find((d) => d.id === selectedTrip.driverId);
+      const matchedDriver = drivers.find((d) => d.id === driverId);
       const cleanRef = reference.trim() ? reference.trim().slice(0, 100) : undefined;
       const cleanNotes = notes.trim() ? notes.trim().slice(0, 300) : undefined;
 
       const advance: DriverAdvance = {
-        id: `adv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        ...(advanceToEdit || {}),
+        id: advanceToEdit?.id || `adv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         companyId: company.id,
-        tripId: selectedTrip.id,
-        tripNumber: selectedTrip.tripNumber,
-        driverId: selectedTrip.driverId,
-        driverName: (matchedDriver?.fullName || selectedTrip.driverName || 'Driver').slice(0, 100),
-        vehicleReg: selectedTrip.vehicleReg?.slice(0, 30),
+        tripId: selectedTrip?.id || undefined,
+        tripNumber: selectedTrip?.tripNumber || undefined,
+        driverId,
+        driverName: (matchedDriver?.fullName || selectedTrip?.driverName || advanceToEdit?.driverName || 'Driver').slice(0, 100),
+        vehicleReg: (selectedTrip?.vehicleReg || matchedDriver?.assignedVehicleReg || advanceToEdit?.vehicleReg)?.slice(0, 30),
         amountPaise: amount,
         advanceType,
         paymentMode: mapAdvancePaymentMode(advanceType),
@@ -113,17 +137,32 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
         reference: cleanRef,
         referenceNotes: cleanRef,
         notes: cleanNotes,
-        disbursedBy: (user?.name || user?.email || 'Dispatcher').slice(0, 100),
-        isSettled: false,
-        createdAt: new Date().toISOString(),
+        disbursedBy: advanceToEdit?.disbursedBy || (user?.name || user?.email || 'Owner').slice(0, 100),
+        status: advanceToEdit?.status || 'ACTIVE',
+        isSettled: advanceToEdit?.isSettled ?? false,
+        settlementId: advanceToEdit?.settlementId,
+        createdAt: advanceToEdit?.createdAt || new Date().toISOString(),
       };
 
-      await createAdvanceInFirestore(company.id, advance, selectedTrip, matchedDriver);
+      if (advanceToEdit) {
+        const tripAdvances = selectedTrip ? advances.filter((a) => a.tripId === selectedTrip.id) : [];
+        const driverAdvances = advances.filter((a) => a.driverId === driverId);
+        await updateAdvanceInFirestore(
+          company.id,
+          advance,
+          selectedTrip,
+          matchedDriver,
+          tripAdvances,
+          driverAdvances
+        );
+      } else {
+        await createAdvanceInFirestore(company.id, advance, selectedTrip, matchedDriver);
+      }
 
-      onSuccess(advance);
+      onSuccess(advance, isEdit);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Error occurred while recording advance.');
+      setError(err.message || 'Error occurred while saving advance.');
     } finally {
       setLoading(false);
     }
@@ -133,7 +172,7 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Disburse Driver Cash Advance"
+      title={isEdit ? 'Edit Driver Advance Record' : 'Disburse Driver Cash Advance'}
       maxWidth="xl"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -153,43 +192,72 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
           </div>
         </div>
 
-        {/* 1. Trip Selection */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">
-            Trip Association <span className="text-rose-500">*</span>
-          </label>
-          <select
-            value={tripId}
-            onChange={(e) => setTripId(e.target.value)}
-            required
-            className="w-full px-3 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
-          >
-            {dataLoading && trips.length === 0 ? (
-              <option value="">Loading trips...</option>
-            ) : trips.length === 0 ? (
-              <option value="">No trips available</option>
-            ) : (
-              <>
-                <option value="">-- Choose Associated Trip --</option>
-                {trips
-                  .filter((t) => t.status !== 'CANCELLED')
-                  .map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.originCity} → {t.destinationCity}]
+        {/* 1. Driver & Optional Trip Selection */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Driver <span className="text-rose-500">*</span>
+            </label>
+            <select
+              value={driverId}
+              onChange={(e) => setDriverId(e.target.value)}
+              required
+              disabled={isEdit && Boolean(advanceToEdit?.isSettled)}
+              className="w-full px-3 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
+            >
+              {dataLoading && drivers.length === 0 ? (
+                <option value="">Loading drivers...</option>
+              ) : (
+                <>
+                  <option value="">-- Select Driver --</option>
+                  {drivers.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.fullName} ({d.phone})
                     </option>
                   ))}
+                </>
+              )}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Trip Association <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            <select
+              value={tripId}
+              onChange={(e) => handleTripSelect(e.target.value)}
+              disabled={isEdit && Boolean(advanceToEdit?.isSettled)}
+              className="w-full px-3 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-100"
+            >
+              <option value="">-- Direct / General Advance (No Trip) --</option>
+              {trips
+                .filter((t) => t.status !== 'CANCELLED' || t.id === tripId)
+                .map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.tripNumber} — {t.driverName} ({t.vehicleReg}) [{t.originCity} → {t.destinationCity}]
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+
+        {(selectedTrip || selectedDriver) && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
+            <User className="w-3.5 h-3.5 text-slate-400" />
+            <span>
+              Driver: <strong>{selectedDriver?.fullName || selectedTrip?.driverName || 'Selected'}</strong>
+            </span>
+            {(selectedTrip?.vehicleReg || selectedDriver?.assignedVehicleReg) && (
+              <>
+                <span className="text-slate-300">|</span>
+                <span>
+                  Truck: <strong>{selectedTrip?.vehicleReg || selectedDriver?.assignedVehicleReg}</strong>
+                </span>
               </>
             )}
-          </select>
-          {selectedTrip && (
-            <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
-              <User className="w-3.5 h-3.5 text-slate-400" />
-              <span>Driver: <strong>{selectedTrip.driverName}</strong></span>
-              <span className="text-slate-300">|</span>
-              <span>Truck: <strong>{selectedTrip.vehicleReg}</strong></span>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* 2. Amount & Date */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -303,11 +371,11 @@ export const DriverAdvanceModal: React.FC<DriverAdvanceModalProps> = ({
             className="px-5 py-2.5 text-xs font-semibold rounded-xl text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-200 flex items-center gap-2 cursor-pointer"
           >
             {loading ? (
-              <span>Recording...</span>
+              <span>Saving...</span>
             ) : (
               <>
                 <CheckCircle2 className="w-4 h-4" />
-                <span>Disburse Advance</span>
+                <span>{isEdit ? 'Save Advance Changes' : 'Disburse Advance'}</span>
               </>
             )}
           </button>

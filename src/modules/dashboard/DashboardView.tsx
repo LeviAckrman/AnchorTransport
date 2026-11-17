@@ -113,7 +113,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     setPeriod('custom');
   };
 
-  // Clear data for clean slate (OWNER / ADMIN only)
+  // Clear data for clean slate (Owner-Only)
   const confirmClearData = async () => {
     if (!companyId) return;
     setActionLoading(true);

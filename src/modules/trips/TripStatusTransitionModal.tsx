@@ -9,10 +9,14 @@ import {
   FileCheck2,
   Gauge,
   Calendar,
+  Upload,
+  ExternalLink,
 } from 'lucide-react';
 import { Trip, TripStatus } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { Badge } from '../../components/ui/Badge';
+import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { uploadCompanyDocument } from '../../lib/firebase/storageService';
 
 interface TripStatusTransitionModalProps {
   isOpen: boolean;
@@ -25,6 +29,7 @@ interface TripStatusTransitionModalProps {
     actualDeliveryDate?: string;
     endOdometerKm?: number;
     podReceived?: boolean;
+    podDocumentUrl?: string;
     podRemarks?: string;
   }) => Promise<void>;
   isLoading?: boolean;
@@ -38,6 +43,7 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
   onConfirm,
   isLoading = false,
 }) => {
+  const { company } = useFirestoreData();
   const [cancellationReason, setCancellationReason] = useState('');
   const startOdo = trip.startOdometerKm || 0;
   const [endOdometerKm, setEndOdometerKm] = useState(
@@ -47,6 +53,8 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
     new Date().toISOString().split('T')[0]
   );
   const [podReceived, setPodReceived] = useState(trip.podReceived || false);
+  const [podDocumentUrl, setPodDocumentUrl] = useState(trip.podDocumentUrl || '');
+  const [uploadingPod, setUploadingPod] = useState(false);
   const [podRemarks, setPodRemarks] = useState(trip.podRemarks || '');
   const [error, setError] = useState<string | null>(null);
 
@@ -93,6 +101,7 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
         actualDeliveryDate: targetStatus === 'DELIVERED' ? actualDeliveryDate : undefined,
         endOdometerKm: targetStatus === 'DELIVERED' ? parseInt(endOdometerKm, 10) : undefined,
         podReceived: targetStatus === 'DELIVERED' ? podReceived : undefined,
+        podDocumentUrl: targetStatus === 'DELIVERED' ? podDocumentUrl.trim() || undefined : undefined,
         podRemarks: targetStatus === 'DELIVERED' ? podRemarks.trim() || undefined : undefined,
       });
       onClose();
@@ -225,6 +234,46 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
                   placeholder="Receiver name, seal number, or weighment slip note (optional)..."
                   className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs placeholder:text-slate-400 focus:ring-1 focus:ring-indigo-500"
                 />
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap pt-1">
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer">
+                  <Upload className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>{uploadingPod ? 'Uploading POD...' : podDocumentUrl ? 'Replace Stamped POD' : 'Upload POD Document'}</span>
+                  <input
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    disabled={uploadingPod || !company?.id}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file || !company?.id) return;
+                      setError(null);
+                      setUploadingPod(true);
+                      try {
+                        const downloadUrl = await uploadCompanyDocument(company.id, 'pod', file);
+                        setPodDocumentUrl(downloadUrl);
+                        setPodReceived(true);
+                      } catch (err: any) {
+                        setError(err.message || 'POD document upload failed.');
+                      } finally {
+                        setUploadingPod(false);
+                        e.target.value = '';
+                      }
+                    }}
+                  />
+                </label>
+                {podDocumentUrl && (
+                  <a
+                    href={podDocumentUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 hover:underline"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    View Uploaded POD
+                  </a>
+                )}
               </div>
             </div>
           </div>

@@ -247,20 +247,20 @@ async function runFleetPhase5Tests() {
   assert(odishaState?.code === '21' && odishaState?.name === 'Odisha', 'GSTIN state code 21 matched Odisha');
 
   // -------------------------------------------------------------------------
-  // TEST GROUP 5: ROLE-BASED ACCESS CONTROL (SENSITIVE DRIVER KYC)
+  // TEST GROUP 5: STRICT OWNER-ONLY ACCESS CONTROL (SENSITIVE DRIVER KYC)
   // -------------------------------------------------------------------------
-  console.log('\n--- Test Group 5: Role-Based Driver KYC Protection ---');
+  console.log('\n--- Test Group 5: Owner-Only Driver KYC Protection ---');
 
   assert(canViewSensitiveDriverInfo('OWNER') === true, 'OWNER has access to sensitive driver KYC');
-  assert(canViewSensitiveDriverInfo('ADMIN') === true, 'ADMIN has access to sensitive driver KYC');
-  assert(canViewSensitiveDriverInfo('ACCOUNTANT') === true, 'ACCOUNTANT has access to driver bank & salary for payroll');
-  assert(canViewSensitiveDriverInfo('MANAGER') === false, 'MANAGER is restricted from sensitive driver KYC (masked)');
-  assert(canViewSensitiveDriverInfo('OPERATIONS') === false, 'OPERATIONS is restricted from sensitive driver KYC (masked)');
+  assert(canViewSensitiveDriverInfo('ADMIN' as any) === false, 'Non-owner role ADMIN is strictly denied sensitive driver KYC');
+  assert(canViewSensitiveDriverInfo('ACCOUNTANT' as any) === false, 'Non-owner role ACCOUNTANT is strictly denied sensitive driver KYC');
+  assert(canViewSensitiveDriverInfo('MANAGER' as any) === false, 'Non-owner role MANAGER is strictly denied sensitive driver KYC');
+  assert(canViewSensitiveDriverInfo('OPERATIONS' as any) === false, 'Non-owner role OPERATIONS is strictly denied sensitive driver KYC');
 
   assert(canManageFleet('OWNER') === true, 'OWNER has fleet management privileges');
-  assert(canManageFleet('ADMIN') === true, 'ADMIN has fleet management privileges');
-  assert(canManageFleet('ACCOUNTANT') === false, 'ACCOUNTANT cannot add or modify vehicles/drivers');
-  assert(canManageFleet('OPERATIONS') === false, 'OPERATIONS cannot mutate vehicle registry');
+  assert(canManageFleet('ADMIN' as any) === false, 'Non-owner role ADMIN cannot manage fleet');
+  assert(canManageFleet('ACCOUNTANT' as any) === false, 'Non-owner role ACCOUNTANT cannot add or modify vehicles/drivers');
+  assert(canManageFleet('OPERATIONS' as any) === false, 'Non-owner role OPERATIONS cannot mutate vehicle registry');
 
   // Test redaction logic
   const mockRedactedDriver = {

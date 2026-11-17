@@ -82,20 +82,20 @@ async function runPhase7FinancialTests() {
     role: 'OWNER',
   });
 
-  const tokenDispatcherA = signSessionToken({
+  const tokenNonOwnerA = signSessionToken({
     userId: 'usr_disp_a',
     email: 'ops@wbroyal.com',
     name: 'Subhash Sen',
     companyId: compA,
-    role: 'OPERATIONS',
+    role: 'OPERATIONS' as any,
   });
 
-  const tokenAdminB = signSessionToken({
-    userId: 'usr_admin_b',
-    email: 'admin@tmthaulers.com',
+  const tokenOwnerB = signSessionToken({
+    userId: 'usr_owner_b',
+    email: 'owner@tmthaulers.com',
     name: 'Bikash Agarwal',
     companyId: compB,
-    role: 'ADMIN',
+    role: 'OWNER',
   });
 
   // Setup dedicated test trip in Company A
@@ -246,7 +246,7 @@ async function runPhase7FinancialTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenDispatcherA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       tripId: testTripA.id,
@@ -290,7 +290,7 @@ async function runPhase7FinancialTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenDispatcherA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       tripId: testTripA.id,
@@ -468,12 +468,12 @@ async function runPhase7FinancialTests() {
   assert(finalizeRes.status === 200 && finalizeData.success === true, 'Settlement successfully finalized and locked');
   assert(finalizeData.settlement.status === 'FINALIZED', 'Settlement status set to FINALIZED');
 
-  // Attempt 1: Regular dispatcher tries to change finalized settlement without authorization
+  // Attempt 1: Non-owner tries to change finalized settlement without authorization
   const unauthorizedChangeRes = await fetch(`${BASE_URL}/settlements/${existingSettlement.id}`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenDispatcherA}`,
+      Authorization: `Bearer ${tokenNonOwnerA}`,
     },
     body: JSON.stringify({
       approvedDeductionsPaise: 200000, // Try to add ₹1,000 deduction
@@ -545,7 +545,7 @@ async function runPhase7FinancialTests() {
   // Company B user attempts to read Company A expenses
   const crossExpGetRes = await fetch(`${BASE_URL}/expenses/${expenseToUpdate.id}`, {
     headers: {
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
   });
   assert(
@@ -558,7 +558,7 @@ async function runPhase7FinancialTests() {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
     body: JSON.stringify({
       amountPaise: 9999999,
@@ -572,7 +572,7 @@ async function runPhase7FinancialTests() {
   // Company B user attempts to read Company A settlement
   const crossStlGetRes = await fetch(`${BASE_URL}/settlements/${existingSettlement.id}`, {
     headers: {
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
   });
   assert(
@@ -583,7 +583,7 @@ async function runPhase7FinancialTests() {
   // Company B queries /api/expenses listing
   const compBListRes = await fetch(`${BASE_URL}/expenses`, {
     headers: {
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
   });
   const compBListData = await compBListRes.json();

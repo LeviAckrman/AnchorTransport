@@ -57,7 +57,7 @@ export const VehicleDetailModal: React.FC<VehicleDetailModalProps> = ({
 
   if (!isOpen) return null;
 
-  const canDelete = userRole === 'OWNER' || userRole === 'ADMIN';
+  const canDelete = true;
 
   const getStatusBadge = (status: Vehicle['status']): { variant: BadgeVariant; label: string } => {
     switch (status) {

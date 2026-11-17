@@ -155,7 +155,7 @@ export function syncVehicleDocuments(
  * Check if the active user role has access to driver sensitive personal info
  */
 function canAccessSensitiveInfo(role?: UserRole): boolean {
-  return role === 'OWNER' || role === 'ADMIN' || role === 'ACCOUNTANT';
+  return role === 'OWNER';
 }
 
 /**
@@ -634,7 +634,7 @@ fleetRouter.put('/vehicles/:id', requireAuth, async (req: AuthenticatedRequest, 
 fleetRouter.delete(
   '/vehicles/:id',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1028,7 +1028,7 @@ fleetRouter.put('/drivers/:id', requireAuth, async (req: AuthenticatedRequest, r
 fleetRouter.delete(
   '/drivers/:id',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1089,7 +1089,7 @@ fleetRouter.get('/customers', requireAuth, async (req: AuthenticatedRequest, res
         (c) =>
           c.name.toLowerCase().includes(search) ||
           (c.tradeName && c.tradeName.toLowerCase().includes(search)) ||
-          c.gstin.toLowerCase().includes(search) ||
+          (c.gstin && c.gstin.toLowerCase().includes(search)) ||
           c.city.toLowerCase().includes(search) ||
           c.contactPerson.toLowerCase().includes(search) ||
           c.phone.includes(search)
@@ -1246,7 +1246,7 @@ fleetRouter.post('/customers', requireAuth, async (req: AuthenticatedRequest, re
 
     // Check duplicate GSTIN in same company
     const existingGstin = serverFleetStore.customers.find(
-      (c) => c.companyId === companyId && c.gstin.toUpperCase() === cleanGstin
+      (c) => c.companyId === companyId && (c.gstin || '').toUpperCase() === cleanGstin
     );
     if (existingGstin) {
       res.status(409).json({
@@ -1379,7 +1379,7 @@ fleetRouter.put('/customers/:id', requireAuth, async (req: AuthenticatedRequest,
         return;
       }
       const duplicate = serverFleetStore.customers.find(
-        (c) => c.id !== customerId && c.companyId === companyId && c.gstin.toUpperCase() === cleanGstin
+        (c) => c.id !== customerId && c.companyId === companyId && (c.gstin || '').toUpperCase() === cleanGstin
       );
       if (duplicate) {
         res.status(409).json({
@@ -1437,7 +1437,7 @@ fleetRouter.put('/customers/:id', requireAuth, async (req: AuthenticatedRequest,
 fleetRouter.delete(
   '/customers/:id',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1545,7 +1545,7 @@ fleetRouter.get('/import-templates/:type', (_req, res: Response) => {
 fleetRouter.post(
   '/vehicles/bulk-import',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN', 'MANAGER']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1619,7 +1619,7 @@ fleetRouter.post(
 fleetRouter.post(
   '/drivers/bulk-import',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN', 'MANAGER']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1685,7 +1685,7 @@ fleetRouter.post(
 fleetRouter.post(
   '/customers/bulk-import',
   requireAuth,
-  requireRoles(['OWNER', 'ADMIN', 'ACCOUNTANT']),
+  requireRoles(['OWNER']),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const companyId = req.companyId!;
@@ -1763,10 +1763,10 @@ fleetRouter.post('/reset-data', requireAuth, async (req: AuthenticatedRequest, r
     const role = req.user?.role || 'OWNER';
     const scope = req.body?.scope || 'current_company';
 
-    if (role !== 'OWNER' && role !== 'ADMIN') {
+    if (role !== 'OWNER') {
       res.status(403).json({
         success: false,
-        error: 'Only Company Owners and System Admins have permission to reset company data.',
+        error: 'Only Company Owners have permission to reset company data.',
       });
       return;
     }
@@ -1812,10 +1812,10 @@ fleetRouter.post('/api/fleet/reset-data', requireAuth, async (req: Authenticated
   const role = req.user?.role || 'OWNER';
   const scope = req.body?.scope || 'current_company';
 
-  if (role !== 'OWNER' && role !== 'ADMIN') {
+  if (role !== 'OWNER') {
     res.status(403).json({
       success: false,
-      error: 'Only Company Owners and System Admins have permission to reset company data.',
+      error: 'Only Company Owners have permission to reset company data.',
     });
     return;
   }

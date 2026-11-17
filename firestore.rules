@@ -11,18 +11,16 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------------------
-    // 2. GLOBAL PRIMITIVE HELPERS
+    // 2. GLOBAL PRIMITIVE & MULTI-TENANT RBAC HELPERS
     // ------------------------------------------------------------------------
     function isSignedIn() {
       return request.auth != null;
     }
 
     function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
-    function isBootstrappedAdmin() {
-      return isVerifiedUser() && request.auth.token.email == 'kunduankit129@gmail.com';
+      return isSignedIn()
+        && ('email_verified' in request.auth.token)
+        && request.auth.token.email_verified == true;
     }
 
     function incoming() {
@@ -57,43 +55,40 @@ service cloud.firestore {
       return !(field in data) || data[field] is bool;
     }
 
-    // Check membership in the company subcollection
-    function isCompanyMember(companyId) {
+    function companyDocPath(companyId) {
+      return /databases/$(database)/documents/companies/$(companyId);
+    }
+
+    function memberDocPath(companyId, uid) {
+      return /databases/$(database)/documents/companies/$(companyId)/members/$(uid);
+    }
+
+    // Primary Company Owner check on /companies/{companyId}
+    function isCompanyOwner(companyId) {
       return isSignedIn()
-        && exists(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid));
+        && exists(companyDocPath(companyId))
+        && get(companyDocPath(companyId)).data.ownerId == request.auth.uid;
     }
 
-    // Get member's role within the specified company
-    function getMemberRole(companyId) {
-      return get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.role;
-    }
-
+    // Active Company Employee Membership check on /companies/{companyId}/members/{uid}
     function isActiveMember(companyId) {
-      return isCompanyMember(companyId)
-        && get(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.status == 'ACTIVE';
+      return isSignedIn()
+        && exists(memberDocPath(companyId, request.auth.uid))
+        && get(memberDocPath(companyId, request.auth.uid)).data.companyId == companyId
+        && get(memberDocPath(companyId, request.auth.uid)).data.userId == request.auth.uid
+        && get(memberDocPath(companyId, request.auth.uid)).data.status == 'ACTIVE';
     }
 
-    function isOwner(companyId) {
-      return isActiveMember(companyId) && getMemberRole(companyId) == 'OWNER';
+    function isAuthorizedCompanyUser(companyId) {
+      return isCompanyOwner(companyId) || isActiveMember(companyId);
     }
 
-    function isOwnerOrAdmin(companyId) {
-      return isBootstrappedAdmin()
-        || (isActiveMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN']));
-    }
-
-    function isAccountant(companyId) {
-      return isBootstrappedAdmin()
-        || (isActiveMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN', 'ACCOUNTANT']));
-    }
-
-    function isFleetStaff(companyId) {
-      return isBootstrappedAdmin()
-        || (isActiveMember(companyId) && (getMemberRole(companyId) in ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS', 'OPERATIONS_STAFF']));
-    }
-
-    function isFinanceOrFleetStaff(companyId) {
-      return isFleetStaff(companyId) || isAccountant(companyId);
+    function hasCompanyRole(companyId, allowedRoles) {
+      return isCompanyOwner(companyId)
+        || (
+          isActiveMember(companyId)
+          && get(memberDocPath(companyId, request.auth.uid)).data.role in allowedRoles
+        );
     }
 
     function isCreatedAtPreservedOrMigrated() {
@@ -122,8 +117,8 @@ service cloud.firestore {
         && isOptString(data, 'phone', 20)
         && isOptString(data, 'defaultCompanyId', 128)
         && isOptString(data, 'activeCompanyId', 128)
-        && (!( 'role' in data ) || (data.role is string && data.role in ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']))
-        && isOptString(data, 'photoUrl', 500)
+        && (!('role' in data) || (data.role is string && data.role in ['USER', 'OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']))
+        && isOptString(data, 'photoUrl', 1500)
         && isOptBool(data, 'onboardingCompleted')
         && isOptString(data, 'onboardingCompletedAt', 40)
         && data.createdAt is timestamp
@@ -159,25 +154,30 @@ service cloud.firestore {
         && isOptString(data, 'invoicePrefix', 30)
         && isOptString(data, 'tripPrefix', 30)
         && isOptString(data, 'fleetSize', 50)
-        && isOptString(data, 'logoUrl', 500)
+        && isOptString(data, 'logoUrl', 1500)
         && data.createdAt is timestamp
         && data.updatedAt == request.time;
     }
 
-    function isValidMember(data, companyId, userId) {
-      return data.keys().hasAll(['userId', 'companyId', 'role', 'email', 'status', 'joinedAt'])
-        && data.keys().hasOnly(['id', 'userId', 'companyId', 'role', 'name', 'email', 'status', 'joinedAt', 'updatedAt'])
-        && data.userId == userId
+    function isValidMember(data, companyId, memberUid) {
+      return data.keys().hasAll(['id', 'userId', 'companyId', 'role', 'email', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'companyId', 'role', 'name', 'email', 'status',
+          'invitedByUid', 'joinedAt', 'createdAt', 'updatedAt'
+        ])
+        && data.id == memberUid
+        && data.userId == memberUid
         && data.companyId == companyId
-        && isOptString(data, 'id', 128)
+        && data.role is string
+        && data.role in ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']
         && isOptString(data, 'name', 100)
         && isReqString(data, 'email', 200)
-        && data.role is string
-        && data.role in ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS', 'OPERATIONS_STAFF']
         && data.status is string
         && data.status in ['ACTIVE', 'INVITED', 'SUSPENDED']
-        && data.joinedAt is timestamp
-        && (!('updatedAt' in data) || data.updatedAt == request.time);
+        && isOptString(data, 'invitedByUid', 128)
+        && isOptString(data, 'joinedAt', 40)
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
     }
 
     function isValidVehicle(data, companyId, vehicleId) {
@@ -262,7 +262,7 @@ service cloud.firestore {
     }
 
     function isValidCustomer(data, companyId, customerId) {
-      return data.keys().hasAll(['id', 'companyId', 'name', 'phone', 'gstin', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['id', 'companyId', 'name', 'phone', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'companyId', 'name', 'tradeName', 'gstin', 'pan', 'contactPerson',
           'phone', 'email', 'billingAddress', 'city', 'state', 'stateCode', 'pincode',
@@ -274,7 +274,7 @@ service cloud.firestore {
         && data.companyId == companyId
         && isReqString(data, 'name', 150)
         && isOptString(data, 'tradeName', 150)
-        && isReqString(data, 'gstin', 20)
+        && isOptString(data, 'gstin', 20)
         && isOptString(data, 'pan', 15)
         && isOptString(data, 'contactPerson', 100)
         && isReqString(data, 'phone', 20)
@@ -295,6 +295,31 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    function isValidBroker(data, companyId, brokerId) {
+      return data.keys().hasAll(['id', 'companyId', 'name', 'phone', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'companyId', 'name', 'companyName', 'phone', 'email', 'gstin', 'pan',
+          'city', 'state', 'commissionRatePercent', 'defaultCommissionPaise',
+          'notes', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.id == brokerId
+        && data.companyId == companyId
+        && isReqString(data, 'name', 150)
+        && isOptString(data, 'companyName', 150)
+        && isReqString(data, 'phone', 20)
+        && isOptString(data, 'email', 200)
+        && isOptString(data, 'gstin', 20)
+        && isOptString(data, 'pan', 15)
+        && isOptString(data, 'city', 80)
+        && isOptString(data, 'state', 60)
+        && isOptNumber(data, 'commissionRatePercent')
+        && isOptNumber(data, 'defaultCommissionPaise')
+        && isOptString(data, 'notes', 500)
+        && (!('status' in data) || (data.status is string && data.status in ['ACTIVE', 'INACTIVE', 'BLOCKED']))
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
     function isValidTrip(data, companyId, tripId) {
       return data.keys().hasAll([
           'id', 'companyId', 'tripNumber', 'vehicleId', 'driverId', 'customerId',
@@ -303,10 +328,13 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'companyId', 'tripNumber', 'lrNumber', 'customerId', 'customerName',
           'customerGstin', 'vehicleId', 'vehicleReg', 'driverId', 'driverName',
-          'driverPhone', 'originCity', 'destinationCity', 'goodsType', 'weightTonnes',
+          'driverPhone', 'originCity', 'destinationCity', 'pickupAddress', 'deliveryAddress',
+          'loadingDetails', 'unloadingDetails', 'goodsType', 'weightTonnes',
           'ratePerTonnePaise', 'freightAmountPaise', 'otherChargesPaise', 'totalRevenuePaise',
           'dispatchDate', 'expectedDeliveryDate', 'actualDeliveryDate', 'status',
-          'startOdometerKm', 'endOdometerKm', 'podReceived', 'podDocumentUrl', 'podRemarks',
+          'startOdometerKm', 'endOdometerKm', 'podReceived', 'podDocumentUrl',
+          'lrDocumentUrl', 'dispatchDocumentUrl', 'podRemarks',
+          'brokerId', 'brokerName', 'brokerCommissionPaise',
           'totalExpensesPaise', 'totalAdvancesPaise', 'tripContributionPaise',
           'isSettled', 'isInvoiced', 'invoiceId', 'invoiceNumber',
           'cancellationReason', 'cancelledAt', 'cancelledBy', 'notes', 'createdAt', 'updatedAt'
@@ -325,6 +353,10 @@ service cloud.firestore {
         && isOptString(data, 'driverPhone', 20)
         && isOptString(data, 'originCity', 100)
         && isOptString(data, 'destinationCity', 100)
+        && isOptString(data, 'pickupAddress', 300)
+        && isOptString(data, 'deliveryAddress', 300)
+        && isOptString(data, 'loadingDetails', 400)
+        && isOptString(data, 'unloadingDetails', 400)
         && isOptString(data, 'goodsType', 120)
         && isOptNumber(data, 'weightTonnes')
         && isOptNumber(data, 'ratePerTonnePaise')
@@ -339,8 +371,13 @@ service cloud.firestore {
         && isOptNumber(data, 'startOdometerKm')
         && isOptNumber(data, 'endOdometerKm')
         && isOptBool(data, 'podReceived')
-        && isOptString(data, 'podDocumentUrl', 500)
+        && isOptString(data, 'podDocumentUrl', 1500)
+        && isOptString(data, 'lrDocumentUrl', 1500)
+        && isOptString(data, 'dispatchDocumentUrl', 1500)
         && isOptString(data, 'podRemarks', 300)
+        && isOptString(data, 'brokerId', 128)
+        && isOptString(data, 'brokerName', 150)
+        && isOptNumber(data, 'brokerCommissionPaise')
         && isOptNumber(data, 'totalExpensesPaise')
         && isOptNumber(data, 'totalAdvancesPaise')
         && isOptNumber(data, 'tripContributionPaise')
@@ -357,7 +394,7 @@ service cloud.firestore {
     }
 
     function isValidExpense(data, companyId, expenseId) {
-      return data.keys().hasAll(['id', 'companyId', 'tripId', 'category', 'amountPaise', 'paymentMode', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['id', 'companyId', 'category', 'amountPaise', 'paymentMode', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'companyId', 'tripId', 'tripNumber', 'vehicleId', 'vehicleReg',
           'driverId', 'driverName', 'category', 'amountPaise', 'paymentMode',
@@ -368,7 +405,7 @@ service cloud.firestore {
         ])
         && data.id == expenseId
         && data.companyId == companyId
-        && isReqString(data, 'tripId', 128)
+        && isOptString(data, 'tripId', 128)
         && isOptString(data, 'tripNumber', 50)
         && isOptString(data, 'vehicleId', 128)
         && isOptString(data, 'vehicleReg', 30)
@@ -395,8 +432,8 @@ service cloud.firestore {
         && isOptNumber(data, 'odometerReading')
         && isOptString(data, 'receiptNumber', 60)
         && isOptString(data, 'voucherNumber', 60)
-        && isOptString(data, 'receiptUrl', 500)
-        && isOptString(data, 'receiptAttachmentUrl', 500)
+        && isOptString(data, 'receiptUrl', 1500)
+        && isOptString(data, 'receiptAttachmentUrl', 1500)
         && isOptString(data, 'notes', 400)
         && isOptString(data, 'recordedBy', 100)
         && isOptString(data, 'createdBy', 100)
@@ -408,16 +445,17 @@ service cloud.firestore {
     }
 
     function isValidAdvance(data, companyId, advanceId) {
-      return data.keys().hasAll(['id', 'companyId', 'tripId', 'driverId', 'amountPaise', 'advanceType', 'date', 'isSettled', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['id', 'companyId', 'driverId', 'amountPaise', 'advanceType', 'date', 'isSettled', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'companyId', 'tripId', 'tripNumber', 'driverId', 'driverName',
           'vehicleReg', 'amountPaise', 'advanceType', 'paymentMode', 'date',
-          'reference', 'referenceNotes', 'notes', 'disbursedBy', 'isSettled',
-          'settlementId', 'createdAt', 'updatedAt'
+          'reference', 'referenceNotes', 'notes', 'disbursedBy',
+          'status', 'cancelledAt', 'cancellationReason', 'cancelledBy',
+          'isSettled', 'settlementId', 'createdAt', 'updatedAt'
         ])
         && data.id == advanceId
         && data.companyId == companyId
-        && isReqString(data, 'tripId', 128)
+        && isOptString(data, 'tripId', 128)
         && isOptString(data, 'tripNumber', 50)
         && isReqString(data, 'driverId', 128)
         && isOptString(data, 'driverName', 100)
@@ -431,6 +469,10 @@ service cloud.firestore {
         && isOptString(data, 'referenceNotes', 300)
         && isOptString(data, 'notes', 300)
         && isOptString(data, 'disbursedBy', 100)
+        && (!('status' in data) || (data.status is string && data.status in ['ACTIVE', 'CANCELLED', 'SETTLED']))
+        && isOptString(data, 'cancelledAt', 40)
+        && isOptString(data, 'cancellationReason', 300)
+        && isOptString(data, 'cancelledBy', 100)
         && data.isSettled is bool
         && isOptString(data, 'settlementId', 128)
         && data.createdAt is timestamp
@@ -441,10 +483,13 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'companyId', 'tripId', 'driverId', 'status', 'settledDate', 'netPayableToDriverPaise', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'companyId', 'tripId', 'tripNumber', 'driverId', 'driverName',
-          'vehicleId', 'vehicleReg', 'settlementNumber', 'totalAdvanceGivenPaise',
-          'driverCashExpensesPaise', 'driverBataAllowancePaise', 'approvedDeductionsPaise',
-          'otherDeductionsPaise', 'deductionReason', 'remainingDriverBalancePaise',
-          'netPayableToDriverPaise', 'isCompanyDue', 'status', 'settledDate', 'settledBy',
+          'vehicleId', 'vehicleReg', 'settlementNumber',
+          'totalRevenuePaise', 'fuelExpensesPaise', 'tollExpensesPaise',
+          'otherExpensesPaise', 'totalExpensesPaise', 'tripProfitLossPaise',
+          'totalAdvanceGivenPaise', 'driverCashExpensesPaise', 'driverBataAllowancePaise',
+          'approvedDeductionsPaise', 'otherDeductionsPaise', 'deductionReason',
+          'remainingDriverBalancePaise', 'netPayableToDriverPaise', 'isCompanyDue',
+          'status', 'settledDate', 'settledBy', 'approvedBy', 'approvedAt',
           'settlementNotes', 'isCorrectionAuthorized', 'correctionReason', 'correctedBy',
           'correctedAt', 'createdAt', 'updatedAt'
         ])
@@ -457,6 +502,12 @@ service cloud.firestore {
         && isOptString(data, 'vehicleId', 128)
         && isOptString(data, 'vehicleReg', 30)
         && isOptString(data, 'settlementNumber', 50)
+        && isOptNumber(data, 'totalRevenuePaise')
+        && isOptNumber(data, 'fuelExpensesPaise')
+        && isOptNumber(data, 'tollExpensesPaise')
+        && isOptNumber(data, 'otherExpensesPaise')
+        && isOptNumber(data, 'totalExpensesPaise')
+        && isOptNumber(data, 'tripProfitLossPaise')
         && isOptNumber(data, 'totalAdvanceGivenPaise')
         && isOptNumber(data, 'driverCashExpensesPaise')
         && isOptNumber(data, 'driverBataAllowancePaise')
@@ -470,6 +521,8 @@ service cloud.firestore {
         && data.status in ['DRAFT', 'PENDING_APPROVAL', 'APPROVED_SETTLED', 'FINALIZED']
         && isReqString(data, 'settledDate', 40)
         && isOptString(data, 'settledBy', 100)
+        && isOptString(data, 'approvedBy', 100)
+        && isOptString(data, 'approvedAt', 40)
         && isOptString(data, 'settlementNotes', 400)
         && isOptBool(data, 'isCorrectionAuthorized')
         && isOptString(data, 'correctionReason', 300)
@@ -480,13 +533,13 @@ service cloud.firestore {
     }
 
     function isValidInvoice(data, companyId, invoiceId) {
-      return data.keys().hasAll(['id', 'companyId', 'invoiceNumber', 'tripId', 'customerId', 'totalAmountPaise', 'status', 'issueDate', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['id', 'companyId', 'invoiceNumber', 'customerId', 'totalAmountPaise', 'status', 'issueDate', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'companyId', 'invoiceNumber', 'tripId', 'tripNumber', 'lrNumber',
           'customerId', 'customerName', 'customerGstin', 'billingAddress', 'originCity',
           'destinationCity', 'vehicleReg', 'goodsType', 'weightTonnes', 'ratePerTonnePaise',
           'hsnSacCode', 'issueDate', 'dueDate', 'freightAmountPaise', 'loadingChargesPaise',
-          'unloadingChargesPaise', 'detentionChargesPaise', 'otherChargesPaise',
+          'unloadingChargesPaise', 'detentionChargesPaise', 'otherChargesPaise', 'discountPaise',
           'taxableAmountPaise', 'isRcmApplicable', 'gstRatePercent', 'cgstRatePercent',
           'sgstRatePercent', 'igstRatePercent', 'cgstAmountPaise', 'sgstAmountPaise',
           'igstAmountPaise', 'totalTaxPaise', 'totalAmountPaise', 'amountPaidPaise',
@@ -496,7 +549,7 @@ service cloud.firestore {
         && data.id == invoiceId
         && data.companyId == companyId
         && isReqString(data, 'invoiceNumber', 50)
-        && isReqString(data, 'tripId', 128)
+        && isOptString(data, 'tripId', 128)
         && isOptString(data, 'tripNumber', 50)
         && isOptString(data, 'lrNumber', 50)
         && isReqString(data, 'customerId', 128)
@@ -517,6 +570,7 @@ service cloud.firestore {
         && isOptNumber(data, 'unloadingChargesPaise')
         && isOptNumber(data, 'detentionChargesPaise')
         && isOptNumber(data, 'otherChargesPaise')
+        && isOptNumber(data, 'discountPaise')
         && isOptNumber(data, 'taxableAmountPaise')
         && isOptBool(data, 'isRcmApplicable')
         && isOptNumber(data, 'gstRatePercent')
@@ -585,7 +639,7 @@ service cloud.firestore {
         && isOptString(data, 'issuingAuthority', 120)
         && isOptString(data, 'issueDate', 40)
         && isReqString(data, 'expiryDate', 40)
-        && isOptString(data, 'documentUrl', 500)
+        && isOptString(data, 'documentUrl', 1500)
         && isOptNumber(data, 'daysUntilExpiry')
         && data.status is string
         && data.status in ['VALID', 'EXPIRING_SOON', 'EXPIRED']
@@ -617,19 +671,76 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    function isValidFileRecord(data, companyId, fileId) {
+      return data.keys().hasAll(['id', 'companyId', 'uploadedByUid', 'folder', 'fileName', 'storagePath', 'downloadUrl', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'companyId', 'uploadedByUid', 'uploadedByName', 'folder', 'fileName',
+          'mimeType', 'sizeBytes', 'storagePath', 'downloadUrl', 'entityType', 'entityId',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id == fileId
+        && data.companyId == companyId
+        && isReqString(data, 'uploadedByUid', 128)
+        && isOptString(data, 'uploadedByName', 100)
+        && data.folder is string
+        && data.folder in ['trips', 'dispatches', 'pod', 'expenses', 'fuel', 'documents', 'company']
+        && isReqString(data, 'fileName', 200)
+        && isOptString(data, 'mimeType', 100)
+        && isOptNumber(data, 'sizeBytes')
+        && isReqString(data, 'storagePath', 500)
+        && isReqString(data, 'downloadUrl', 1500)
+        && isOptString(data, 'entityType', 40)
+        && isOptString(data, 'entityId', 128)
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
+    function isValidCompanySettings(data, companyId, settingId) {
+      return data.keys().hasAll(['id', 'companyId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'companyId', 'defaultGstRatePercent', 'defaultRcmEnabled',
+          'defaultCreditPeriodDays', 'defaultFuelUnit', 'lowFastagThresholdPaise',
+          'expiryAlertDays', 'autoGenerateLr', 'currency', 'updatedByUid',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id == settingId
+        && data.companyId == companyId
+        && isOptNumber(data, 'defaultGstRatePercent')
+        && isOptBool(data, 'defaultRcmEnabled')
+        && isOptNumber(data, 'defaultCreditPeriodDays')
+        && (!('defaultFuelUnit' in data) || (data.defaultFuelUnit is string && data.defaultFuelUnit in ['LITRES', 'GALLONS']))
+        && isOptNumber(data, 'lowFastagThresholdPaise')
+        && isOptNumber(data, 'expiryAlertDays')
+        && isOptBool(data, 'autoGenerateLr')
+        && isOptString(data, 'currency', 10)
+        && isOptString(data, 'updatedByUid', 128)
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time;
+    }
+
     function isValidAuditLog(data, companyId, logId) {
       return data.keys().hasAll(['id', 'companyId', 'userId', 'action', 'entityType', 'entityId', 'summary', 'timestamp'])
-        && data.keys().hasOnly(['id', 'companyId', 'userId', 'userName', 'action', 'entityType', 'entityId', 'summary', 'timestamp'])
+        && data.keys().hasOnly([
+          'id', 'companyId', 'userId', 'userName', 'action', 'entityType',
+          'entityId', 'moduleName', 'summary', 'previousValues', 'updatedValues', 'timestamp'
+        ])
         && data.id == logId
         && data.companyId == companyId
         && data.userId == request.auth.uid
         && isOptString(data, 'userName', 100)
         && data.action is string
-        && data.action in ['CREATE', 'UPDATE', 'DELETE', 'DISPATCH', 'SETTLE', 'INVOICE', 'PAYMENT']
+        && data.action in ['CREATE', 'UPDATE', 'DELETE', 'DISPATCH', 'SETTLE', 'APPROVE', 'INVOICE', 'PAYMENT', 'CANCEL']
         && data.entityType is string
-        && data.entityType in ['TRIP', 'VEHICLE', 'DRIVER', 'SETTLEMENT', 'INVOICE', 'PAYMENT', 'EXPENSE', 'CUSTOMER', 'DOCUMENT']
+        && data.entityType in [
+          'TRIP', 'DISPATCH', 'VEHICLE', 'DRIVER', 'ADVANCE', 'SETTLEMENT',
+          'INVOICE', 'BILLING', 'PAYMENT', 'EXPENSE', 'FUEL', 'CUSTOMER',
+          'BROKER', 'DOCUMENT', 'FILE_RECORD', 'SETTINGS', 'COMPANY', 'MEMBER'
+        ]
         && isReqString(data, 'entityId', 128)
+        && isOptString(data, 'moduleName', 60)
         && isReqString(data, 'summary', 500)
+        && (!('previousValues' in data) || (data.previousValues is map && data.previousValues.keys().size() <= 40))
+        && (!('updatedValues' in data) || (data.updatedValues is map && data.updatedValues.keys().size() <= 40))
         && data.timestamp == request.time;
     }
 
@@ -642,27 +753,44 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------------------
-    // 5. USER PROFILES (/users/{userId}) - Strict PII Owner Isolation
+    // 5. USER PROFILES (/users/{userId}) - Strict Owner & Anti-Self-Escalation
     // ------------------------------------------------------------------------
     match /users/{userId} {
-      allow get: if isValidId(userId) && isSignedIn() && (isBootstrappedAdmin() || request.auth.uid == userId);
-      allow list: if isSignedIn() && (isBootstrappedAdmin() || existing().id == request.auth.uid);
+      allow get: if isValidId(userId) && isSignedIn() && request.auth.uid == userId;
+      allow list: if isSignedIn() && existing().id == request.auth.uid;
       allow create: if isValidId(userId)
                     && isVerifiedUser()
                     && request.auth.uid == userId
                     && isValidUser(incoming(), userId)
+                    && (!('role' in incoming()) || incoming().role in ['USER', 'OWNER'])
                     && incoming().createdAt == request.time;
       allow update: if isValidId(userId)
                     && isVerifiedUser()
-                    && (request.auth.uid == userId || isBootstrappedAdmin())
+                    && request.auth.uid == userId
                     && isValidUser(incoming(), userId)
                     && isCreatedAtPreservedOrMigrated()
-                    && (!('onboardingCompleted' in existing()) || existing().onboardingCompleted != true || incoming().onboardingCompleted == true)
-                    && (!('onboardingCompletedAt' in existing()) || incoming().onboardingCompletedAt == existing().onboardingCompletedAt || isBootstrappedAdmin())
+                    // Prevent privilege self-escalation via /users/{uid}.role
                     && (
-                      isBootstrappedAdmin() ||
-                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'updatedAt']) ||
-                      (canMigrateLegacyCreatedAt() && incoming().diff(existing()).affectedKeys().hasOnly(['id', 'email', 'name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'createdAt', 'updatedAt']))
+                      !('role' in existing())
+                        ? (!('role' in incoming()) || incoming().role in ['USER', 'OWNER'])
+                        : incoming().role == existing().role
+                    )
+                    && (!('onboardingCompleted' in existing()) || existing().onboardingCompleted != true || incoming().onboardingCompleted == true)
+                    && (
+                      !('onboardingCompletedAt' in existing())
+                      || !(existing().onboardingCompletedAt is string)
+                      || (('onboardingCompletedAt' in incoming()) && incoming().onboardingCompletedAt == existing().onboardingCompletedAt)
+                    )
+                    && (
+                      (
+                        incoming().diff(existing()).addedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'role', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'updatedAt'])
+                        && incoming().diff(existing()).changedKeys().hasOnly(['name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'role', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'updatedAt'])
+                      ) ||
+                      (
+                        canMigrateLegacyCreatedAt()
+                        && incoming().diff(existing()).addedKeys().hasOnly(['id', 'email', 'name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'role', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'createdAt', 'updatedAt'])
+                        && incoming().diff(existing()).changedKeys().hasOnly(['id', 'email', 'name', 'phone', 'defaultCompanyId', 'activeCompanyId', 'role', 'photoUrl', 'onboardingCompleted', 'onboardingCompletedAt', 'createdAt', 'updatedAt'])
+                      )
                     );
       allow delete: if false;
     }
@@ -671,34 +799,49 @@ service cloud.firestore {
     // 6. MULTI-TENANT COMPANY ROOT (/companies/{companyId})
     // ------------------------------------------------------------------------
     match /companies/{companyId} {
-      allow get: if isValidId(companyId) && (isBootstrappedAdmin() || isCompanyMember(companyId));
-      allow list: if isSignedIn() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
+      // Allow null-resource probe before creation or authorized owner/active member read
+      allow get: if isValidId(companyId)
+                 && isSignedIn()
+                 && (resource == null || existing().ownerId == request.auth.uid || isActiveMember(companyId));
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
 
-      // Atomic Company Creation: must co-create the OWNER member doc in the same batch
       allow create: if isValidId(companyId)
                     && isVerifiedUser()
                     && isValidCompany(incoming(), companyId)
                     && incoming().ownerId == request.auth.uid
-                    && incoming().createdAt == request.time
-                    && existsAfter(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid))
-                    && getAfter(/databases/$(database)/documents/companies/$(companyId)/members/$(request.auth.uid)).data.role == 'OWNER';
+                    && incoming().createdAt == request.time;
 
       allow update: if isValidId(companyId)
                     && isVerifiedUser()
-                    && isOwnerOrAdmin(companyId)
+                    && hasCompanyRole(companyId, ['OWNER', 'ADMIN'])
                     && isValidCompany(incoming(), companyId)
-                    && (!('ownerId' in existing()) || incoming().ownerId == existing().ownerId)
+                    // Company ownership is strictly immutable
+                    && incoming().ownerId == existing().ownerId
                     && isCreatedAtPreservedOrMigrated()
                     && (
-                      incoming().diff(existing()).affectedKeys().hasOnly([
-                        'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-                        'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
-                        'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-                        'fleetSize', 'logoUrl', 'updatedAt'
-                      ]) ||
+                      (
+                        incoming().diff(existing()).addedKeys().hasOnly([
+                          'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
+                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
+                          'fleetSize', 'logoUrl', 'updatedAt'
+                        ]) &&
+                        incoming().diff(existing()).changedKeys().hasOnly([
+                          'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
+                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
+                          'fleetSize', 'logoUrl', 'updatedAt'
+                        ])
+                      ) ||
                       (
                         canMigrateLegacyCreatedAt() &&
-                        incoming().diff(existing()).affectedKeys().hasOnly([
+                        incoming().diff(existing()).addedKeys().hasOnly([
+                          'id', 'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
+                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
+                          'fleetSize', 'logoUrl', 'ownerId', 'createdAt', 'updatedAt'
+                        ]) &&
+                        incoming().diff(existing()).changedKeys().hasOnly([
                           'id', 'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
                           'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
                           'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
@@ -709,445 +852,460 @@ service cloud.firestore {
       allow delete: if false;
 
       // ----------------------------------------------------------------------
-      // 6.1 COMPANY MEMBERS (/companies/{companyId}/members/{userId})
+      // 6.1 COMPANY MEMBERSHIPS & RBAC (/companies/{companyId}/members/{memberUid})
       // ----------------------------------------------------------------------
-      match /members/{userId} {
-        allow get: if isValidId(companyId) && isValidId(userId)
-                   && (isBootstrappedAdmin() || isCompanyMember(companyId) || (isSignedIn() && request.auth.uid == userId));
-        allow list: if isSignedIn() && (isBootstrappedAdmin() || existing().userId == request.auth.uid || isCompanyMember(companyId));
+      match /members/{memberUid} {
+        allow get: if isValidId(companyId)
+                   && isValidId(memberUid)
+                   && isSignedIn()
+                   && (request.auth.uid == memberUid || isAuthorizedCompanyUser(companyId));
+        allow list: if isSignedIn()
+                    && existing().companyId == companyId
+                    && isAuthorizedCompanyUser(companyId);
 
-        allow create: if isValidId(companyId) && isValidId(userId)
+        allow create: if isValidId(companyId)
+                      && isValidId(memberUid)
                       && isVerifiedUser()
-                      && isValidMember(incoming(), companyId, userId)
-                      && incoming().joinedAt == request.time
+                      && isValidMember(incoming(), companyId, memberUid)
+                      && incoming().createdAt == request.time
                       && (
-                        // Action 1: Existing Owner/Admin adds staff member
-                        isOwnerOrAdmin(companyId) ||
-                        // Action 2: Bootstrap initial OWNER atomically with company creation
+                        // Owner self-bootstrap during atomic company creation
                         (
-                          request.auth.uid == userId
+                          memberUid == request.auth.uid
                           && incoming().role == 'OWNER'
                           && incoming().status == 'ACTIVE'
-                          && !exists(/databases/$(database)/documents/companies/$(companyId))
-                          && existsAfter(/databases/$(database)/documents/companies/$(companyId))
-                          && getAfter(/databases/$(database)/documents/companies/$(companyId)).data.ownerId == request.auth.uid
-                        ) ||
-                        // Action 3: Verified company owner restores missing OWNER member doc
-                        (
-                          request.auth.uid == userId
-                          && incoming().role == 'OWNER'
-                          && incoming().status == 'ACTIVE'
-                          && exists(/databases/$(database)/documents/companies/$(companyId))
-                          && get(/databases/$(database)/documents/companies/$(companyId)).data.ownerId == request.auth.uid
+                          && (
+                            isCompanyOwner(companyId)
+                            || getAfter(companyDocPath(companyId)).data.ownerId == request.auth.uid
+                          )
+                        )
+                        // Company Owner adding staff (cannot assign OWNER)
+                        || (
+                          memberUid != request.auth.uid
+                          && isCompanyOwner(companyId)
+                          && incoming().role in ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']
+                        )
+                        // Company Admin adding operational/accounting staff
+                        || (
+                          memberUid != request.auth.uid
+                          && hasCompanyRole(companyId, ['ADMIN'])
+                          && incoming().role in ['MANAGER', 'ACCOUNTANT', 'OPERATIONS']
                         )
                       );
 
-        allow update: if isValidId(companyId) && isValidId(userId)
+        allow update: if isValidId(companyId)
+                      && isValidId(memberUid)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId)
-                      && isValidMember(incoming(), companyId, userId)
-                      && incoming().joinedAt == existing().joinedAt
+                      && isValidMember(incoming(), companyId, memberUid)
+                      && isCreatedAtPreservedOrMigrated()
+                      && incoming().id == existing().id
                       && incoming().userId == existing().userId
                       && incoming().companyId == existing().companyId
-                      && (existing().role != 'OWNER' || isOwner(companyId) || isBootstrappedAdmin())
-                      && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'name', 'status', 'updatedAt']);
+                      && (
+                        // Members may only update their display name, never role or status (anti-escalation)
+                        (
+                          request.auth.uid == memberUid
+                          && incoming().role == existing().role
+                          && incoming().status == existing().status
+                          && incoming().email == existing().email
+                          && incoming().diff(existing()).addedKeys().hasOnly(['name', 'joinedAt', 'updatedAt'])
+                          && incoming().diff(existing()).changedKeys().hasOnly(['name', 'joinedAt', 'updatedAt'])
+                        )
+                        // Owner may update non-OWNER staff role/status
+                        || (
+                          request.auth.uid != memberUid
+                          && isCompanyOwner(companyId)
+                          && existing().role != 'OWNER'
+                          && incoming().role in ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']
+                        )
+                        // Admin may update MANAGER/ACCOUNTANT/OPERATIONS staff
+                        || (
+                          request.auth.uid != memberUid
+                          && hasCompanyRole(companyId, ['ADMIN'])
+                          && existing().role in ['MANAGER', 'ACCOUNTANT', 'OPERATIONS']
+                          && incoming().role in ['MANAGER', 'ACCOUNTANT', 'OPERATIONS']
+                        )
+                      );
 
-        allow delete: if isValidId(companyId) && isValidId(userId)
+        allow delete: if isValidId(companyId)
+                      && isValidId(memberUid)
                       && isVerifiedUser()
-                      && (isOwner(companyId) || isBootstrappedAdmin())
-                      && existing().role != 'OWNER';
+                      && request.auth.uid != memberUid
+                      && existing().role != 'OWNER'
+                      && (
+                        isCompanyOwner(companyId)
+                        || (
+                          hasCompanyRole(companyId, ['ADMIN'])
+                          && existing().role in ['MANAGER', 'ACCOUNTANT', 'OPERATIONS']
+                        )
+                      );
       }
 
       // ----------------------------------------------------------------------
       // 6.2 FLEET VEHICLES (/companies/{companyId}/vehicles/{vehicleId})
       // ----------------------------------------------------------------------
       match /vehicles/{vehicleId} {
-        allow get: if isValidId(companyId) && isValidId(vehicleId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(vehicleId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(vehicleId)
                       && isVerifiedUser()
                       && isValidVehicle(incoming(), companyId, vehicleId)
                       && incoming().createdAt == request.time
-                      && isFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS']);
 
         allow update: if isValidId(companyId) && isValidId(vehicleId)
                       && isVerifiedUser()
                       && isValidVehicle(incoming(), companyId, vehicleId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly([
-                          'status', 'currentOdometerKm', 'fastagBalancePaise',
-                          'assignedDriverId', 'assignedDriverName', 'activeTripId',
-                          'insuranceExpiry', 'insurancePolicyNumber',
-                          'fitnessExpiry', 'fitnessCertificateNumber',
-                          'permitExpiry', 'permitNumber', 'permitType',
-                          'pucExpiry', 'pucNumber', 'notes', 'updatedAt'
-                        ])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS']);
 
         allow delete: if isValidId(companyId) && isValidId(vehicleId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
       // 6.3 DRIVERS (/companies/{companyId}/drivers/{driverId})
       // ----------------------------------------------------------------------
       match /drivers/{driverId} {
-        allow get: if isValidId(companyId) && isValidId(driverId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(driverId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(driverId)
                       && isVerifiedUser()
                       && isValidDriver(incoming(), companyId, driverId)
                       && incoming().createdAt == request.time
-                      && isFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']);
 
         allow update: if isValidId(companyId) && isValidId(driverId)
                       && isVerifiedUser()
                       && isValidDriver(incoming(), companyId, driverId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFinanceOrFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly([
-                          'fullName', 'phone', 'altPhone', 'licenseNumber', 'licenseExpiry',
-                          'badgeNumber', 'address', 'emergencyContact', 'emergencyPhone',
-                          'status', 'currentAdvanceBalancePaise', 'totalTripsCompleted',
-                          'perDayBataPaise', 'assignedVehicleId', 'assignedVehicleReg', 'updatedAt'
-                        ])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']);
 
         allow delete: if isValidId(companyId) && isValidId(driverId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
       // 6.4 CUSTOMERS (/companies/{companyId}/customers/{customerId})
       // ----------------------------------------------------------------------
       match /customers/{customerId} {
-        allow get: if isValidId(companyId) && isValidId(customerId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(customerId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(customerId)
                       && isVerifiedUser()
                       && isValidCustomer(incoming(), companyId, customerId)
                       && incoming().createdAt == request.time
-                      && isFinanceOrFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT']);
 
         allow update: if isValidId(companyId) && isValidId(customerId)
                       && isVerifiedUser()
                       && isValidCustomer(incoming(), companyId, customerId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFinanceOrFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly([
-                          'name', 'tradeName', 'gstin', 'pan', 'contactPerson', 'phone',
-                          'email', 'billingAddress', 'city', 'state', 'stateCode', 'pincode',
-                          'creditPeriodDays', 'paymentTermsDays', 'creditLimitPaise',
-                          'currentOutstandingPaise', 'totalFreightBilledPaise', 'notes',
-                          'status', 'updatedAt'
-                        ])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT']);
 
         allow delete: if isValidId(companyId) && isValidId(customerId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
-      // 6.5 TRIPS (/companies/{companyId}/trips/{tripId})
+      // 6.4B BROKERS (/companies/{companyId}/brokers/{brokerId})
+      // ----------------------------------------------------------------------
+      match /brokers/{brokerId} {
+        allow get: if isValidId(companyId) && isValidId(brokerId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
+
+        allow create: if isValidId(companyId) && isValidId(brokerId)
+                      && isVerifiedUser()
+                      && isValidBroker(incoming(), companyId, brokerId)
+                      && incoming().createdAt == request.time
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
+
+        allow update: if isValidId(companyId) && isValidId(brokerId)
+                      && isVerifiedUser()
+                      && isValidBroker(incoming(), companyId, brokerId)
+                      && isCreatedAtPreservedOrMigrated()
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
+
+        allow delete: if isValidId(companyId) && isValidId(brokerId)
+                      && isVerifiedUser()
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
+      }
+
+      // ----------------------------------------------------------------------
+      // 6.5 TRIPS & DISPATCH (/companies/{companyId}/trips/{tripId})
       // ----------------------------------------------------------------------
       match /trips/{tripId} {
-        allow get: if isValidId(companyId) && isValidId(tripId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(tripId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(tripId)
                       && isVerifiedUser()
                       && isValidTrip(incoming(), companyId, tripId)
                       && incoming().createdAt == request.time
-                      && isFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS']);
 
         allow update: if isValidId(companyId) && isValidId(tripId)
                       && isVerifiedUser()
                       && isValidTrip(incoming(), companyId, tripId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFinanceOrFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        (
-                          existing().status == 'PLANNED'
-                          && incoming().diff(existing()).affectedKeys().hasOnly([
-                            'customerId', 'customerName', 'customerGstin', 'vehicleId', 'vehicleReg',
-                            'driverId', 'driverName', 'driverPhone', 'originCity', 'destinationCity',
-                            'goodsType', 'weightTonnes', 'ratePerTonnePaise', 'freightAmountPaise',
-                            'otherChargesPaise', 'totalRevenuePaise', 'dispatchDate',
-                            'expectedDeliveryDate', 'startOdometerKm', 'status',
-                            'totalAdvancesPaise', 'tripContributionPaise', 'notes', 'updatedAt'
-                          ])
-                        ) ||
-                        (
-                          existing().status != 'CANCELLED'
-                          && incoming().diff(existing()).affectedKeys().hasOnly([
-                            'status', 'actualDeliveryDate', 'endOdometerKm', 'podReceived',
-                            'podDocumentUrl', 'podRemarks', 'totalExpensesPaise',
-                            'totalAdvancesPaise', 'tripContributionPaise', 'isSettled',
-                            'isInvoiced', 'invoiceId', 'invoiceNumber', 'cancellationReason',
-                            'cancelledAt', 'cancelledBy', 'notes', 'updatedAt'
-                          ])
-                        )
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']);
 
         allow delete: if isValidId(companyId) && isValidId(tripId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
       }
 
       // ----------------------------------------------------------------------
-      // 6.6 TRIP EXPENSES (/companies/{companyId}/expenses/{expenseId})
+      // 6.6 EXPENSES & FUEL (/companies/{companyId}/expenses/{expenseId})
       // ----------------------------------------------------------------------
       match /expenses/{expenseId} {
-        allow get: if isValidId(companyId) && isValidId(expenseId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(expenseId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(expenseId)
                       && isVerifiedUser()
                       && isValidExpense(incoming(), companyId, expenseId)
                       && incoming().createdAt == request.time
-                      && isFinanceOrFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']);
 
         allow update: if isValidId(companyId) && isValidId(expenseId)
                       && isVerifiedUser()
                       && isValidExpense(incoming(), companyId, expenseId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFinanceOrFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly([
-                          'category', 'amountPaise', 'paymentMode', 'date', 'expenseDate',
-                          'description', 'litres', 'litresFuel', 'ratePerLitrePaise',
-                          'pumpName', 'petrolPumpName', 'location', 'odometerReading',
-                          'receiptNumber', 'voucherNumber', 'receiptUrl', 'receiptAttachmentUrl',
-                          'notes', 'isDriverDisbursed', 'isSettled', 'settlementId', 'updatedAt'
-                        ])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS']);
 
         allow delete: if isValidId(companyId) && isValidId(expenseId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
       }
 
       // ----------------------------------------------------------------------
       // 6.7 DRIVER ADVANCES (/companies/{companyId}/advances/{advanceId})
       // ----------------------------------------------------------------------
       match /advances/{advanceId} {
-        allow get: if isValidId(companyId) && isValidId(advanceId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(advanceId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(advanceId)
                       && isVerifiedUser()
                       && isValidAdvance(incoming(), companyId, advanceId)
                       && incoming().createdAt == request.time
-                      && isFinanceOrFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT']);
 
         allow update: if isValidId(companyId) && isValidId(advanceId)
                       && isVerifiedUser()
                       && isValidAdvance(incoming(), companyId, advanceId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFinanceOrFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly(['isSettled', 'settlementId', 'notes', 'referenceNotes', 'updatedAt'])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT']);
 
         allow delete: if isValidId(companyId) && isValidId(advanceId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
       // 6.8 TRIP SETTLEMENTS (/companies/{companyId}/settlements/{settlementId})
       // ----------------------------------------------------------------------
       match /settlements/{settlementId} {
-        allow get: if isValidId(companyId) && isValidId(settlementId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(settlementId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(settlementId)
                       && isVerifiedUser()
                       && isValidSettlement(incoming(), companyId, settlementId)
                       && incoming().createdAt == request.time
-                      && isAccountant(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow update: if isValidId(companyId) && isValidId(settlementId)
                       && isVerifiedUser()
                       && isValidSettlement(incoming(), companyId, settlementId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isAccountant(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        (
-                          existing().status != 'FINALIZED'
-                          && incoming().diff(existing()).affectedKeys().hasOnly([
-                            'status', 'approvedDeductionsPaise', 'otherDeductionsPaise',
-                            'deductionReason', 'remainingDriverBalancePaise',
-                            'netPayableToDriverPaise', 'isCompanyDue', 'settlementNotes',
-                            'settledBy', 'settledDate', 'updatedAt'
-                          ])
-                        )
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow delete: if isValidId(companyId) && isValidId(settlementId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
-      // 6.9 INVOICES (/companies/{companyId}/invoices/{invoiceId})
+      // 6.9 BILLING & INVOICES (/companies/{companyId}/invoices/{invoiceId})
       // ----------------------------------------------------------------------
       match /invoices/{invoiceId} {
-        allow get: if isValidId(companyId) && isValidId(invoiceId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(invoiceId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(invoiceId)
                       && isVerifiedUser()
                       && isValidInvoice(incoming(), companyId, invoiceId)
                       && incoming().createdAt == request.time
-                      && isAccountant(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow update: if isValidId(companyId) && isValidId(invoiceId)
                       && isVerifiedUser()
                       && isValidInvoice(incoming(), companyId, invoiceId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isAccountant(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        (
-                          existing().status != 'CANCELLED'
-                          && incoming().diff(existing()).affectedKeys().hasOnly([
-                            'amountPaidPaise', 'balanceDuePaise', 'status', 'paymentStatus',
-                            'dueDate', 'cancelledAt', 'cancellationReason', 'notes', 'updatedAt'
-                          ])
-                        )
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow delete: if isValidId(companyId) && isValidId(invoiceId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
       // 6.10 PAYMENTS (/companies/{companyId}/payments/{paymentId})
       // ----------------------------------------------------------------------
       match /payments/{paymentId} {
-        allow get: if isValidId(companyId) && isValidId(paymentId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(paymentId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(paymentId)
                       && isVerifiedUser()
                       && isValidPayment(incoming(), companyId, paymentId)
                       && incoming().createdAt == request.time
-                      && isAccountant(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow update: if isValidId(companyId) && isValidId(paymentId)
                       && isVerifiedUser()
                       && isValidPayment(incoming(), companyId, paymentId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isOwnerOrAdmin(companyId)
-                      && incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'tdsDeductedPaise', 'bankAccount', 'updatedAt']);
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow delete: if isValidId(companyId) && isValidId(paymentId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
       // 6.11 VEHICLE COMPLIANCE DOCUMENTS (/companies/{companyId}/documents/{docId})
       // ----------------------------------------------------------------------
       match /documents/{docId} {
-        allow get: if isValidId(companyId) && isValidId(docId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(docId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(docId)
                       && isVerifiedUser()
                       && isValidVehicleDocument(incoming(), companyId, docId)
                       && incoming().createdAt == request.time
-                      && isFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
 
         allow update: if isValidId(companyId) && isValidId(docId)
                       && isVerifiedUser()
                       && isValidVehicleDocument(incoming(), companyId, docId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly([
-                          'documentNumber', 'issuingAuthority', 'issueDate', 'expiryDate',
-                          'documentUrl', 'daysUntilExpiry', 'status', 'updatedAt'
-                        ])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
 
         allow delete: if isValidId(companyId) && isValidId(docId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
       // 6.12 MAINTENANCE RECORDS (/companies/{companyId}/maintenance/{maintenanceId})
       // ----------------------------------------------------------------------
       match /maintenance/{maintenanceId} {
-        allow get: if isValidId(companyId) && isValidId(maintenanceId) && (isBootstrappedAdmin() || isActiveMember(companyId));
-        allow list: if isSignedIn() && existing().companyId == companyId && (isBootstrappedAdmin() || isActiveMember(companyId));
+        allow get: if isValidId(companyId) && isValidId(maintenanceId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
 
         allow create: if isValidId(companyId) && isValidId(maintenanceId)
                       && isVerifiedUser()
                       && isValidMaintenance(incoming(), companyId, maintenanceId)
                       && incoming().createdAt == request.time
-                      && isFleetStaff(companyId)
-                      && exists(/databases/$(database)/documents/companies/$(companyId));
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
 
         allow update: if isValidId(companyId) && isValidId(maintenanceId)
                       && isVerifiedUser()
                       && isValidMaintenance(incoming(), companyId, maintenanceId)
                       && isCreatedAtPreservedOrMigrated()
-                      && isFleetStaff(companyId)
-                      && (
-                        isOwnerOrAdmin(companyId) ||
-                        incoming().diff(existing()).affectedKeys().hasOnly([
-                          'garageName', 'costPaise', 'odometerReading', 'serviceDate',
-                          'partsReplaced', 'invoiceNumber', 'notes', 'updatedAt'
-                        ])
-                      );
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'MANAGER']);
 
         allow delete: if isValidId(companyId) && isValidId(maintenanceId)
                       && isVerifiedUser()
-                      && isOwnerOrAdmin(companyId);
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
       }
 
       // ----------------------------------------------------------------------
-      // 6.13 AUDIT LOGS (/companies/{companyId}/auditLogs/{logId}) - Immutable
+      // 6.13 UPLOADED FILE RECORDS (/companies/{companyId}/fileRecords/{fileId})
+      // ----------------------------------------------------------------------
+      match /fileRecords/{fileId} {
+        allow get: if isValidId(companyId) && isValidId(fileId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
+
+        allow create: if isValidId(companyId) && isValidId(fileId)
+                      && isVerifiedUser()
+                      && isValidFileRecord(incoming(), companyId, fileId)
+                      && incoming().uploadedByUid == request.auth.uid
+                      && incoming().createdAt == request.time
+                      && isAuthorizedCompanyUser(companyId);
+
+        allow update: if isValidId(companyId) && isValidId(fileId)
+                      && isVerifiedUser()
+                      && isValidFileRecord(incoming(), companyId, fileId)
+                      && isCreatedAtPreservedOrMigrated()
+                      && incoming().companyId == existing().companyId
+                      && incoming().uploadedByUid == existing().uploadedByUid
+                      && isAuthorizedCompanyUser(companyId);
+
+        allow delete: if isValidId(companyId) && isValidId(fileId)
+                      && isVerifiedUser()
+                      && (
+                        hasCompanyRole(companyId, ['OWNER', 'ADMIN'])
+                        || existing().uploadedByUid == request.auth.uid
+                      );
+      }
+
+      // ----------------------------------------------------------------------
+      // 6.14 COMPANY SETTINGS & PREFERENCES (/companies/{companyId}/settings/{settingId})
+      // ----------------------------------------------------------------------
+      match /settings/{settingId} {
+        allow get: if isValidId(companyId) && isValidId(settingId) && isAuthorizedCompanyUser(companyId);
+        allow list: if isSignedIn() && existing().companyId == companyId && isAuthorizedCompanyUser(companyId);
+
+        allow create: if isValidId(companyId) && isValidId(settingId)
+                      && isVerifiedUser()
+                      && isValidCompanySettings(incoming(), companyId, settingId)
+                      && incoming().createdAt == request.time
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
+
+        allow update: if isValidId(companyId) && isValidId(settingId)
+                      && isVerifiedUser()
+                      && isValidCompanySettings(incoming(), companyId, settingId)
+                      && isCreatedAtPreservedOrMigrated()
+                      && incoming().companyId == existing().companyId
+                      && hasCompanyRole(companyId, ['OWNER', 'ADMIN']);
+
+        allow delete: if isValidId(companyId) && isValidId(settingId)
+                      && isVerifiedUser()
+                      && isCompanyOwner(companyId);
+      }
+
+      // ----------------------------------------------------------------------
+      // 6.15 AUDIT LOGS (/companies/{companyId}/auditLogs/{logId}) - Immutable
       // ----------------------------------------------------------------------
       match /auditLogs/{logId} {
-        allow get: if isValidId(companyId) && isValidId(logId) && isOwnerOrAdmin(companyId);
-        allow list: if isSignedIn() && existing().companyId == companyId && isOwnerOrAdmin(companyId);
+        allow get: if isValidId(companyId) && isValidId(logId) && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
+        allow list: if isSignedIn() && existing().companyId == companyId && hasCompanyRole(companyId, ['OWNER', 'ADMIN', 'ACCOUNTANT']);
 
         allow create: if isValidId(companyId) && isValidId(logId)
                       && isVerifiedUser()
-                      && (isBootstrappedAdmin() || isActiveMember(companyId))
+                      && isAuthorizedCompanyUser(companyId)
                       && isValidAuditLog(incoming(), companyId, logId);
 
         allow update, delete: if false;

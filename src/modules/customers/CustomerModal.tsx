@@ -136,15 +136,17 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
 
       const cleanGstin = gstin.trim().toUpperCase();
       const GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
-      if (!GST_REGEX.test(cleanGstin)) {
+      if (cleanGstin && !GST_REGEX.test(cleanGstin)) {
         throw new Error('Invalid GSTIN format. Must be a valid 15-character GST identification number (e.g. 19AAACS4128F1Z8).');
       }
 
-      const duplicateGstin = allCustomers.find(
-        (c) => c.id !== customerToEdit?.id && (c.gstin || '').trim().toUpperCase() === cleanGstin
-      );
-      if (duplicateGstin) {
-        throw new Error(`GSTIN ${cleanGstin} is already registered to ${duplicateGstin.name}.`);
+      if (cleanGstin) {
+        const duplicateGstin = allCustomers.find(
+          (c) => c.id !== customerToEdit?.id && (c.gstin || '').trim().toUpperCase() === cleanGstin
+        );
+        if (duplicateGstin) {
+          throw new Error(`GSTIN ${cleanGstin} is already registered to ${duplicateGstin.name}.`);
+        }
       }
 
       const cleanPhone = phone.replace(/[^0-9]/g, '').slice(-10);
@@ -162,14 +164,14 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
         name: name.trim(),
         tradeName: tradeName.trim() || undefined,
         gstin: cleanGstin,
-        pan: pan.trim().toUpperCase() || cleanGstin.substring(2, 12),
+        pan: pan.trim().toUpperCase() || (cleanGstin.length >= 12 ? cleanGstin.substring(2, 12) : ''),
         contactPerson: contactPerson.trim() || 'Authorized Coordinator',
         phone: cleanPhone,
         email: email.trim().toLowerCase() || '',
         billingAddress: billingAddress.trim() || '',
         city: city.trim() || '',
         state: state.trim() || '',
-        stateCode: stateCode.trim() || cleanGstin.substring(0, 2),
+        stateCode: stateCode.trim() || (cleanGstin.length >= 2 ? cleanGstin.substring(0, 2) : ''),
         pincode: pincode.trim() || '',
         creditPeriodDays: parsedCreditDays,
         paymentTermsDays: parsedCreditDays,
@@ -268,11 +270,10 @@ export const CustomerModal: React.FC<CustomerModalProps> = ({
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  GSTIN (15 characters) <span className="text-rose-500">*</span>
+                  GSTIN (15 characters, optional for unregistered parties)
                 </label>
                 <input
                   type="text"
-                  required
                   maxLength={15}
                   placeholder="19AAACS4128F1Z8"
                   value={gstin}

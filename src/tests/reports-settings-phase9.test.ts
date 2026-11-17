@@ -68,20 +68,12 @@ const tokenOwnerA = signSessionToken({
   role: 'OWNER',
 });
 
-const tokenAccountantA = signSessionToken({
-  userId: 'usr_acct_02',
-  email: 'accounts@royalbengal.com',
-  name: 'Subhashish Dey',
-  companyId: COMPANY_A,
-  role: 'ACCOUNTANT',
-});
-
-const tokenOpsA = signSessionToken({
+const tokenNonOwnerA = signSessionToken({
   userId: 'usr_ops_03',
   email: 'bikash@royalbengal.com',
   name: 'Bikash Mahato',
   companyId: COMPANY_A,
-  role: 'OPERATIONS',
+  role: 'OPERATIONS' as any,
 });
 
 const tokenOwnerB = signSessionToken({
@@ -441,16 +433,16 @@ describe('PHASE 9: Reports and Company Settings Tests', () => {
       assert.strictEqual(res.data.company.logoUrl, 'https://royalbengal.com/assets/logo.png');
     });
 
-    it('OPERATIONS user CANNOT update company profile (HTTP 403 Forbidden)', async () => {
-      const res = await makeRequest('PUT', '/api/company/profile', tokenOpsA, {
+    it('Non-owner token CANNOT update company profile (HTTP 403 Forbidden)', async () => {
+      const res = await makeRequest('PUT', '/api/company/profile', tokenNonOwnerA, {
         name: 'Hacked Transport Name',
       });
       assert.strictEqual(res.status, 403);
       assert.strictEqual(res.data.success, false);
     });
 
-    it('OPERATIONS user CANNOT invite new users (HTTP 403 Forbidden)', async () => {
-      const res = await makeRequest('POST', '/api/company/invite-user', tokenOpsA, {
+    it('Team user invitations are strictly disabled in Owner-Only mode (HTTP 403 Forbidden)', async () => {
+      const res = await makeRequest('POST', '/api/company/invite-user', tokenNonOwnerA, {
         name: 'New Rogue Driver',
         email: 'rogue@test.com',
         role: 'MANAGER',
@@ -459,15 +451,16 @@ describe('PHASE 9: Reports and Company Settings Tests', () => {
       assert.strictEqual(res.data.success, false);
     });
 
-    it('OWNER can view current team members', async () => {
+    it('OWNER can view only the authenticated company owner record', async () => {
       const res = await makeRequest('GET', '/api/company/users', tokenOwnerA);
       assert.strictEqual(res.status, 200);
       assert.strictEqual(res.data.success, true);
       assert.ok(Array.isArray(res.data.users));
-      assert.ok(res.data.users.length > 0);
+      assert.strictEqual(res.data.users.length, 1);
+      assert.strictEqual(res.data.users[0].role, 'OWNER');
     });
 
-    it('prevents non-owners from inviting an OWNER (HTTP 403 Forbidden)', async () => {
+    it('prevents inviting an additional OWNER or staff user (HTTP 403 Forbidden)', async () => {
       const res = await makeRequest('POST', '/api/company/invite-user', tokenOwnerA, {
         name: 'Second Owner',
         email: 'secondowner@test.com',

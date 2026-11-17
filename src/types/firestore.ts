@@ -3,7 +3,7 @@
  * Strongly-typed definitions for all 12 company-scoped collections and paths.
  */
 
-export type Role = 'OWNER' | 'ADMIN' | 'MANAGER' | 'ACCOUNTANT' | 'OPERATIONS' | 'OPERATIONS_STAFF';
+export type Role = 'OWNER' | 'ADMIN' | 'MANAGER' | 'ACCOUNTANT' | 'OPERATIONS';
 
 export type TruckType = 'OPEN_BODY' | 'CONTAINER' | 'TRAILER' | 'TANKER' | 'TIPPER' | 'LCV';
 export type VehicleStatus = 'AVAILABLE' | 'ON_TRIP' | 'MAINTENANCE' | 'INACTIVE';
@@ -144,7 +144,7 @@ export interface FirestoreTrip {
 export interface FirestoreTripExpense {
   id: string;
   companyId: string;
-  tripId: string;
+  tripId?: string;
   vehicleId?: string;
   category: ExpenseCategory;
   amount: number;
@@ -160,7 +160,7 @@ export interface FirestoreTripExpense {
 export interface FirestoreDriverAdvance {
   id: string;
   companyId: string;
-  tripId: string;
+  tripId?: string;
   driverId: string;
   amount: number;
   advanceDate: string;
@@ -266,9 +266,67 @@ export interface FirestoreAuditLog {
   actorId: string;
   actorEmail?: string;
   actorRole?: string;
+  moduleName?: string;
   details?: string;
+  previousValues?: Record<string, string | number | boolean>;
+  updatedValues?: Record<string, string | number | boolean>;
   ipAddress?: string;
   timestamp: string;
+}
+
+// Subcollection 14: Brokers
+export interface FirestoreBroker {
+  id: string;
+  companyId: string;
+  name: string;
+  companyName?: string;
+  phone: string;
+  email?: string;
+  gstin?: string;
+  pan?: string;
+  city?: string;
+  state?: string;
+  commissionRatePercent?: number;
+  defaultCommissionPaise?: number;
+  notes?: string;
+  status?: 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
+  createdAt: string;
+  updatedAt?: string;
+}
+
+// Subcollection 15: File Records
+export interface FirestoreFileRecord {
+  id: string;
+  companyId: string;
+  uploadedByUid: string;
+  uploadedByName?: string;
+  folder: 'trips' | 'dispatches' | 'pod' | 'expenses' | 'fuel' | 'documents' | 'company';
+  fileName: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  storagePath: string;
+  downloadUrl: string;
+  entityType?: string;
+  entityId?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+// Subcollection 16: Company Settings
+export interface FirestoreCompanySettings {
+  id: string;
+  companyId: string;
+  defaultGstRatePercent?: number;
+  defaultRcmEnabled?: boolean;
+  defaultCreditPeriodDays?: number;
+  defaultFuelUnit?: 'LITRES' | 'GALLONS';
+  lowFastagThresholdPaise?: number;
+  expiryAlertDays?: number;
+  autoGenerateLr?: boolean;
+  currency?: string;
+  updatedByUid?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 // Standardized collection path builders
@@ -283,6 +341,8 @@ export const FirestorePaths = {
   driver: (companyId: string, driverId: string) => `companies/${companyId}/drivers/${driverId}`,
   customers: (companyId: string) => `companies/${companyId}/customers`,
   customer: (companyId: string, customerId: string) => `companies/${companyId}/customers/${customerId}`,
+  brokers: (companyId: string) => `companies/${companyId}/brokers`,
+  broker: (companyId: string, brokerId: string) => `companies/${companyId}/brokers/${brokerId}`,
   trips: (companyId: string) => `companies/${companyId}/trips`,
   trip: (companyId: string, tripId: string) => `companies/${companyId}/trips/${tripId}`,
   expenses: (companyId: string) => `companies/${companyId}/expenses`,
@@ -299,6 +359,10 @@ export const FirestorePaths = {
   document: (companyId: string, docId: string) => `companies/${companyId}/documents/${docId}`,
   maintenance: (companyId: string) => `companies/${companyId}/maintenance`,
   maintenanceRecord: (companyId: string, recordId: string) => `companies/${companyId}/maintenance/${recordId}`,
+  fileRecords: (companyId: string) => `companies/${companyId}/fileRecords`,
+  fileRecord: (companyId: string, fileId: string) => `companies/${companyId}/fileRecords/${fileId}`,
+  settings: (companyId: string) => `companies/${companyId}/settings`,
+  setting: (companyId: string, settingId: string) => `companies/${companyId}/settings/${settingId}`,
   auditLogs: (companyId: string) => `companies/${companyId}/auditLogs`,
   auditLog: (companyId: string, logId: string) => `companies/${companyId}/auditLogs/${logId}`,
 };

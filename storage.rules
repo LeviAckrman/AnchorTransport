@@ -12,6 +12,43 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    function isVerifiedUser() {
+      return isSignedIn()
+        && ('email_verified' in request.auth.token)
+        && request.auth.token.email_verified == true;
+    }
+
+    function isValidSegment(val) {
+      return val is string && val.size() > 0 && val.size() <= 128 && val.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function companyDocPath(companyId) {
+      return /databases/ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d/documents/companies/$(companyId);
+    }
+
+    function memberDocPath(companyId, uid) {
+      return /databases/ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d/documents/companies/$(companyId)/members/$(uid);
+    }
+
+    function isAuthorizedCompanyUser(companyId) {
+      return isVerifiedUser()
+        && isValidSegment(companyId)
+        && (
+          (
+            firestore.exists(companyDocPath(companyId))
+            && firestore.get(companyDocPath(companyId)).data.ownerId == request.auth.uid
+          )
+          || (
+            firestore.exists(memberDocPath(companyId, request.auth.uid))
+            && firestore.get(memberDocPath(companyId, request.auth.uid)).data.status == 'ACTIVE'
+          )
+        );
+    }
+
+    function isAllowedFolder(folder) {
+      return folder in ['trips', 'dispatches', 'pod', 'expenses', 'fuel', 'documents', 'company'];
+    }
+
     function isImageOrPdf() {
       return request.resource.contentType.matches('image/.*')
           || request.resource.contentType == 'application/pdf';
@@ -21,15 +58,22 @@ service firebase.storage {
       return request.resource.size <= maxMegabytes * 1024 * 1024;
     }
 
-    // Company-scoped compliance documents (RC, Insurance, PUC, Permit, POD, Fuel slips)
+    // Company-scoped compliance documents (RC, Insurance, PUC, Permit, POD, LR, Dispatch, Fuel, Expense)
     match /companies/{companyId}/{folder}/{fileName} {
-      // Allow read for authenticated users belonging to the company
-      allow read: if isSignedIn();
+      // Only verified owners/active members of THIS company can read its files
+      allow read: if isAuthorizedCompanyUser(companyId) && isAllowedFolder(folder);
 
-      // Allow upload if authenticated, valid file type, under 15MB
-      allow write: if isSignedIn()
-                   && isImageOrPdf()
-                   && isUnderMaxSize(15);
+      // Uploads must verify company membership, file type, 15MB cap, and matching customMetadata
+      allow create, update: if isAuthorizedCompanyUser(companyId)
+                            && isAllowedFolder(folder)
+                            && isImageOrPdf()
+                            && isUnderMaxSize(15)
+                            && request.resource.metadata != null
+                            && request.resource.metadata.companyId == companyId
+                            && request.resource.metadata.uploadedByUid == request.auth.uid;
+
+      // Only verified owners/active members of THIS company can delete its files
+      allow delete: if isAuthorizedCompanyUser(companyId) && isAllowedFolder(folder);
     }
   }
 }

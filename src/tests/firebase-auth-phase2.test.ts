@@ -228,10 +228,10 @@ async function runAuthPhase2Tests() {
     );
 
     assert('Privilege Guard: Rejects user attempting to self-assign OWNER with 403 Forbidden', escalationAttempt.status === 403);
-    assert('Privilege Guard: Error explicitly forbids self-assignment of OWNER', escalationAttempt.data.error.includes('OWNER'));
+    assert('Privilege Guard: Error explicitly enforces Owner-Only mode', escalationAttempt.data.error.toLowerCase().includes('owner-only'));
 
-    // Staff joins legitimately with allowed non-owner role
-    const legitimateJoin = await makeRequest(
+    // Attempting to join an external company with any non-owner role is also strictly blocked in Owner-Only mode
+    const joinAttempt = await makeRequest(
       'POST',
       '/api/auth/join-company',
       {
@@ -242,7 +242,7 @@ async function runAuthPhase2Tests() {
         Authorization: `Bearer ${staffToken}`,
       }
     );
-    assert('Legitimate Join: Staff allowed to join as OPERATIONS', legitimateJoin.status === 201 && legitimateJoin.data.role === 'OPERATIONS');
+    assert('Owner-Only Guard: Blocks join-company for non-owner roles with 403 Forbidden', joinAttempt.status === 403);
 
     // -------------------------------------------------------------
     // Test 6: Cross-Company Access Isolation Guard
@@ -313,13 +313,13 @@ async function runAuthPhase2Tests() {
     );
     assert('RBAC: OWNER allowed to update company profile (200 OK)', ownerUpdateRes.status === 200);
 
-    // Staff with OPERATIONS role attempts company profile update
+    // Forged non-owner role token attempts company profile update
     const staffOpsToken = signSessionToken({
       userId: staffReg.data.user.id,
       email: staffEmail,
       name: 'Manish Verma Staff',
       companyId: createdCompanyId,
-      role: 'OPERATIONS',
+      role: 'OPERATIONS' as unknown as UserRole,
     });
     const staffForbiddenUpdate = await makeRequest(
       'PUT',
@@ -331,7 +331,7 @@ async function runAuthPhase2Tests() {
         Authorization: `Bearer ${staffOpsToken}`,
       }
     );
-    assert('RBAC: Non-owner/admin (OPERATIONS) blocked from company profile update with 403 Forbidden', staffForbiddenUpdate.status === 403);
+    assert('RBAC: Non-owner role claim blocked from company profile update with 403 Forbidden', staffForbiddenUpdate.status === 403);
 
     // -------------------------------------------------------------
     // Test 10: User Profile Management & Logout

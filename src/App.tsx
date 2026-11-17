@@ -51,9 +51,9 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { FirestoreDataProvider, useFirestoreData } from './context/FirestoreDataContext';
 import { LoginPage } from './components/auth/LoginPage';
 import { RegisterPage } from './components/auth/RegisterPage';
+import { EmailVerificationPage } from './components/auth/EmailVerificationPage';
 import { CompanyOnboardingPage } from './components/auth/CompanyOnboardingPage';
 import { CompanyProfilePage } from './components/auth/CompanyProfilePage';
-import { UserManagementPage } from './components/auth/UserManagementPage';
 import { UserProfileModal } from './components/auth/UserProfileModal';
 
 function AppContent() {
@@ -66,8 +66,7 @@ function AppContent() {
     isLoading,
     isEmailVerified,
     isFirebaseUser,
-    resendVerification,
-    refreshVerificationStatus,
+    logout,
     permissions,
   } = useAuth();
 
@@ -78,7 +77,6 @@ function AppContent() {
     customers,
     trips,
     documents,
-    metrics,
     error: firestoreError,
     clearError: clearFirestoreError,
   } = useFirestoreData();
@@ -100,7 +98,7 @@ function AppContent() {
     [documents]
   );
 
-  const effectiveRole: UserRole = authRole || 'OPERATIONS';
+  const effectiveRole: UserRole = authRole || 'OWNER';
 
   const [authScreen, setAuthScreen] = useState<'login' | 'register'>('login');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
@@ -109,7 +107,6 @@ function AppContent() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
-  const [verificationBusy, setVerificationBusy] = useState(false);
 
   // Quick Dispatch Modal State
   const [isQuickTripOpen, setIsQuickTripOpen] = useState(false);
@@ -154,7 +151,7 @@ function AppContent() {
 
   const handleResetData = () => {
     if (!permissions?.canManageCompany) {
-      showToast('Only company Owners or Admins can clear company operational data.');
+      showToast('Only the authorized company Owner can clear company operational data.');
       return;
     }
     setIsResetDialogOpen(true);
@@ -232,7 +229,7 @@ function AppContent() {
       lrNumber,
       customerId: customerObj.id,
       customerName: customerObj.name,
-      customerGstin: customerObj.gstin,
+      ...(customerObj.gstin ? { customerGstin: customerObj.gstin } : {}),
       vehicleId: vehicleObj.id,
       vehicleReg: vehicleObj.registrationNumber,
       driverId: driverObj.id,
@@ -317,6 +314,18 @@ function AppContent() {
     return <LoginPage onSwitchToRegister={() => setAuthScreen('register')} />;
   }
 
+  // Strict Email Verification Protection: unverified users must NOT access onboarding or the TMS dashboard
+  if (isFirebaseUser && !isEmailVerified) {
+    return (
+      <EmailVerificationPage
+        onBackToLogin={async () => {
+          setAuthScreen('login');
+          await logout();
+        }}
+      />
+    );
+  }
+
   if (needsOnboarding && !onboardingCompleted) {
     return <CompanyOnboardingPage />;
   }
@@ -353,50 +362,6 @@ function AppContent() {
           }}
           onOpenProfile={() => setIsProfileModalOpen(true)}
         />
-
-        {/* Email Verification Reminder Banner */}
-        {isFirebaseUser && !isEmailVerified && (
-          <div className="bg-amber-50 border-b border-amber-200 px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-900">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>
-                Verify your email address (<strong>{user?.email}</strong>) to unlock cloud persistence in Firestore.
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                disabled={verificationBusy}
-                onClick={async () => {
-                  setVerificationBusy(true);
-                  const res = await resendVerification();
-                  setVerificationBusy(false);
-                  showToast(res.sent ? 'Verification email sent. Check your inbox.' : res.error || 'Could not send email.');
-                }}
-                className="px-2.5 py-1 rounded border border-amber-300 bg-white hover:bg-amber-100 font-semibold text-amber-900 cursor-pointer disabled:opacity-50"
-              >
-                Resend Email
-              </button>
-              <button
-                type="button"
-                disabled={verificationBusy}
-                onClick={async () => {
-                  setVerificationBusy(true);
-                  const res = await refreshVerificationStatus();
-                  setVerificationBusy(false);
-                  showToast(
-                    res.verified
-                      ? 'Email verified! Cloud Firestore sync is now active.'
-                      : res.error || 'Email is not verified yet. Please click the link in your inbox.'
-                  );
-                }}
-                className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-semibold cursor-pointer disabled:opacity-50"
-              >
-                I&apos;ve Verified &mdash; Sync Now
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Firestore Sync Error Banner */}
         {firestoreError && (
@@ -449,7 +414,6 @@ function AppContent() {
             <VehicleDocumentsView userRole={effectiveRole} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
           )}
           {activeTab === 'settings' && <CompanyProfilePage />}
-          {activeTab === 'users' && <UserManagementPage />}
           {activeTab === 'reports' && <ReportsView userRole={effectiveRole} />}
 
           {activeTab === 'maintenance' && (

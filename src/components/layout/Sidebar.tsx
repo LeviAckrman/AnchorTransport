@@ -15,10 +15,10 @@ import {
   Wrench,
   BarChart3,
   Building,
-  ShieldCheck,
   ChevronRight,
 } from 'lucide-react';
 import { UserRole } from '../../types/tms';
+import { ROLE_PERMISSIONS } from '../../lib/permissions';
 
 export type ActiveTab = 
   | 'dashboard'
@@ -34,8 +34,7 @@ export type ActiveTab =
   | 'documents'
   | 'maintenance'
   | 'reports'
-  | 'settings'
-  | 'users';
+  | 'settings';
 
 interface SidebarProps {
   activeTab: ActiveTab;
@@ -51,7 +50,6 @@ interface NavItem {
   icon: React.ElementType;
   badge?: number;
   badgeVariant?: 'amber' | 'emerald' | 'rose' | 'indigo';
-  roles: UserRole[];
 }
 
 interface NavSection {
@@ -62,10 +60,11 @@ interface NavSection {
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
   onSelectTab,
-  userRole,
+  userRole = 'OWNER',
   pendingSettlementsCount = 0,
   expiringDocsCount = 0,
 }) => {
+  const perms = ROLE_PERMISSIONS[userRole] || ROLE_PERMISSIONS.OWNER;
   const sections: NavSection[] = [
     {
       title: 'FLEET OPERATIONS',
@@ -74,31 +73,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'dashboard',
           label: 'Dashboard',
           icon: LayoutDashboard,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'],
         },
         {
           id: 'trips',
           label: 'Trips & Dispatch',
           icon: Navigation,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'],
         },
         {
           id: 'vehicles',
           label: 'Vehicles / Trucks',
           icon: Truck,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'],
         },
         {
           id: 'drivers',
           label: 'Drivers',
           icon: Users,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'],
         },
         {
           id: 'customers',
           label: 'Customers (Parties)',
           icon: Building2,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT'],
         },
       ],
     },
@@ -109,13 +103,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'expenses',
           label: 'Expenses & Fuel',
           icon: Receipt,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'],
         },
         {
           id: 'advances',
           label: 'Driver Advances',
           icon: Wallet,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'],
         },
         {
           id: 'settlements',
@@ -123,19 +115,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Scale,
           badge: pendingSettlementsCount > 0 ? pendingSettlementsCount : undefined,
           badgeVariant: 'amber',
-          roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'],
         },
         {
           id: 'invoices',
           label: 'Invoices & Billing',
           icon: FileText,
-          roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'],
         },
         {
           id: 'payments',
           label: 'Payments & Ledger',
           icon: CreditCard,
-          roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'],
         },
       ],
     },
@@ -148,13 +137,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: FileCheck2,
           badge: expiringDocsCount > 0 ? expiringDocsCount : undefined,
           badgeVariant: 'rose',
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'],
         },
         {
           id: 'maintenance',
           label: 'Maintenance',
           icon: Wrench,
-          roles: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'],
         },
       ],
     },
@@ -165,19 +152,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'reports',
           label: 'Business Reports',
           icon: BarChart3,
-          roles: ['OWNER', 'ADMIN', 'ACCOUNTANT'],
         },
         {
           id: 'settings',
           label: 'Company Settings',
           icon: Building,
-          roles: ['OWNER', 'ADMIN'],
-        },
-        {
-          id: 'users',
-          label: 'User Management',
-          icon: ShieldCheck,
-          roles: ['OWNER'],
         },
       ],
     },
@@ -202,62 +181,64 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Navigation Menu */}
       <div className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
-        {sections.map((section, sIdx) => {
-          // Filter items allowed for user role
-          const visibleItems = section.items.filter((item) => item.roles.includes(userRole));
-          if (visibleItems.length === 0) return null;
+        {sections.map((section, sIdx) => (
+          <div key={sIdx}>
+            <h2 className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
+              {section.title}
+            </h2>
+            <div className="space-y-0.5">
+              {section.items
+                .filter((item) => {
+                  if (item.id === 'invoices') return perms.canGenerateInvoices;
+                  if (item.id === 'payments') return perms.canRecordPayments;
+                  if (item.id === 'settlements') return perms.canSettleTrips;
+                  if (item.id === 'reports') return perms.canViewReports;
+                  return true;
+                })
+                .map((item) => {
+                const isActive = activeTab === item.id;
+                const Icon = item.icon;
 
-          return (
-            <div key={sIdx}>
-              <h2 className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                {section.title}
-              </h2>
-              <div className="space-y-0.5">
-                {visibleItems.map((item) => {
-                  const isActive = activeTab === item.id;
-                  const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => onSelectTab(item.id)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
+                      isActive
+                        ? 'bg-indigo-600 text-white font-semibold shadow-xs'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                      <span>{item.label}</span>
+                    </div>
 
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => onSelectTab(item.id)}
-                      className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-all ${
-                        isActive
-                          ? 'bg-indigo-600 text-white font-semibold shadow-xs'
-                          : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                        <span>{item.label}</span>
-                      </div>
-                      
-                      {item.badge !== undefined && (
-                        <span
-                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full ${
-                            isActive
-                              ? 'bg-white text-indigo-700'
-                              : item.badgeVariant === 'amber'
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                              : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                          }`}
-                        >
-                          {item.badge}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+                    {item.badge !== undefined && (
+                      <span
+                        className={`px-1.5 py-0.5 text-[10px] font-bold rounded-full ${
+                          isActive
+                            ? 'bg-white text-indigo-700'
+                            : item.badgeVariant === 'amber'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                        }`}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
 
-      {/* Footer / Quick Info */}
+      {/* Footer / Role Access Indicator */}
       <div className="p-3 border-t border-slate-800/80 bg-slate-950/60">
         <div className="px-2 py-1.5 rounded-md bg-slate-900 border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-          <span>Active Role:</span>
+          <span>Workspace Access:</span>
           <span className="font-semibold text-indigo-300 uppercase">{userRole}</span>
         </div>
       </div>

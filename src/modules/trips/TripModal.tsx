@@ -6,14 +6,19 @@ import {
   AlertTriangle,
   Scale,
   MapPin,
+  Upload,
+  FileText,
+  ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import { Trip, Vehicle, Driver, Customer, TripStatus, DriverAdvance } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
-import { formatINR, rupeesToPaise } from '../../lib/currency';
+import { formatINR, paiseToRupees, rupeesToPaise } from '../../lib/currency';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { getNextTripNumber, getNextLrNumber } from '../../lib/tmsCalculations';
 import { createOrUpdateTripInFirestore } from '../../lib/firebase/firestoreService';
+import { uploadCompanyDocument } from '../../lib/firebase/storageService';
 
 interface TripModalProps {
   isOpen: boolean;
@@ -41,6 +46,7 @@ export const TripModal: React.FC<TripModalProps> = ({
     vehicles: firestoreVehicles,
     drivers: firestoreDrivers,
     customers: firestoreCustomers,
+    brokers,
   } = useFirestoreData();
 
   const effectiveCustomers = firestoreCustomers.length > 0 ? firestoreCustomers : localCustomers;
@@ -48,10 +54,16 @@ export const TripModal: React.FC<TripModalProps> = ({
   const effectiveDrivers = firestoreDrivers.length > 0 ? firestoreDrivers : localDrivers;
 
   const [customerId, setCustomerId] = useState('');
+  const [brokerId, setBrokerId] = useState('');
+  const [brokerCommissionRupees, setBrokerCommissionRupees] = useState('');
   const [vehicleId, setVehicleId] = useState('');
   const [driverId, setDriverId] = useState('');
   const [originCity, setOriginCity] = useState('');
   const [destinationCity, setDestinationCity] = useState('');
+  const [pickupAddress, setPickupAddress] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [loadingDetails, setLoadingDetails] = useState('');
+  const [unloadingDetails, setUnloadingDetails] = useState('');
   const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [expectedDeliveryDate, setExpectedDeliveryDate] = useState('');
   const [goodsType, setGoodsType] = useState('');
@@ -61,6 +73,10 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [initialAdvanceRupees, setInitialAdvanceRupees] = useState('0');
   const [status, setStatus] = useState<TripStatus>('DISPATCHED');
   const [notes, setNotes] = useState('');
+  const [lrDocumentUrl, setLrDocumentUrl] = useState('');
+  const [dispatchDocumentUrl, setDispatchDocumentUrl] = useState('');
+  const [uploadingLr, setUploadingLr] = useState(false);
+  const [uploadingDispatch, setUploadingDispatch] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,10 +93,16 @@ export const TripModal: React.FC<TripModalProps> = ({
 
   const resetForm = () => {
     setCustomerId('');
+    setBrokerId('');
+    setBrokerCommissionRupees('');
     setVehicleId('');
     setDriverId('');
     setOriginCity('');
     setDestinationCity('');
+    setPickupAddress('');
+    setDeliveryAddress('');
+    setLoadingDetails('');
+    setUnloadingDetails('');
     const todayStr = new Date().toISOString().split('T')[0];
     setDispatchDate(todayStr);
     const expDate = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
@@ -92,6 +114,8 @@ export const TripModal: React.FC<TripModalProps> = ({
     setInitialAdvanceRupees('0');
     setStatus('DISPATCHED');
     setNotes('');
+    setLrDocumentUrl('');
+    setDispatchDocumentUrl('');
     setError(null);
   };
 
@@ -99,10 +123,20 @@ export const TripModal: React.FC<TripModalProps> = ({
     if (isOpen) {
       if (tripToEdit) {
         setCustomerId(tripToEdit.customerId);
+        setBrokerId(tripToEdit.brokerId || '');
+        setBrokerCommissionRupees(
+          tripToEdit.brokerCommissionPaise !== undefined
+            ? String(paiseToRupees(tripToEdit.brokerCommissionPaise))
+            : ''
+        );
         setVehicleId(tripToEdit.vehicleId);
         setDriverId(tripToEdit.driverId);
         setOriginCity(tripToEdit.originCity);
         setDestinationCity(tripToEdit.destinationCity);
+        setPickupAddress(tripToEdit.pickupAddress || '');
+        setDeliveryAddress(tripToEdit.deliveryAddress || '');
+        setLoadingDetails(tripToEdit.loadingDetails || '');
+        setUnloadingDetails(tripToEdit.unloadingDetails || '');
         setDispatchDate(tripToEdit.dispatchDate.split('T')[0]);
         setExpectedDeliveryDate(
           tripToEdit.expectedDeliveryDate ? tripToEdit.expectedDeliveryDate.split('T')[0] : ''
@@ -114,6 +148,8 @@ export const TripModal: React.FC<TripModalProps> = ({
         setInitialAdvanceRupees('0');
         setStatus(tripToEdit.status);
         setNotes(tripToEdit.notes || '');
+        setLrDocumentUrl(tripToEdit.lrDocumentUrl || '');
+        setDispatchDocumentUrl(tripToEdit.dispatchDocumentUrl || '');
         setError(null);
       } else {
         resetForm();
@@ -126,6 +162,7 @@ export const TripModal: React.FC<TripModalProps> = ({
   const selectedVehicle = effectiveVehicles.find((v) => v.id === vehicleId);
   const selectedDriver = effectiveDrivers.find((d) => d.id === driverId);
   const selectedCustomer = effectiveCustomers.find((c) => c.id === customerId);
+  const selectedBroker = brokers.find((b) => b.id === brokerId);
 
   const weight = parseFloat(weightTonnes) || 0;
   const rateRupees = parseFloat(ratePerTonneRupees) || 0;
@@ -205,6 +242,10 @@ export const TripModal: React.FC<TripModalProps> = ({
         driverPhone: selectedDriver.phone || '',
         originCity: originCity.trim(),
         destinationCity: destinationCity.trim(),
+        pickupAddress: pickupAddress.trim() || undefined,
+        deliveryAddress: deliveryAddress.trim() || undefined,
+        loadingDetails: loadingDetails.trim() || undefined,
+        unloadingDetails: unloadingDetails.trim() || undefined,
         goodsType: goodsType.trim(),
         weightTonnes: weight,
         ratePerTonnePaise: rupeesToPaise(rateRupees),
@@ -217,6 +258,14 @@ export const TripModal: React.FC<TripModalProps> = ({
         startOdometerKm:
           tripToEdit?.startOdometerKm ?? selectedVehicle.currentOdometerKm ?? 0,
         podReceived: tripToEdit?.podReceived ?? false,
+        lrDocumentUrl: lrDocumentUrl.trim() || undefined,
+        dispatchDocumentUrl: dispatchDocumentUrl.trim() || undefined,
+        brokerId: selectedBroker ? selectedBroker.id : undefined,
+        brokerName: selectedBroker ? selectedBroker.name : undefined,
+        brokerCommissionPaise:
+          selectedBroker && brokerCommissionRupees !== '' && !Number.isNaN(parseFloat(brokerCommissionRupees))
+            ? Math.max(0, rupeesToPaise(parseFloat(brokerCommissionRupees)))
+            : undefined,
         totalExpensesPaise: existingExpensesPaise,
         totalAdvancesPaise: tripToEdit ? existingAdvancesPaise : initialAdvancePaise,
         tripContributionPaise: totalRevenuePaise - existingExpensesPaise,
@@ -346,7 +395,7 @@ export const TripModal: React.FC<TripModalProps> = ({
                 const loc = [c.city, c.state].filter(Boolean).join(', ');
                 return (
                   <option key={c.id} value={c.id}>
-                    {c.name} (GSTIN: {c.gstin}{loc ? ` - ${loc}` : ''})
+                    {c.name} (GSTIN: {c.gstin || 'Unregistered'}{loc ? ` - ${loc}` : ''})
                   </option>
                 );
               })}
@@ -363,6 +412,61 @@ export const TripModal: React.FC<TripModalProps> = ({
               </div>
             )}
           </div>
+
+          {brokers.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Freight Broker / Agent (Optional)
+                </label>
+                <select
+                  value={brokerId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setBrokerId(nextId);
+                    const b = brokers.find((item) => item.id === nextId);
+                    if (b) {
+                      if (b.defaultCommissionPaise !== undefined) {
+                        setBrokerCommissionRupees(String(paiseToRupees(b.defaultCommissionPaise)));
+                      } else if (b.commissionRatePercent !== undefined && totalRevenueRupees > 0) {
+                        setBrokerCommissionRupees(
+                          ((totalRevenueRupees * b.commissionRatePercent) / 100).toFixed(0)
+                        );
+                      }
+                    } else {
+                      setBrokerCommissionRupees('');
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 bg-white"
+                >
+                  <option value="">-- Direct Customer Booking (No Broker) --</option>
+                  {brokers.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                      {b.companyName ? ` (${b.companyName})` : ''}
+                      {b.commissionRatePercent !== undefined ? ` — ${b.commissionRatePercent}%` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {brokerId && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Agreed Broker Commission (₹)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="50"
+                    value={brokerCommissionRupees}
+                    onChange={(e) => setBrokerCommissionRupees(e.target.value)}
+                    placeholder="Auto-calculated or enter ₹"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -392,6 +496,60 @@ export const TripModal: React.FC<TripModalProps> = ({
                 placeholder="e.g. Siliguri, WB / Jamshedpur, JH"
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
                 required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Pickup Address & Gate / Warehouse
+              </label>
+              <input
+                type="text"
+                value={pickupAddress}
+                onChange={(e) => setPickupAddress(e.target.value)}
+                placeholder="e.g. Plot 42, Dankuni Freight Terminal, Gate 3"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Delivery Address & Consignee Site
+              </label>
+              <input
+                type="text"
+                value={deliveryAddress}
+                onChange={(e) => setDeliveryAddress(e.target.value)}
+                placeholder="e.g. Matigara Industrial Estate, Siliguri"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Loading Details (Time / Supervisor / Challan)
+              </label>
+              <input
+                type="text"
+                value={loadingDetails}
+                onChange={(e) => setLoadingDetails(e.target.value)}
+                placeholder="e.g. Loaded 09:30 AM, 40 bundles strapped, Weighbridge #412"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Unloading Details (Instructions / Contact)
+              </label>
+              <input
+                type="text"
+                value={unloadingDetails}
+                onChange={(e) => setUnloadingDetails(e.target.value)}
+                placeholder="e.g. Crane unloading at Bay 2, Contact Store Manager"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
               />
             </div>
           </div>
@@ -642,6 +800,119 @@ export const TripModal: React.FC<TripModalProps> = ({
             placeholder="e.g. Tarpaulin cover mandatory, weighbridge token at Dankuni required..."
             className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
           />
+        </div>
+
+        {/* Section 5: LR / Bilty & Dispatch Documents */}
+        <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
+          <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+            <FileText className="w-3.5 h-3.5 text-indigo-600" />
+            <span>LR / Bilty & Dispatch Documents</span>
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-2">
+              <span className="font-semibold text-slate-700 block">LR / Bilty Copy (PDF / Image)</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-semibold cursor-pointer">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{uploadingLr ? 'Uploading...' : lrDocumentUrl ? 'Replace LR Copy' : 'Upload LR Copy'}</span>
+                  <input
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    disabled={uploadingLr || !company?.id}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file || !company?.id) return;
+                      setError(null);
+                      setUploadingLr(true);
+                      try {
+                        const downloadUrl = await uploadCompanyDocument(company.id, 'trips', file);
+                        setLrDocumentUrl(downloadUrl);
+                      } catch (err: any) {
+                        setError(err.message || 'LR document upload failed.');
+                      } finally {
+                        setUploadingLr(false);
+                        e.target.value = '';
+                      }
+                    }}
+                  />
+                </label>
+                {lrDocumentUrl && (
+                  <>
+                    <a
+                      href={lrDocumentUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline font-medium"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setLrDocumentUrl('')}
+                      className="text-rose-600 hover:text-rose-700 p-1"
+                      title="Remove LR document link"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-2">
+              <span className="font-semibold text-slate-700 block">Dispatch / E-Way Bill Document</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-semibold cursor-pointer">
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{uploadingDispatch ? 'Uploading...' : dispatchDocumentUrl ? 'Replace Dispatch Doc' : 'Upload Dispatch Doc'}</span>
+                  <input
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    disabled={uploadingDispatch || !company?.id}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file || !company?.id) return;
+                      setError(null);
+                      setUploadingDispatch(true);
+                      try {
+                        const downloadUrl = await uploadCompanyDocument(company.id, 'dispatches', file);
+                        setDispatchDocumentUrl(downloadUrl);
+                      } catch (err: any) {
+                        setError(err.message || 'Dispatch document upload failed.');
+                      } finally {
+                        setUploadingDispatch(false);
+                        e.target.value = '';
+                      }
+                    }}
+                  />
+                </label>
+                {dispatchDocumentUrl && (
+                  <>
+                    <a
+                      href={dispatchDocumentUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline font-medium"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setDispatchDocumentUrl('')}
+                      className="text-rose-600 hover:text-rose-700 p-1"
+                      title="Remove dispatch document link"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Action Buttons */}

@@ -1,6 +1,6 @@
 /**
- * AnchorTransport TMS - Role-Based Access Control (RBAC) Permissions Matrix
- * Client-safe definitions without any Node.js dependencies
+ * AnchorTransport TMS - Role-Based Access Control Permissions
+ * Supports Company Owner full governance plus company-scoped employee RBAC
  */
 
 import { UserRole } from '../types/tms';
@@ -19,20 +19,22 @@ export interface RolePermissionSet {
   canManageFleet: boolean;
 }
 
+export const OWNER_PERMISSIONS: RolePermissionSet = {
+  canManageCompany: true,
+  canManageUsers: true,
+  canDispatchTrips: true,
+  canSettleTrips: true,
+  canGenerateInvoices: true,
+  canRecordPayments: true,
+  canLogExpenses: true,
+  canDisburseAdvances: true,
+  canViewReports: true,
+  canViewSensitiveDriverInfo: true,
+  canManageFleet: true,
+};
+
 export const ROLE_PERMISSIONS: Record<UserRole, RolePermissionSet> = {
-  OWNER: {
-    canManageCompany: true,
-    canManageUsers: true,
-    canDispatchTrips: true,
-    canSettleTrips: true,
-    canGenerateInvoices: true,
-    canRecordPayments: true,
-    canLogExpenses: true,
-    canDisburseAdvances: true,
-    canViewReports: true,
-    canViewSensitiveDriverInfo: true,
-    canManageFleet: true,
-  },
+  OWNER: OWNER_PERMISSIONS,
   ADMIN: {
     canManageCompany: true,
     canManageUsers: true,
@@ -67,7 +69,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissionSet> = {
     canGenerateInvoices: true,
     canRecordPayments: true,
     canLogExpenses: true,
-    canDisburseAdvances: false,
+    canDisburseAdvances: true,
     canViewReports: true,
     canViewSensitiveDriverInfo: true,
     canManageFleet: false,
@@ -80,21 +82,24 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissionSet> = {
     canGenerateInvoices: false,
     canRecordPayments: false,
     canLogExpenses: true,
-    canDisburseAdvances: true,
+    canDisburseAdvances: false,
     canViewReports: false,
     canViewSensitiveDriverInfo: false,
     canManageFleet: false,
   },
 };
 
-export function hasPermission(role: UserRole, permission: keyof RolePermissionSet): boolean {
-  return ROLE_PERMISSIONS[role]?.[permission] ?? false;
+export function hasPermission(role: UserRole | undefined | null, permission: keyof RolePermissionSet): boolean {
+  if (!role) return false;
+  const perms = ROLE_PERMISSIONS[role];
+  if (!perms) return false;
+  return Boolean(perms[permission]);
 }
 
-export function canViewSensitiveDriverInfo(role: UserRole): boolean {
+export function canViewSensitiveDriverInfo(role: UserRole | undefined | null): boolean {
   return hasPermission(role, 'canViewSensitiveDriverInfo');
 }
 
-export function canManageFleet(role: UserRole): boolean {
+export function canManageFleet(role: UserRole | undefined | null): boolean {
   return hasPermission(role, 'canManageFleet');
 }

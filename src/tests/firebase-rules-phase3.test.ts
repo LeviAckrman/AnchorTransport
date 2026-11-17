@@ -28,18 +28,17 @@ interface MockAuth {
   email: string;
 }
 
-interface MockMemberDoc {
-  userId: string;
-  role: FirestoreRole;
-  companyId: string;
-  status: 'ACTIVE' | 'INVITED' | 'SUSPENDED';
+interface MockCompanyDoc {
+  id: string;
+  name: string;
+  ownerId: string;
 }
 
 interface MockStore {
   [path: string]: Record<string, unknown>;
 }
 
-// In-memory Firestore Rules Engine simulating firestore.rules logic
+// In-memory Firestore Rules Engine simulating multi-tenant & RBAC firestore.rules logic
 class MockFirestoreSecurityEngine {
   private store: MockStore = {};
 
@@ -51,7 +50,32 @@ class MockFirestoreSecurityEngine {
     return this.store[path] ? { ...this.store[path] } : null;
   }
 
-  // Evaluate rule based on firestore.rules
+  private isCompanyOwner(uid: string, companyId: string): boolean {
+    const company = this.getDoc(`companies/${companyId}`) as MockCompanyDoc | null;
+    return Boolean(company && company.ownerId === uid);
+  }
+
+  private getActiveMemberRole(uid: string, companyId: string): FirestoreRole | null {
+    if (this.isCompanyOwner(uid, companyId)) return 'OWNER';
+    const member = this.getDoc(`companies/${companyId}/members/${uid}`) as {
+      companyId?: string;
+      userId?: string;
+      role?: FirestoreRole;
+      status?: string;
+    } | null;
+    if (
+      member &&
+      member.companyId === companyId &&
+      member.userId === uid &&
+      member.status === 'ACTIVE' &&
+      member.role
+    ) {
+      return member.role;
+    }
+    return null;
+  }
+
+  // Evaluate rule based on live Multi-Tenant RBAC firestore.rules
   evaluate(
     auth: MockAuth | null,
     operation: 'get' | 'list' | 'create' | 'update' | 'delete',
@@ -71,9 +95,43 @@ class MockFirestoreSecurityEngine {
         return { allowed: auth.uid === targetUserId };
       }
       if (operation === 'create' || operation === 'update') {
-        return { allowed: auth.uid === targetUserId };
+        if (auth.uid !== targetUserId) return { allowed: false, reason: 'UID mismatch' };
+        const existingUser = this.getDoc(path);
+        if (operation === 'create' && incomingData?.role && !['USER', 'OWNER'].includes(String(incomingData.role))) {
+          return { allowed: false, reason: 'Self-assigned privileged role rejected' };
+        }
+        if (operation === 'update' && existingUser?.role && incomingData?.role !== existingUser.role) {
+          return { allowed: false, reason: 'Role self-escalation rejected' };
+        }
+        return { allowed: true };
       }
       return { allowed: false, reason: 'Deletes disabled for users' };
+    }
+
+    // Company root document: /companies/{companyId}
+    if (segments[0] === 'companies' && segments.length === 2) {
+      const companyId = segments[1];
+      const company = this.getDoc(`companies/${companyId}`) as MockCompanyDoc | null;
+      if (operation === 'create') {
+        if (incomingData?.ownerId !== auth.uid) {
+          return { allowed: false, reason: 'Owner ID must match authenticated UID' };
+        }
+        return { allowed: true };
+      }
+      const role = this.getActiveMemberRole(auth.uid, companyId);
+      if (operation === 'get') {
+        return { allowed: company === null || role !== null };
+      }
+      if (operation === 'update') {
+        if (!role || !['OWNER', 'ADMIN'].includes(role)) {
+          return { allowed: false, reason: 'Requires OWNER or ADMIN' };
+        }
+        if (company && incomingData?.ownerId !== undefined && incomingData.ownerId !== company.ownerId) {
+          return { allowed: false, reason: 'ownerId is immutable' };
+        }
+        return { allowed: true };
+      }
+      return { allowed: false, reason: 'Company deletion disabled' };
     }
 
     // Company subcollections: /companies/{companyId}/{subcollection}/{docId}
@@ -81,101 +139,108 @@ class MockFirestoreSecurityEngine {
       const companyId = segments[1];
       const subcollection = segments[2];
       const docId = segments[3];
+      const role = this.getActiveMemberRole(auth.uid, companyId);
 
-      // Check membership
-      const memberPath = `companies/${companyId}/members/${auth.uid}`;
-      const membership = this.getDoc(memberPath) as MockMemberDoc | null;
-
-      if (!membership || membership.status !== 'ACTIVE') {
-        return { allowed: false, reason: 'Not an active company member' };
-      }
-
-      const role = membership.role;
-      const isOwner = role === 'OWNER';
-      const isAdmin = role === 'ADMIN';
-      const isManager = role === 'MANAGER';
-      const isAccountant = role === 'ACCOUNTANT';
-      const isOperations = role === 'OPERATIONS';
-
-      // Membership subcollection
+      // Members subcollection: /companies/{companyId}/members/{memberUid}
       if (subcollection === 'members') {
-        if (operation === 'get' || operation === 'list') {
-          return { allowed: true }; // any active member can list directory
+        if (operation === 'get') {
+          return { allowed: auth.uid === docId || role !== null };
         }
-        if (isOwner || isAdmin) {
-          return { allowed: true };
-        }
-        return { allowed: false, reason: 'Only Owner or Admin can manage company members' };
-      }
-
-      // Audit logs: immutable!
-      if (subcollection === 'auditLogs') {
-        if (operation === 'get' || operation === 'list') {
-          return { allowed: isOwner || isAdmin || isManager };
+        if (operation === 'list') {
+          return { allowed: role !== null };
         }
         if (operation === 'create') {
-          // Any active member can record actions
-          if (incomingData?.companyId !== companyId) {
-            return { allowed: false, reason: 'Cross-company data injection detected' };
+          const isOwner = this.isCompanyOwner(auth.uid, companyId);
+          if (docId === auth.uid && isOwner && incomingData?.role === 'OWNER') {
+            return { allowed: true };
           }
-          return { allowed: true };
+          if (docId !== auth.uid && isOwner && ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'].includes(String(incomingData?.role))) {
+            return { allowed: true };
+          }
+          if (docId !== auth.uid && role === 'ADMIN' && ['MANAGER', 'ACCOUNTANT', 'OPERATIONS'].includes(String(incomingData?.role))) {
+            return { allowed: true };
+          }
+          return { allowed: false, reason: 'Member creation/self-promotion denied' };
         }
-        // Strict immutability
-        if (operation === 'update' || operation === 'delete') {
-          return { allowed: false, reason: 'Audit logs are immutable' };
+        if (operation === 'update') {
+          const existingMember = this.getDoc(path);
+          if (docId === auth.uid) {
+            if (incomingData?.role !== existingMember?.role || incomingData?.status !== existingMember?.status) {
+              return { allowed: false, reason: 'Self role/status escalation denied' };
+            }
+            return { allowed: true };
+          }
+          if (this.isCompanyOwner(auth.uid, companyId) && existingMember?.role !== 'OWNER') {
+            return { allowed: ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'].includes(String(incomingData?.role)) };
+          }
+          return { allowed: false, reason: 'Insufficient role to update member' };
+        }
+        if (operation === 'delete') {
+          const existingMember = this.getDoc(path);
+          if (docId === auth.uid || existingMember?.role === 'OWNER') {
+            return { allowed: false, reason: 'Cannot delete OWNER or self' };
+          }
+          return { allowed: this.isCompanyOwner(auth.uid, companyId) || role === 'ADMIN' };
         }
       }
 
-      // Financials: invoices, settlements, payments
-      if (['invoices', 'settlements', 'payments'].includes(subcollection)) {
-        if (operation === 'get' || operation === 'list') {
-          return { allowed: isOwner || isAdmin || isManager || isAccountant };
-        }
-        if (operation === 'create' || operation === 'update') {
-          if (!isOwner && !isAdmin && !isAccountant) {
-            return { allowed: false, reason: 'Operations staff cannot create or modify financial records' };
-          }
-          if (incomingData && incomingData.companyId !== companyId) {
-            return { allowed: false, reason: 'Cross-tenant companyId mismatch' };
-          }
-          return { allowed: true };
-        }
-        if (operation === 'delete') {
-          return { allowed: isOwner };
-        }
+      if (!role) {
+        return { allowed: false, reason: 'Not an active member or owner of this company' };
       }
 
-      // Operational: vehicles, drivers, trips, maintenance, documents
-      if (['vehicles', 'drivers', 'trips', 'maintenance', 'documents', 'customers'].includes(subcollection)) {
-        if (operation === 'get' || operation === 'list') {
-          return { allowed: true }; // all active company members can view operations
-        }
-        if (operation === 'create' || operation === 'update') {
-          // Operations, Manager, Admin, Owner can edit operational entities
-          if (incomingData && incomingData.companyId !== companyId) {
-            return { allowed: false, reason: 'Cross-tenant companyId mismatch' };
-          }
-          return { allowed: true };
-        }
-        if (operation === 'delete') {
-          // Deletions reserved for Owner/Admin
-          return { allowed: isOwner || isAdmin };
-        }
+      if ((operation === 'create' || operation === 'update') && incomingData && incomingData.companyId !== companyId) {
+        return { allowed: false, reason: 'Cross-tenant companyId mismatch' };
       }
 
-      // Expenses & Advances
-      if (['expenses', 'advances'].includes(subcollection)) {
+      // Audit logs: immutable, read restricted to OWNER/ADMIN/ACCOUNTANT
+      if (subcollection === 'auditLogs') {
+        if (operation === 'get' || operation === 'list') {
+          return { allowed: ['OWNER', 'ADMIN', 'ACCOUNTANT'].includes(role) };
+        }
+        if (operation === 'create') {
+          return { allowed: true };
+        }
+        return { allowed: false, reason: 'Audit logs are immutable' };
+      }
+
+      // RBAC matrices matching firestore.rules
+      const rbacWriteMap: Record<string, { createUpdate: FirestoreRole[]; delete: FirestoreRole[] }> = {
+        vehicles: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'], delete: ['OWNER', 'ADMIN'] },
+        drivers: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'], delete: ['OWNER', 'ADMIN'] },
+        customers: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT'], delete: ['OWNER', 'ADMIN'] },
+        brokers: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER'], delete: ['OWNER', 'ADMIN'] },
+        trips: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'OPERATIONS'], delete: ['OWNER', 'ADMIN', 'MANAGER'] },
+        expenses: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'], delete: ['OWNER', 'ADMIN', 'MANAGER'] },
+        advances: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT'], delete: ['OWNER', 'ADMIN'] },
+        settlements: { createUpdate: ['OWNER', 'ADMIN', 'ACCOUNTANT'], delete: ['OWNER', 'ADMIN'] },
+        invoices: { createUpdate: ['OWNER', 'ADMIN', 'ACCOUNTANT'], delete: ['OWNER', 'ADMIN'] },
+        payments: { createUpdate: ['OWNER', 'ADMIN', 'ACCOUNTANT'], delete: ['OWNER', 'ADMIN'] },
+        documents: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER'], delete: ['OWNER', 'ADMIN'] },
+        maintenance: { createUpdate: ['OWNER', 'ADMIN', 'MANAGER'], delete: ['OWNER', 'ADMIN'] },
+        fileRecords: {
+          createUpdate: ['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'],
+          delete: ['OWNER', 'ADMIN'],
+        },
+        settings: { createUpdate: ['OWNER', 'ADMIN'], delete: ['OWNER'] },
+      };
+
+      const rule = rbacWriteMap[subcollection];
+      if (rule) {
         if (operation === 'get' || operation === 'list') {
           return { allowed: true };
         }
-        if (operation === 'create' || operation === 'update') {
-          if (incomingData && incomingData.companyId !== companyId) {
-            return { allowed: false, reason: 'Cross-tenant companyId mismatch' };
-          }
-          return { allowed: true };
+        if (operation === 'create') {
+          return { allowed: rule.createUpdate.includes(role) };
+        }
+        if (operation === 'update') {
+          const allowedRoles =
+            subcollection === 'trips'
+              ? (['OWNER', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'OPERATIONS'] as FirestoreRole[])
+              : rule.createUpdate;
+          return { allowed: allowedRoles.includes(role) };
         }
         if (operation === 'delete') {
-          return { allowed: isOwner || isAdmin || isAccountant };
+          return { allowed: rule.delete.includes(role) };
         }
       }
     }
@@ -210,42 +275,42 @@ async function runPhase3RulesTests() {
 
   const userAlphaOwner: MockAuth = { uid: 'usr_alpha_owner', email: 'owner@alpha.in' };
   const userAlphaOps: MockAuth = { uid: 'usr_alpha_ops', email: 'ops@alpha.in' };
-  const userAlphaAcc: MockAuth = { uid: 'usr_alpha_acc', email: 'accounts@alpha.in' };
-
+  const userAlphaAcc: MockAuth = { uid: 'usr_alpha_acc', email: 'acc@alpha.in' };
+  const userOutsider: MockAuth = { uid: 'usr_outsider_99', email: 'outsider@external.in' };
   const userBetaOwner: MockAuth = { uid: 'usr_beta_owner', email: 'owner@beta.in' };
-  const userBetaOps: MockAuth = { uid: 'usr_beta_ops', email: 'ops@beta.in' };
 
-  // Set company memberships
+  // Set company owner documents + active RBAC member records
+  engine.setDoc(`companies/${companyAlpha}`, {
+    id: companyAlpha,
+    name: 'Alpha Roadlines Pvt Ltd',
+    ownerId: userAlphaOwner.uid,
+  });
   engine.setDoc(`companies/${companyAlpha}/members/${userAlphaOwner.uid}`, {
+    id: userAlphaOwner.uid,
     userId: userAlphaOwner.uid,
-    role: 'OWNER',
     companyId: companyAlpha,
+    role: 'OWNER',
     status: 'ACTIVE',
   });
   engine.setDoc(`companies/${companyAlpha}/members/${userAlphaOps.uid}`, {
+    id: userAlphaOps.uid,
     userId: userAlphaOps.uid,
-    role: 'OPERATIONS',
     companyId: companyAlpha,
+    role: 'OPERATIONS',
     status: 'ACTIVE',
   });
   engine.setDoc(`companies/${companyAlpha}/members/${userAlphaAcc.uid}`, {
+    id: userAlphaAcc.uid,
     userId: userAlphaAcc.uid,
-    role: 'ACCOUNTANT',
     companyId: companyAlpha,
+    role: 'ACCOUNTANT',
     status: 'ACTIVE',
   });
 
-  engine.setDoc(`companies/${companyBeta}/members/${userBetaOwner.uid}`, {
-    userId: userBetaOwner.uid,
-    role: 'OWNER',
-    companyId: companyBeta,
-    status: 'ACTIVE',
-  });
-  engine.setDoc(`companies/${companyBeta}/members/${userBetaOps.uid}`, {
-    userId: userBetaOps.uid,
-    role: 'OPERATIONS',
-    companyId: companyBeta,
-    status: 'ACTIVE',
+  engine.setDoc(`companies/${companyBeta}`, {
+    id: companyBeta,
+    name: 'Beta Logistics LLP',
+    ownerId: userBetaOwner.uid,
   });
 
   // Seed documents in Company Alpha
@@ -292,80 +357,114 @@ async function runPhase3RulesTests() {
   const r2 = engine.evaluate(userBetaOwner, 'get', `companies/${companyAlpha}/vehicles/veh_001`);
   assert(!r2.allowed, 'Beta Owner CANNOT read Alpha vehicle (Cross-Tenant blocked)');
 
-  // Test 3: User Beta Ops CANNOT read Alpha trips
-  const r3 = engine.evaluate(userBetaOps, 'get', `companies/${companyAlpha}/trips/trip_001`);
-  assert(!r3.allowed, 'Beta Operations CANNOT read Alpha trips');
+  // Test 3: Outsider CANNOT read Alpha trips
+  const r3 = engine.evaluate(userOutsider, 'get', `companies/${companyAlpha}/trips/trip_001`);
+  assert(!r3.allowed, 'Non-member outsider CANNOT read Alpha trips');
 
   // Test 4: User Beta Owner CANNOT read Alpha invoices
   const r4 = engine.evaluate(userBetaOwner, 'get', `companies/${companyAlpha}/invoices/inv_001`);
   assert(!r4.allowed, 'Beta Owner CANNOT read Alpha financial invoices');
 
-  // Test 5: User Beta Ops CANNOT write vehicle to Alpha company
-  const r5 = engine.evaluate(userBetaOps, 'create', `companies/${companyAlpha}/vehicles/veh_sneaky`, {
+  // Test 5: User Beta Owner CANNOT write vehicle to Alpha company
+  const r5 = engine.evaluate(userBetaOwner, 'create', `companies/${companyAlpha}/vehicles/veh_sneaky`, {
     id: 'veh_sneaky',
     companyId: companyAlpha,
     registrationNumber: 'DL 01 XY 9999',
   });
-  assert(!r5.allowed, 'Beta Ops CANNOT create vehicle in Alpha company');
+  assert(!r5.allowed, 'Beta Owner CANNOT create vehicle in Alpha company');
 
-  // Test 6: Tenant injection check - User Alpha creating doc with Beta companyId
-  const r6 = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/vehicles/veh_tampered`, {
+  // Test 6: Tenant injection check - Alpha Owner creating doc with Beta companyId
+  const r6 = engine.evaluate(userAlphaOwner, 'create', `companies/${companyAlpha}/vehicles/veh_tampered`, {
     id: 'veh_tampered',
     companyId: companyBeta, // Spoofed companyId
     registrationNumber: 'KA 03 AA 1111',
   });
   assert(!r6.allowed, 'Tampered companyId matching path blocked (Spoof prevention)');
 
-  console.log('\n--- SUITE 2: Role-Based Access Control (RBAC) ---');
+  console.log('\n--- SUITE 2: Multi-Tenant RBAC, /members Governance & Anti-Self-Escalation ---');
 
-  // Test 7: Operations staff can create trip in their company
-  const r7 = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/trips/trip_002`, {
+  // Test 7: Alpha Owner CAN create trips, invoices, settlements, brokers, and settings in Alpha company
+  const r7 = engine.evaluate(userAlphaOwner, 'create', `companies/${companyAlpha}/trips/trip_002`, {
     id: 'trip_002',
     companyId: companyAlpha,
     tripNumber: 'TRP-2026-0002',
   });
-  assert(r7.allowed, 'Operations staff can create trips within company');
+  assert(r7.allowed, 'Company Owner CAN create trips within company');
 
-  // Test 8: Operations staff CANNOT create invoices
-  const r8 = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/invoices/inv_002`, {
+  const r8 = engine.evaluate(userAlphaOwner, 'create', `companies/${companyAlpha}/invoices/inv_002`, {
     id: 'inv_002',
     companyId: companyAlpha,
     invoiceNumber: 'INV-2026-0002',
   });
-  assert(!r8.allowed, 'Operations staff CANNOT create financial invoices');
+  assert(r8.allowed, 'Company Owner CAN create financial invoices');
 
-  // Test 9: Operations staff CANNOT create settlements
-  const r9 = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/settlements/stl_001`, {
+  const r9 = engine.evaluate(userAlphaOwner, 'create', `companies/${companyAlpha}/settlements/stl_001`, {
     id: 'stl_001',
     companyId: companyAlpha,
     settlementNumber: 'STL-001',
   });
-  assert(!r9.allowed, 'Operations staff CANNOT create settlements');
+  assert(r9.allowed, 'Company Owner CAN create settlements');
 
-  // Test 10: Accountant CAN create invoices and settlements
-  const r10 = engine.evaluate(userAlphaAcc, 'create', `companies/${companyAlpha}/invoices/inv_003`, {
-    id: 'inv_003',
+  // Test 10: RBAC enforcement - OPERATIONS can create trips but CANNOT create invoices/settings or delete vehicles
+  const r10a = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/trips/trip_003`, {
+    id: 'trip_003',
     companyId: companyAlpha,
-    invoiceNumber: 'INV-2026-0003',
+    tripNumber: 'TRP-2026-0003',
   });
-  assert(r10.allowed, 'Accountant CAN create invoices');
+  assert(r10a.allowed, 'Active OPERATIONS member CAN create trips in own company');
 
-  // Test 11: Non-owner cannot delete company vehicle
-  const r11 = engine.evaluate(userAlphaOps, 'delete', `companies/${companyAlpha}/vehicles/veh_001`);
-  assert(!r11.allowed, 'Operations staff CANNOT delete company vehicles');
+  const r10b = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/invoices/inv_ops`, {
+    id: 'inv_ops',
+    companyId: companyAlpha,
+    invoiceNumber: 'INV-OPS',
+  });
+  assert(!r10b.allowed, 'Active OPERATIONS member CANNOT create financial invoices');
+
+  const r10c = engine.evaluate(userAlphaAcc, 'create', `companies/${companyAlpha}/invoices/inv_acc`, {
+    id: 'inv_acc',
+    companyId: companyAlpha,
+    invoiceNumber: 'INV-ACC',
+  });
+  assert(r10c.allowed, 'Active ACCOUNTANT member CAN create financial invoices');
+
+  // Test 10d: Owner can invite staff to /members, staff CANNOT self-promote role in /members
+  const r10d = engine.evaluate(userAlphaOwner, 'create', `companies/${companyAlpha}/members/usr_new_mgr`, {
+    id: 'usr_new_mgr',
+    userId: 'usr_new_mgr',
+    companyId: companyAlpha,
+    role: 'MANAGER',
+    status: 'ACTIVE',
+  });
+  assert(r10d.allowed, 'Company Owner CAN provision MANAGER/STAFF in /members');
+
+  const r10e = engine.evaluate(userAlphaOps, 'update', `companies/${companyAlpha}/members/${userAlphaOps.uid}`, {
+    role: 'OWNER',
+    status: 'ACTIVE',
+  });
+  assert(!r10e.allowed, 'Staff member CANNOT self-escalate /members role to OWNER');
+
+  // Test 11: Non-owner / OPERATIONS cannot delete company vehicle; Owner CAN
+  const r11 = engine.evaluate(userOutsider, 'delete', `companies/${companyAlpha}/vehicles/veh_001`);
+  assert(!r11.allowed, 'Non-member outsider CANNOT delete company vehicles');
+
+  const r11b = engine.evaluate(userAlphaOps, 'delete', `companies/${companyAlpha}/vehicles/veh_001`);
+  assert(!r11b.allowed, 'OPERATIONS member CANNOT delete company vehicles');
 
   const r12 = engine.evaluate(userAlphaOwner, 'delete', `companies/${companyAlpha}/vehicles/veh_001`);
   assert(r12.allowed, 'Company Owner CAN delete company vehicles');
 
-  console.log('\n--- SUITE 3: Audit Log Immutability ---');
+  console.log('\n--- SUITE 3: Audit Log Immutability & Access ---');
 
-  // Test 13: Member can record audit log
-  const r13 = engine.evaluate(userAlphaOps, 'create', `companies/${companyAlpha}/auditLogs/log_002`, {
+  // Test 13: Owner can record audit log
+  const r13 = engine.evaluate(userAlphaOwner, 'create', `companies/${companyAlpha}/auditLogs/log_002`, {
     id: 'log_002',
     companyId: companyAlpha,
     action: 'RECORD_FUEL_EXPENSE',
   });
-  assert(r13.allowed, 'Company member can append to audit logs');
+  assert(r13.allowed, 'Company Owner can append to audit logs');
+
+  const r13b = engine.evaluate(userAlphaOps, 'get', `companies/${companyAlpha}/auditLogs/log_001`);
+  assert(!r13b.allowed, 'OPERATIONS member CANNOT read company auditLogs');
 
   // Test 14: Owner CANNOT update audit log (Immutability)
   const r14 = engine.evaluate(userAlphaOwner, 'update', `companies/${companyAlpha}/auditLogs/log_001`, {
@@ -377,12 +476,14 @@ async function runPhase3RulesTests() {
   const r15 = engine.evaluate(userAlphaOwner, 'delete', `companies/${companyAlpha}/auditLogs/log_001`);
   assert(!r15.allowed, 'Owner CANNOT delete audit logs (Immutable constraint)');
 
-  console.log('\n--- SUITE 4: All 12 Collections Path Verification ---');
+  console.log('\n--- SUITE 4: All 15 Company Collections Path Verification ---');
 
   const collections = [
+    { name: 'members', path: FirestorePaths.members('test_comp') },
     { name: 'vehicles', path: FirestorePaths.vehicles('test_comp') },
     { name: 'drivers', path: FirestorePaths.drivers('test_comp') },
     { name: 'customers', path: FirestorePaths.customers('test_comp') },
+    { name: 'brokers', path: FirestorePaths.brokers('test_comp') },
     { name: 'trips', path: FirestorePaths.trips('test_comp') },
     { name: 'expenses', path: FirestorePaths.expenses('test_comp') },
     { name: 'advances', path: FirestorePaths.advances('test_comp') },
@@ -391,6 +492,8 @@ async function runPhase3RulesTests() {
     { name: 'payments', path: FirestorePaths.payments('test_comp') },
     { name: 'documents', path: FirestorePaths.documents('test_comp') },
     { name: 'maintenance', path: FirestorePaths.maintenance('test_comp') },
+    { name: 'fileRecords', path: FirestorePaths.fileRecords('test_comp') },
+    { name: 'settings', path: FirestorePaths.settings('test_comp') },
     { name: 'auditLogs', path: FirestorePaths.auditLogs('test_comp') },
   ];
 

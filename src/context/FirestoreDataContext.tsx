@@ -16,6 +16,7 @@ import type {
   Vehicle,
   Driver,
   Customer,
+  Broker,
   Trip,
   TripExpense,
   DriverAdvance,
@@ -24,6 +25,8 @@ import type {
   Payment,
   VehicleDocument,
   MaintenanceRecord,
+  FileRecord,
+  CompanySettings,
   AuditLog,
   CompanyDashboardMetrics,
 } from '../types/tms';
@@ -32,10 +35,12 @@ import { EMPTY_COMPANY } from '../lib/storage';
 
 interface FirestoreDataContextType {
   company: Company;
+  companySettings: CompanySettings | null;
   members: FirestoreCompanyMember[];
   vehicles: Vehicle[];
   drivers: Driver[];
   customers: Customer[];
+  brokers: Broker[];
   trips: Trip[];
   expenses: TripExpense[];
   advances: DriverAdvance[];
@@ -44,6 +49,7 @@ interface FirestoreDataContextType {
   payments: Payment[];
   documents: VehicleDocument[];
   maintenance: MaintenanceRecord[];
+  fileRecords: FileRecord[];
   auditLogs: AuditLog[];
   metrics: CompanyDashboardMetrics;
   loading: boolean;
@@ -59,16 +65,19 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     role,
     isAuthenticated,
     isFirebaseUser,
+    isEmailVerified,
     needsOnboarding,
     onboardingCompleted,
     registerLogoutCleanup,
   } = useAuth();
 
   const [liveCompany, setLiveCompany] = useState<Company | null>(null);
+  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [members, setMembers] = useState<FirestoreCompanyMember[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [brokers, setBrokers] = useState<Broker[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [expenses, setExpenses] = useState<TripExpense[]>([]);
   const [advances, setAdvances] = useState<DriverAdvance[]>([]);
@@ -77,6 +86,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const [payments, setPayments] = useState<Payment[]>([]);
   const [documents, setDocuments] = useState<VehicleDocument[]>([]);
   const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
+  const [fileRecords, setFileRecords] = useState<FileRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -85,10 +95,12 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const clearFrontendOperationalState = () => {
     setLiveCompany(null);
+    setCompanySettings(null);
     setMembers([]);
     setVehicles([]);
     setDrivers([]);
     setCustomers([]);
+    setBrokers([]);
     setTrips([]);
     setExpenses([]);
     setAdvances([]);
@@ -97,6 +109,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     setPayments([]);
     setDocuments([]);
     setMaintenance([]);
+    setFileRecords([]);
     setAuditLogs([]);
     setError(null);
     setLoading(false);
@@ -129,6 +142,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     const canSubscribe =
       isAuthenticated &&
       isFirebaseUser &&
+      isEmailVerified &&
       Boolean(authCompany?.id) &&
       (!needsOnboarding || onboardingCompleted);
 
@@ -149,6 +163,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         onVehicles: (items) => setVehicles(items),
         onDrivers: (items) => setDrivers(items),
         onCustomers: (items) => setCustomers(items),
+        onBrokers: (items) => setBrokers(items),
         onTrips: (items) => setTrips(items),
         onExpenses: (items) => setExpenses(items),
         onAdvances: (items) => setAdvances(items),
@@ -157,6 +172,8 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         onPayments: (items) => setPayments(items),
         onDocuments: (items) => setDocuments(items),
         onMaintenance: (items) => setMaintenance(items),
+        onFileRecords: (items) => setFileRecords(items),
+        onSettings: (s) => setCompanySettings(s),
         onAuditLogs: (items) => setAuditLogs(items),
         onInitialLoadComplete: () => setLoading(false),
       },
@@ -174,7 +191,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         unsubscribeRef.current = null;
       }
     };
-  }, [isAuthenticated, isFirebaseUser, authCompany?.id, role, needsOnboarding, onboardingCompleted]);
+  }, [isAuthenticated, isFirebaseUser, isEmailVerified, authCompany?.id, role, needsOnboarding, onboardingCompleted]);
 
   const activeCompany = liveCompany || authCompany || EMPTY_COMPANY;
 
@@ -195,10 +212,12 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     <FirestoreDataContext.Provider
       value={{
         company: activeCompany,
+        companySettings,
         members,
         vehicles,
         drivers,
         customers,
+        brokers,
         trips,
         expenses,
         advances,
@@ -207,6 +226,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         payments,
         documents,
         maintenance,
+        fileRecords,
         auditLogs,
         metrics,
         loading,

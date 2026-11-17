@@ -14,6 +14,8 @@ import {
   Eye,
   BarChart3,
   X,
+  Edit,
+  Download,
 } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -24,8 +26,10 @@ import { PaymentModal } from './PaymentModal';
 import { CustomerReceivablesReport } from './CustomerReceivablesReport';
 import { Invoice, Payment, InvoiceStatus, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/financialEngine';
+import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { isInvoiceUnpaid } from '../../lib/tmsCalculations';
+import { downloadInvoicePdf } from '../../lib/pdfGenerator';
 
 interface InvoicesViewProps {
   userRole: UserRole;
@@ -36,7 +40,9 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   userRole: _userRole,
   onNavigateTab: _onNavigateTab,
 }) => {
-  const { invoices: allInvoices, payments: allPayments, customers, loading, error } = useFirestoreData();
+  const { company: authCompany } = useAuth();
+  const { company: liveCompany, invoices: allInvoices, payments: allPayments, customers, loading, error } = useFirestoreData();
+  const company = liveCompany?.id ? liveCompany : authCompany;
   const [activeTab, setActiveTab] = useState<'invoices' | 'receivables'>('invoices');
 
   // Filters & Pagination
@@ -48,6 +54,7 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
 
   // Modals state (store IDs so modals reflect live Firestore updates)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [invoiceToEdit, setInvoiceToEdit] = useState<Invoice | null>(null);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
 
@@ -172,8 +179,13 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
     showToast('success', `Recorded payment of ₹${(payment.amountPaise / 100).toLocaleString('en-IN')} (Ref: ${payment.referenceNumber}).`);
   };
 
-  const handleInvoiceCreated = (newInv: Invoice) => {
-    showToast('success', `Issued Invoice ${newInv.invoiceNumber} for ${newInv.customerName}.`);
+  const handleInvoiceSaved = (savedInv: Invoice, isEdit?: boolean) => {
+    showToast(
+      'success',
+      isEdit
+        ? `Updated Invoice ${savedInv.invoiceNumber}.`
+        : `Issued Invoice ${savedInv.invoiceNumber} for ${savedInv.customerName}.`
+    );
   };
 
   const handleInvoiceCancelled = (cancelledInv: Invoice) => {
@@ -252,7 +264,10 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
             </div>
 
             <button
-              onClick={() => setIsCreateModalOpen(true)}
+              onClick={() => {
+                setInvoiceToEdit(null);
+                setIsCreateModalOpen(true);
+              }}
               className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -484,10 +499,14 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
 
                         <td className="py-3.5 px-3">
                           <span className="font-medium text-slate-800 font-mono block">
-                            {inv.tripNumber} ({inv.lrNumber})
+                            {inv.tripNumber
+                              ? `${inv.tripNumber}${inv.lrNumber ? ` (${inv.lrNumber})` : ''}`
+                              : 'Standalone Bill'}
                           </span>
                           <span className="text-[11px] text-slate-500 truncate max-w-[180px] block">
-                            {inv.originCity} ➔ {inv.destinationCity}
+                            {inv.originCity || inv.destinationCity
+                              ? `${inv.originCity || '—'} ➔ ${inv.destinationCity || '—'}`
+                              : 'Direct Freight Billing'}
                           </span>
                         </td>
 
@@ -528,6 +547,30 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                               className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
                             >
                               <Eye className="w-4 h-4" />
+                            </button>
+
+                            {inv.status !== 'PAID' && inv.status !== 'CANCELLED' && (
+                              <button
+                                onClick={() => {
+                                  setInvoiceToEdit(inv);
+                                  setIsCreateModalOpen(true);
+                                }}
+                                title="Edit Invoice"
+                                className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Edit className="w-4 h-4" />
+                              </button>
+                            )}
+
+                            <button
+                              onClick={() => {
+                                const cust = customers.find((c) => c.id === inv.customerId);
+                                downloadInvoicePdf(inv, company || null, cust);
+                              }}
+                              title="Download PDF Invoice"
+                              className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Download className="w-4 h-4" />
                             </button>
 
                             {inv.status !== 'PAID' && inv.status !== 'CANCELLED' && (
@@ -582,8 +625,12 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
       {/* Modals */}
       <InvoiceModal
         isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
-        onSuccess={handleInvoiceCreated}
+        onClose={() => {
+          setIsCreateModalOpen(false);
+          setInvoiceToEdit(null);
+        }}
+        invoiceToEdit={invoiceToEdit}
+        onSuccess={handleInvoiceSaved}
       />
 
       <InvoiceDetailModal
@@ -594,6 +641,12 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
         }}
         invoice={selectedInvoice}
         payments={detailPayments}
+        onEdit={(inv) => {
+          setIsDetailModalOpen(false);
+          setSelectedInvoiceId(null);
+          setInvoiceToEdit(inv);
+          setIsCreateModalOpen(true);
+        }}
         onOpenPaymentModal={(inv) => {
           setIsDetailModalOpen(false);
           handleOpenPayment(inv);

@@ -112,7 +112,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         referenceNumber: referenceNumber.trim().slice(0, 100),
         tdsDeductedPaise: tdsPaise > 0 ? tdsPaise : undefined,
         bankAccount: bankAccount.trim() ? bankAccount.trim().slice(0, 80) : undefined,
-        recordedBy: (user?.name || user?.email || 'Accountant').slice(0, 100),
+        recordedBy: (user?.name || user?.email || 'Owner').slice(0, 100),
         notes: notes.trim() ? notes.trim().slice(0, 400) : undefined,
         createdAt: nowIso,
       };

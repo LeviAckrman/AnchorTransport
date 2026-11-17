@@ -4,6 +4,8 @@ import {
   CreditCard,
   XCircle,
   AlertTriangle,
+  Download,
+  Edit,
 } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
@@ -13,12 +15,14 @@ import { formatINR } from '../../lib/financialEngine';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { cancelInvoiceInFirestore } from '../../lib/firebase/firestoreService';
+import { downloadInvoicePdf } from '../../lib/pdfGenerator';
 
 interface InvoiceDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   invoice: Invoice | null;
   payments: Payment[];
+  onEdit?: (invoice: Invoice) => void;
   onOpenPaymentModal: (invoice: Invoice) => void;
   onInvoiceCancelled: (cancelledInvoice: Invoice) => void;
 }
@@ -28,6 +32,7 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
   onClose,
   invoice,
   payments,
+  onEdit,
   onOpenPaymentModal,
   onInvoiceCancelled,
 }) => {
@@ -190,11 +195,11 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
               <div className="grid grid-cols-2 gap-2 text-slate-700 mt-1">
                 <div>
                   <span className="text-slate-600 block">Lorry Receipt (LR) #:</span>
-                  <span className="font-bold text-slate-900 font-mono">{invoice.lrNumber}</span>
+                  <span className="font-bold text-slate-900 font-mono">{invoice.lrNumber || '—'}</span>
                 </div>
                 <div>
                   <span className="text-slate-600 block">Trip Number:</span>
-                  <span className="font-bold text-slate-900 font-mono">{invoice.tripNumber}</span>
+                  <span className="font-bold text-slate-900 font-mono">{invoice.tripNumber || 'Standalone Bill'}</span>
                 </div>
                 <div>
                   <span className="text-slate-600 block">Assigned Vehicle:</span>
@@ -207,7 +212,9 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
                 <div className="col-span-2">
                   <span className="text-slate-600 block">Route:</span>
                   <span className="font-semibold text-slate-800">
-                    {invoice.originCity || 'Origin'} ➔ {invoice.destinationCity || 'Destination'}
+                    {invoice.originCity || invoice.destinationCity
+                      ? `${invoice.originCity || '—'} ➔ ${invoice.destinationCity || '—'}`
+                      : 'Direct Freight Billing'}
                   </span>
                 </div>
                 {invoice.goodsType && (
@@ -239,7 +246,9 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
                       Freight Transport Charges by Road
                     </span>
                     <span className="text-slate-600">
-                      Transport of {invoice.goodsType || 'Industrial cargo'} from {invoice.originCity} to {invoice.destinationCity}
+                      {invoice.originCity || invoice.destinationCity
+                        ? `Transport of ${invoice.goodsType || 'freight cargo'} from ${invoice.originCity || '—'} to ${invoice.destinationCity || '—'}`
+                        : `Transport of ${invoice.goodsType || 'freight cargo'}`}
                     </span>
                   </td>
                   <td className="py-3 px-3 text-center font-mono text-slate-600">996511</td>
@@ -317,6 +326,13 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
               </div>
 
               <div className="w-full sm:w-64 space-y-1.5 text-xs text-slate-700">
+                {(invoice.discountPaise || 0) > 0 && (
+                  <div className="flex justify-between py-1 text-amber-700 font-medium">
+                    <span>Less: Discount:</span>
+                    <span>− {formatINR(invoice.discountPaise || 0)}</span>
+                  </div>
+                )}
+
                 <div className="flex justify-between py-1 border-b border-slate-100">
                   <span>Taxable Freight Value:</span>
                   <span className="font-semibold text-slate-900">{formatINR(invoice.taxableAmountPaise)}</span>
@@ -452,11 +468,34 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" onClick={handlePrint}>
               <Printer className="w-4 h-4 mr-1.5" />
-              Print / PDF
+              Print
             </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                const matchedCustomer = customers.find((c) => c.id === invoice.customerId);
+                downloadInvoicePdf(invoice, company || null, matchedCustomer);
+              }}
+            >
+              <Download className="w-4 h-4 mr-1.5" />
+              Download PDF
+            </Button>
+
+            {onEdit && invoice.status !== 'PAID' && invoice.status !== 'CANCELLED' && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onEdit(invoice)}
+              >
+                <Edit className="w-4 h-4 mr-1.5" />
+                Edit
+              </Button>
+            )}
 
             {invoice.status !== 'PAID' && invoice.status !== 'CANCELLED' && (
               <Button

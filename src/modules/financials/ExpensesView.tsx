@@ -537,15 +537,13 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
                         >
                           <Edit className="w-3.5 h-3.5" />
                         </button>
-                        {!exp.isSettled && (
-                          <button
-                            onClick={() => setExpenseToDelete(exp)}
-                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-                            title="Delete Voucher"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => setExpenseToDelete(exp)}
+                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                          title="Delete Voucher"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -611,7 +609,7 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
           if (expenseToDelete) handleDeleteExpense(expenseToDelete);
         }}
         title="Delete Expense Voucher"
-        message={`Delete expense voucher ${expenseToDelete?.voucherNumber || expenseToDelete?.id || ''} (${expenseToDelete ? formatINR(expenseToDelete.amountPaise) : ''})? This will recompute trip operational contribution.`}
+        message={`Delete expense voucher ${expenseToDelete?.voucherNumber || expenseToDelete?.id || ''} (${expenseToDelete ? formatINR(expenseToDelete.amountPaise) : ''})?${expenseToDelete?.isSettled ? ' Note: This voucher is marked settled; deleting it will remove it from settled expense history.' : ' This will recompute trip operational contribution.'}`}
         confirmLabel="Delete Voucher"
         variant="danger"
         isLoading={isDeleting}

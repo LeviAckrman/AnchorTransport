@@ -69,20 +69,12 @@ async function runPhase8InvoicingTests() {
     role: 'OWNER',
   });
 
-  const tokenAccountantA = signSessionToken({
-    userId: 'usr_acct_a',
-    email: 'accounts@wbroyal.com',
-    name: 'Subhashish Dey',
-    companyId: compA,
-    role: 'ACCOUNTANT',
-  });
-
-  const tokenAdminB = signSessionToken({
-    userId: 'usr_admin_b',
-    email: 'admin@tmthaulers.com',
+  const tokenOwnerB = signSessionToken({
+    userId: 'usr_owner_b',
+    email: 'owner@tmthaulers.com',
     name: 'Bikash Agarwal',
     companyId: compB,
-    role: 'ADMIN',
+    role: 'OWNER',
   });
 
   // Setup dedicated delivered trip for billing in Company A
@@ -165,7 +157,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       tripId: testTripA.id,
@@ -249,7 +241,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       tripId: testTripA.id,
@@ -281,7 +273,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       invoiceId: createdInvoice.id,
@@ -328,7 +320,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       invoiceId: createdInvoice.id,
@@ -352,7 +344,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       invoiceId: createdInvoice.id,
@@ -381,7 +373,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       invoiceId: createdInvoice.id,
@@ -439,7 +431,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
     body: JSON.stringify({
       tripId: testTrip2.id,
@@ -525,7 +517,7 @@ async function runPhase8InvoicingTests() {
   // Company B user attempts to fetch Company A invoice
   const crossInvGetRes = await fetch(`${BASE_URL}/invoices/${createdInvoice.id}`, {
     headers: {
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
   });
   assert(crossInvGetRes.status === 404, 'Cross-company invoice fetch returned HTTP 404 (No data leakage)');
@@ -535,7 +527,7 @@ async function runPhase8InvoicingTests() {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
     body: JSON.stringify({
       invoiceId: createdInvoice.id,
@@ -548,7 +540,7 @@ async function runPhase8InvoicingTests() {
   // Company B user queries /api/invoices
   const compBListRes = await fetch(`${BASE_URL}/invoices`, {
     headers: {
-      Authorization: `Bearer ${tokenAdminB}`,
+      Authorization: `Bearer ${tokenOwnerB}`,
     },
   });
   const compBListData = await compBListRes.json();
@@ -557,7 +549,7 @@ async function runPhase8InvoicingTests() {
   // Receivables report
   const receivablesRes = await fetch(`${BASE_URL}/reports/receivables`, {
     headers: {
-      Authorization: `Bearer ${tokenAccountantA}`,
+      Authorization: `Bearer ${tokenOwnerA}`,
     },
   });
   const receivablesData = await receivablesRes.json();

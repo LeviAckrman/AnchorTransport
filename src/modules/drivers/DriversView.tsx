@@ -382,15 +382,13 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
                           >
                             <Edit className="w-4 h-4" />
                           </button>
-                          {(userRole === 'OWNER' || userRole === 'ADMIN') && (
-                            <button
-                              onClick={() => setDriverToDelete(d)}
-                              title="Delete Driver"
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
+                          <button
+                            onClick={() => setDriverToDelete(d)}
+                            title="Delete Driver"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -460,14 +458,12 @@ export const DriversView: React.FC<DriversViewProps> = ({ userRole, localVehicle
                     >
                       Edit
                     </button>
-                    {(userRole === 'OWNER' || userRole === 'ADMIN') && (
-                      <button
-                        onClick={() => setDriverToDelete(d)}
-                        className="px-2.5 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 rounded-lg"
-                      >
-                        Delete
-                      </button>
-                    )}
+                    <button
+                      onClick={() => setDriverToDelete(d)}
+                      className="px-2.5 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 rounded-lg"
+                    >
+                      Delete
+                    </button>
                   </div>
                 </div>
               );
