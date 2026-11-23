@@ -75,6 +75,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [tripToEdit, setTripToEdit] = useState<Trip | null>(null);
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
+  const [selectedTripTab, setSelectedTripTab] = useState<'overview' | 'logs'>('overview');
   const [tripForStatusChange, setTripForStatusChange] = useState<{
     trip: Trip;
     targetStatus: TripStatus;
@@ -307,6 +308,7 @@ export const TripsView: React.FC<TripsViewProps> = ({
       setTripForStatusChange(null);
     } catch (err: any) {
       showNotification(err.message || 'Status transition failed.', 'error');
+      throw err;
     }
   };
 
@@ -627,21 +629,32 @@ export const TripsView: React.FC<TripsViewProps> = ({
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex items-center justify-end gap-1 opacity-90 group-hover:opacity-100">
                           <button
-                            onClick={() => setSelectedTripId(t.id)}
+                            onClick={() => {
+                              setSelectedTripTab('overview');
+                              setSelectedTripId(t.id);
+                            }}
                             title="View Full Trip Dossier"
                             className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
-                          {!['COMPLETED', 'SETTLED', 'CANCELLED'].includes(t.status) && (
-                            <button
-                              onClick={() => setTripToEdit(t)}
-                              title="Edit Trip Details"
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
-                            >
-                              <Edit className="w-4 h-4" />
-                            </button>
-                          )}
+                          <button
+                            onClick={() => {
+                              setSelectedTripTab('logs');
+                              setSelectedTripId(t.id);
+                            }}
+                            title="En-Route Trip Status & GPS Logs"
+                            className="px-2 py-1 bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 rounded-lg text-[10px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            Logs
+                          </button>
+                          <button
+                            onClick={() => setTripToEdit(t)}
+                            title="Edit Trip & Dispatch Details"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
                           {t.status === 'PLANNED' && (
                             <button
                               onClick={() => setTripForStatusChange({ trip: t, targetStatus: 'DISPATCHED' })}
@@ -740,19 +753,29 @@ export const TripsView: React.FC<TripsViewProps> = ({
 
                   <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                     <button
-                      onClick={() => setSelectedTripId(t.id)}
-                      className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium"
+                      onClick={() => {
+                        setSelectedTripTab('logs');
+                        setSelectedTripId(t.id);
+                      }}
+                      className="px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-medium whitespace-nowrap shrink-0"
+                    >
+                      Trip Logs
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedTripTab('overview');
+                        setSelectedTripId(t.id);
+                      }}
+                      className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium whitespace-nowrap shrink-0"
                     >
                       Dossier
                     </button>
-                    {!['COMPLETED', 'SETTLED', 'CANCELLED'].includes(t.status) && (
-                      <button
-                        onClick={() => setTripToEdit(t)}
-                        className="px-3 py-1 border border-slate-200 text-slate-700 rounded-lg text-xs font-medium"
-                      >
-                        Edit
-                      </button>
-                    )}
+                    <button
+                      onClick={() => setTripToEdit(t)}
+                      className="px-3 py-1 border border-slate-200 text-slate-700 rounded-lg text-xs font-medium"
+                    >
+                      Edit
+                    </button>
                     <button
                       onClick={() => setTripToDelete(t)}
                       className="px-3 py-1 border border-rose-200 text-rose-700 hover:bg-rose-50 rounded-lg text-xs font-medium"
@@ -825,9 +848,18 @@ export const TripsView: React.FC<TripsViewProps> = ({
       {selectedTripId && (
         <TripDetailModal
           isOpen={Boolean(selectedTripId)}
-          onClose={() => setSelectedTripId(null)}
+          onClose={() => {
+            setSelectedTripId(null);
+            setSelectedTripTab('overview');
+          }}
           tripId={selectedTripId}
+          initialTab={selectedTripTab}
           userRole={userRole}
+          onEditTrip={(trip) => {
+            setSelectedTripId(null);
+            setSelectedTripTab('overview');
+            setTripToEdit(trip);
+          }}
         />
       )}
 

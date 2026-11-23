@@ -81,6 +81,7 @@ export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
+  companyId?: string | null;
   authInfo: {
     userId?: string | null;
     email?: string | null;
@@ -100,10 +101,13 @@ export function handleFirestoreError(
   path: string | null
 ): never {
   const currentUser = auth.currentUser;
+  const companyMatch =
+    typeof path === 'string' ? path.match(/^\/?companies\/([a-zA-Z0-9_-]+)/) : null;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     operationType,
     path,
+    companyId: companyMatch ? companyMatch[1] : null,
     authInfo: {
       userId: currentUser?.uid ?? null,
       email: currentUser?.email ?? null,

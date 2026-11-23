@@ -50,7 +50,9 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
     trip.endOdometerKm ? trip.endOdometerKm.toString() : startOdo > 0 ? startOdo.toString() : ''
   );
   const [actualDeliveryDate, setActualDeliveryDate] = useState(
-    new Date().toISOString().split('T')[0]
+    trip.actualDeliveryDate
+      ? trip.actualDeliveryDate.split('T')[0]
+      : new Date().toISOString().split('T')[0]
   );
   const [podReceived, setPodReceived] = useState(trip.podReceived || false);
   const [podDocumentUrl, setPodDocumentUrl] = useState(trip.podDocumentUrl || '');
@@ -62,12 +64,20 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
 
   const getModalTitle = () => {
     switch (targetStatus) {
+      case 'PLANNED':
+        return `Reopen Trip ${trip.tripNumber} to Planned`;
       case 'DISPATCHED':
-        return `Dispatch Trip ${trip.tripNumber}`;
+        return trip.status === 'IN_TRANSIT'
+          ? `Reopen Trip ${trip.tripNumber} to Dispatched`
+          : `Dispatch Trip ${trip.tripNumber}`;
       case 'IN_TRANSIT':
-        return `Mark Trip ${trip.tripNumber} En Route`;
+        return trip.status === 'DELIVERED'
+          ? `Reopen Trip ${trip.tripNumber} to In Transit`
+          : `Mark Trip ${trip.tripNumber} En Route`;
       case 'DELIVERED':
-        return `Confirm Consignee Delivery (${trip.tripNumber})`;
+        return trip.status === 'COMPLETED' || trip.status === 'SETTLED'
+          ? `Reopen Trip ${trip.tripNumber} to Delivered`
+          : `Confirm Consignee Delivery (${trip.tripNumber})`;
       case 'COMPLETED':
         return `Complete & Archive Trip ${trip.tripNumber}`;
       case 'CANCELLED':
@@ -161,12 +171,29 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
 
         {/* TARGET SPECIFIC FIELDS */}
 
+        {/* Case 0: PLANNED (Reopen) */}
+        {targetStatus === 'PLANNED' && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1.5">
+            <p className="font-semibold flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-amber-600" />
+              <span>Reopening Trip to Planned Status</span>
+            </p>
+            <p className="text-amber-800">
+              Reopening will return trip <strong className="font-mono">{trip.tripNumber}</strong> to <strong className="font-semibold">PLANNED</strong> and release truck <strong className="font-mono">{trip.vehicleReg}</strong> back to available scheduling so dispatch details can be adjusted.
+            </p>
+          </div>
+        )}
+
         {/* Case 1: DISPATCHED */}
         {targetStatus === 'DISPATCHED' && (
           <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800 space-y-1.5">
             <p className="font-semibold flex items-center gap-1.5">
               <Truck className="w-4 h-4 text-blue-600" />
-              <span>Confirming Vehicle & Driver Departure</span>
+              <span>
+                {trip.status === 'IN_TRANSIT'
+                  ? 'Reopening Trip to Dispatched Status'
+                  : 'Confirming Vehicle & Driver Departure'}
+              </span>
             </p>
             <p className="text-blue-700">
               Dispatching will mark truck <strong className="font-mono">{trip.vehicleReg}</strong> as <strong className="font-semibold">IN TRANSIT</strong> and lock it from being assigned to any other overlapping dispatch until delivered.

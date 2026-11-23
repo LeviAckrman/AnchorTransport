@@ -329,6 +329,26 @@ export interface FirestoreCompanySettings {
   updatedAt?: string;
 }
 
+// Nested Subcollection under Trips: trip_logs
+export interface FirestoreTripLog {
+  id: string;
+  companyId: string;
+  tripId: string;
+  tripNumber?: string;
+  status: string;
+  severity?: 'INFO' | 'SUCCESS' | 'WARNING' | 'CRITICAL';
+  timestamp: string;
+  locationNote: string;
+  latitude?: number;
+  longitude?: number;
+  odometerKm?: number;
+  notes?: string;
+  loggedByUid?: string;
+  loggedByName?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 // Standardized collection path builders
 export const FirestorePaths = {
   user: (userId: string) => `users/${userId}`,
@@ -345,6 +365,9 @@ export const FirestorePaths = {
   broker: (companyId: string, brokerId: string) => `companies/${companyId}/brokers/${brokerId}`,
   trips: (companyId: string) => `companies/${companyId}/trips`,
   trip: (companyId: string, tripId: string) => `companies/${companyId}/trips/${tripId}`,
+  tripLogs: (companyId: string, tripId: string) => `companies/${companyId}/trips/${tripId}/trip_logs`,
+  tripLog: (companyId: string, tripId: string, logId: string) =>
+    `companies/${companyId}/trips/${tripId}/trip_logs/${logId}`,
   expenses: (companyId: string) => `companies/${companyId}/expenses`,
   expense: (companyId: string, expenseId: string) => `companies/${companyId}/expenses/${expenseId}`,
   advances: (companyId: string) => `companies/${companyId}/advances`,

@@ -14,11 +14,20 @@ import {
   CreditCard,
   ExternalLink,
   Download,
+  Navigation,
+  Crosshair,
+  Clock,
+  Trash2,
+  Edit3,
 } from 'lucide-react';
 import {
+  Trip,
   TripExpense,
   DriverAdvance,
   TripStatus,
+  TripLog,
+  TripLogSeverity,
+  TRIP_LOG_PRESET_STATUSES,
   UserRole,
 } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
@@ -27,17 +36,34 @@ import { formatINR, paiseToRupees } from '../../lib/currency';
 import { TripStatusTransitionModal } from './TripStatusTransitionModal';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { getOperationalNextTripStatuses } from '../../lib/firebase/tripAuthorization';
 import {
   transitionTripStatusInFirestore,
   saveExpenseInFirestore,
   createAdvanceInFirestore,
+  subscribeToTripLogsInFirestore,
+  saveTripLogInFirestore,
+  deleteTripLogInFirestore,
 } from '../../lib/firebase/firestoreService';
+
+type TripDetailTab = 'overview' | 'expenses' | 'advances' | 'logs' | 'workflow';
+
+function toLocalDateTimeInput(isoOrDate?: string | Date): string {
+  const d = isoOrDate ? new Date(isoOrDate) : new Date();
+  const safe = Number.isNaN(d.getTime()) ? new Date() : d;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${safe.getFullYear()}-${pad(safe.getMonth() + 1)}-${pad(safe.getDate())}T${pad(
+    safe.getHours()
+  )}:${pad(safe.getMinutes())}`;
+}
 
 interface TripDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   tripId: string | null;
+  initialTab?: TripDetailTab;
   onTripUpdated?: () => void;
+  onEditTrip?: (trip: Trip) => void;
   userRole?: UserRole;
 }
 
@@ -45,7 +71,9 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
   isOpen,
   onClose,
   tripId,
+  initialTab = 'overview',
   onTripUpdated,
+  onEditTrip,
 }) => {
   const { user } = useAuth();
   const {
@@ -59,7 +87,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
     loading,
   } = useFirestoreData();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'expenses' | 'advances' | 'workflow'>('overview');
+  const [activeTab, setActiveTab] = useState<TripDetailTab>(initialTab);
   const [targetStatusToChange, setTargetStatusToChange] = useState<TripStatus | null>(null);
 
   // Quick Expense Modal State
@@ -84,11 +112,69 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
   const [advanceError, setAdvanceError] = useState<string | null>(null);
   const [savingAdvance, setSavingAdvance] = useState(false);
 
+  // Trip Logs (sub-collection) State
+  const [tripLogs, setTripLogs] = useState<TripLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [isAddLogOpen, setIsAddLogOpen] = useState(false);
+  const [editingLogId, setEditingLogId] = useState<string | null>(null);
+  const [logStatusPreset, setLogStatusPreset] = useState<string>(
+    TRIP_LOG_PRESET_STATUSES[0].label
+  );
+  const [logCustomStatus, setLogCustomStatus] = useState('');
+  const [logSeverity, setLogSeverity] = useState<TripLogSeverity>('INFO');
+  const [logTimestampLocal, setLogTimestampLocal] = useState<string>(() =>
+    toLocalDateTimeInput()
+  );
+  const [logLocationNote, setLogLocationNote] = useState('');
+  const [logLatitude, setLogLatitude] = useState('');
+  const [logLongitude, setLogLongitude] = useState('');
+  const [logOdometerKm, setLogOdometerKm] = useState('');
+  const [logNotes, setLogNotes] = useState('');
+  const [capturingGps, setCapturingGps] = useState(false);
+  const [gpsNotice, setGpsNotice] = useState<string | null>(null);
+  const [logFormError, setLogFormError] = useState<string | null>(null);
+  const [savingLog, setSavingLog] = useState(false);
+  const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      setActiveTab(initialTab || 'overview');
+    } else {
       setActiveTab('overview');
+      setIsAddLogOpen(false);
+      setEditingLogId(null);
+      setLogFormError(null);
+      setGpsNotice(null);
     }
-  }, [isOpen]);
+  }, [isOpen, initialTab]);
+
+  useEffect(() => {
+    if (!isOpen || !company?.id || !tripId) {
+      setTripLogs([]);
+      setLogsLoading(false);
+      return;
+    }
+
+    setLogsLoading(true);
+    setLogsError(null);
+    const unsub = subscribeToTripLogsInFirestore(
+      company.id,
+      tripId,
+      (logs) => {
+        setTripLogs(logs);
+        setLogsLoading(false);
+      },
+      (err) => {
+        setLogsError(err.message || 'Unable to load trip logs from Firestore.');
+        setLogsLoading(false);
+      }
+    );
+
+    return () => {
+      unsub();
+    };
+  }, [isOpen, company?.id, tripId]);
 
   const data = useMemo(() => {
     if (!tripId) return null;
@@ -124,11 +210,7 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
       .reduce((sum, e) => sum + (e.amountPaise || 0), 0);
     const otherExpensesPaise = totalExpensesPaise - fuelExpensesPaise - tollExpensesPaise;
 
-    let allowedNextStatuses: TripStatus[] = [];
-    if (trip.status === 'PLANNED') allowedNextStatuses = ['DISPATCHED', 'CANCELLED'];
-    else if (trip.status === 'DISPATCHED') allowedNextStatuses = ['IN_TRANSIT', 'DELIVERED', 'CANCELLED'];
-    else if (trip.status === 'IN_TRANSIT') allowedNextStatuses = ['DELIVERED', 'CANCELLED'];
-    else if (trip.status === 'DELIVERED') allowedNextStatuses = ['COMPLETED'];
+    const allowedNextStatuses: TripStatus[] = getOperationalNextTripStatuses(trip);
 
     return {
       trip,
@@ -295,6 +377,198 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
     }
   };
 
+  const openNewLogForm = (presetLabel?: string) => {
+    const matchedPreset =
+      TRIP_LOG_PRESET_STATUSES.find((p) => p.label === presetLabel) ||
+      TRIP_LOG_PRESET_STATUSES[0];
+    setEditingLogId(null);
+    setLogStatusPreset(presetLabel ? matchedPreset.label : TRIP_LOG_PRESET_STATUSES[0].label);
+    setLogCustomStatus('');
+    setLogSeverity(matchedPreset.severity);
+    setLogTimestampLocal(toLocalDateTimeInput(new Date()));
+    setLogLocationNote('');
+    setLogLatitude('');
+    setLogLongitude('');
+    setLogOdometerKm('');
+    setLogNotes('');
+    setLogFormError(null);
+    setGpsNotice(null);
+    setIsAddLogOpen(true);
+  };
+
+  const openEditLogForm = (log: TripLog) => {
+    const isPreset = TRIP_LOG_PRESET_STATUSES.some((p) => p.label === log.status);
+    setEditingLogId(log.id);
+    setLogStatusPreset(isPreset ? log.status : 'CUSTOM');
+    setLogCustomStatus(isPreset ? '' : log.status);
+    setLogSeverity(
+      log.severity ||
+        (log.status.toLowerCase().includes('breakdown')
+          ? 'CRITICAL'
+          : log.status.toLowerCase().includes('delay')
+          ? 'WARNING'
+          : 'INFO')
+    );
+    setLogTimestampLocal(toLocalDateTimeInput(log.timestamp));
+    setLogLocationNote(log.locationNote || '');
+    setLogLatitude(typeof log.latitude === 'number' ? String(log.latitude) : '');
+    setLogLongitude(typeof log.longitude === 'number' ? String(log.longitude) : '');
+    setLogOdometerKm(typeof log.odometerKm === 'number' ? String(log.odometerKm) : '');
+    setLogNotes(log.notes || '');
+    setLogFormError(null);
+    setGpsNotice(null);
+    setIsAddLogOpen(true);
+  };
+
+  const handleCaptureGps = () => {
+    setGpsNotice(null);
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGpsNotice('Browser GPS is unavailable here. Enter coordinates or location checkpoint manually.');
+      return;
+    }
+    setCapturingGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Math.round(pos.coords.latitude * 1000000) / 1000000;
+        const lng = Math.round(pos.coords.longitude * 1000000) / 1000000;
+        setLogLatitude(String(lat));
+        setLogLongitude(String(lng));
+        if (!logLocationNote.trim()) {
+          setLogLocationNote(`GPS Pin (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+        }
+        setGpsNotice(`Captured coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+        setCapturingGps(false);
+      },
+      (geoErr) => {
+        setGpsNotice(
+          geoErr?.message
+            ? `GPS unavailable (${geoErr.message}). Enter highway/toll landmark or coordinates manually.`
+            : 'GPS permission unavailable. Enter location checkpoint manually.'
+        );
+        setCapturingGps(false);
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  };
+
+  const handleSaveTripLog = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!data || !company?.id) return;
+    setLogFormError(null);
+
+    const resolvedStatus =
+      logStatusPreset === 'CUSTOM' ? logCustomStatus.trim() : logStatusPreset.trim();
+    if (!resolvedStatus) {
+      setLogFormError('Please choose or enter a status update label.');
+      return;
+    }
+
+    const trimmedLocation = logLocationNote.trim();
+    if (!trimmedLocation) {
+      setLogFormError('Location / GPS checkpoint note is required.');
+      return;
+    }
+
+    const parsedDate = new Date(logTimestampLocal);
+    if (Number.isNaN(parsedDate.getTime())) {
+      setLogFormError('Please provide a valid date and time for this update.');
+      return;
+    }
+
+    let parsedLat: number | undefined;
+    if (logLatitude.trim() !== '') {
+      parsedLat = Number(logLatitude);
+      if (!Number.isFinite(parsedLat) || parsedLat < -90 || parsedLat > 90) {
+        setLogFormError('Latitude must be between -90 and 90.');
+        return;
+      }
+    }
+
+    let parsedLng: number | undefined;
+    if (logLongitude.trim() !== '') {
+      parsedLng = Number(logLongitude);
+      if (!Number.isFinite(parsedLng) || parsedLng < -180 || parsedLng > 180) {
+        setLogFormError('Longitude must be between -180 and 180.');
+        return;
+      }
+    }
+
+    let parsedOdo: number | undefined;
+    if (logOdometerKm.trim() !== '') {
+      parsedOdo = Number(logOdometerKm);
+      if (!Number.isFinite(parsedOdo) || parsedOdo < 0) {
+        setLogFormError('Odometer reading must be a non-negative number.');
+        return;
+      }
+    }
+
+    setSavingLog(true);
+    try {
+      const logId =
+        editingLogId || `tlog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+      await saveTripLogInFirestore(company.id, data.trip.id, {
+        id: logId,
+        tripNumber: data.trip.tripNumber,
+        status: resolvedStatus,
+        severity: logSeverity,
+        timestamp: parsedDate.toISOString(),
+        locationNote: trimmedLocation,
+        latitude: parsedLat,
+        longitude: parsedLng,
+        odometerKm: parsedOdo,
+        notes: logNotes.trim() || undefined,
+        loggedByUid: user?.id,
+        loggedByName: user?.name || user?.email || 'Dispatcher',
+      });
+
+      setIsAddLogOpen(false);
+      setEditingLogId(null);
+      if (onTripUpdated) onTripUpdated();
+    } catch (err: any) {
+      setLogFormError(err?.message || 'Unable to save trip log to Firestore.');
+    } finally {
+      setSavingLog(false);
+    }
+  };
+
+  const handleDeleteTripLog = async (log: TripLog) => {
+    if (!data || !company?.id) return;
+    setDeletingLogId(log.id);
+    setLogsError(null);
+    try {
+      await deleteTripLogInFirestore(company.id, data.trip.id, log.id, log.status);
+      if (onTripUpdated) onTripUpdated();
+    } catch (err: any) {
+      setLogsError(err?.message || 'Unable to delete trip log.');
+    } finally {
+      setDeletingLogId(null);
+    }
+  };
+
+  const getLogSeverityBadge = (log: TripLog): { variant: BadgeVariant; label: string } => {
+    const sev =
+      log.severity ||
+      (log.status.toLowerCase().includes('breakdown')
+        ? 'CRITICAL'
+        : log.status.toLowerCase().includes('delay')
+        ? 'WARNING'
+        : log.status.toLowerCase().includes('unloaded') ||
+          log.status.toLowerCase().includes('loaded')
+        ? 'SUCCESS'
+        : 'INFO');
+    switch (sev) {
+      case 'CRITICAL':
+        return { variant: 'danger', label: 'Alert' };
+      case 'WARNING':
+        return { variant: 'warning', label: 'Delay' };
+      case 'SUCCESS':
+        return { variant: 'success', label: 'Milestone' };
+      default:
+        return { variant: 'info', label: 'Checkpoint' };
+    }
+  };
+
   const trip = data?.trip;
   const statusBadge = trip
     ? getStatusBadge(trip.status)
@@ -338,21 +612,39 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
             </div>
 
             <div className="flex items-center gap-1.5 flex-wrap">
-              {data.allowedNextStatuses.map((st) => (
+              {onEditTrip && (
                 <button
-                  key={st}
-                  onClick={() => setTargetStatusToChange(st)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer flex items-center gap-1 ${
-                    st === 'CANCELLED'
-                      ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                      : st === 'COMPLETED'
-                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                      : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                  }`}
+                  type="button"
+                  onClick={() => onEditTrip(trip)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 shadow-xs transition-colors cursor-pointer flex items-center gap-1"
                 >
-                  <span>Mark {st}</span>
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Edit Dispatch / POD</span>
                 </button>
-              ))}
+              )}
+              {data.allowedNextStatuses.map((st) => {
+                const order = ['PLANNED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'SETTLED'];
+                const isReopenAction =
+                  trip.status === 'CANCELLED' ||
+                  (st !== 'CANCELLED' && order.indexOf(st) < order.indexOf(trip.status));
+                return (
+                  <button
+                    key={st}
+                    onClick={() => setTargetStatusToChange(st)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer flex items-center gap-1 ${
+                      st === 'CANCELLED'
+                        ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                        : st === 'COMPLETED'
+                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                        : isReopenAction
+                        ? 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                  >
+                    <span>{isReopenAction ? `Reopen to ${st}` : `Mark ${st}`}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -419,9 +711,10 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
           </div>
 
           {/* Navigation Tabs */}
-          <div className="flex items-center gap-1 border-b border-slate-200 text-xs font-semibold">
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 text-xs font-semibold">
             {[
               { id: 'overview', label: 'Overview & Specs', icon: FileText },
+              { id: 'logs', label: `Trip Logs (${tripLogs.length})`, icon: Navigation },
               { id: 'expenses', label: `Trip Expenses (${data.expenses.length})`, icon: Fuel },
               { id: 'advances', label: `Driver Advances (${data.advances.length})`, icon: CreditCard },
               { id: 'workflow', label: 'Operational Lifecycle', icon: CheckCircle2 },
@@ -430,8 +723,8 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
               return (
                 <button
                   key={t.id}
-                  onClick={() => setActiveTab(t.id as any)}
-                  className={`pb-2.5 px-3 flex items-center gap-1.5 transition-colors border-b-2 ${
+                  onClick={() => setActiveTab(t.id as TripDetailTab)}
+                  className={`pb-2.5 px-3 flex items-center gap-1.5 transition-colors border-b-2 whitespace-nowrap shrink-0 cursor-pointer ${
                     activeTab === t.id
                       ? 'border-indigo-600 text-indigo-600 font-bold'
                       : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -611,6 +904,11 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                   </div>
                 )}
 
+                {trip.dispatchRemarks && (
+                  <p className="text-[11px] text-slate-600 bg-white p-2 rounded-lg border border-slate-200 mt-2">
+                    <strong>Dispatch Remarks:</strong> {trip.dispatchRemarks}
+                  </p>
+                )}
                 {trip.podRemarks && (
                   <p className="text-[11px] text-slate-600 bg-white p-2 rounded-lg border border-slate-200 mt-2">
                     <strong>Receiver Note:</strong> {trip.podRemarks}
@@ -756,7 +1054,171 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
             </div>
           )}
 
-          {/* TAB 4: OPERATIONAL WORKFLOW */}
+          {/* TAB 4: TRIP LOGS (SUB-COLLECTION) */}
+          {activeTab === 'logs' && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                    En-Route Status Checkpoints &amp; GPS Location Logs
+                  </h4>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Stored in Firestore sub-collection for {trip.tripNumber} ({trip.vehicleReg})
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openNewLogForm('Vehicle Breakdown')}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                  >
+                    Report Breakdown
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openNewLogForm()}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Status Log</span>
+                  </button>
+                </div>
+              </div>
+
+              {logsError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{logsError}</span>
+                </div>
+              )}
+
+              {logsLoading ? (
+                <div className="border border-slate-200 rounded-xl bg-white divide-y divide-slate-100">
+                  {[0, 1].map((idx) => (
+                    <div key={idx} className="p-4 space-y-2">
+                      <div className="h-3.5 w-40 bg-slate-200 rounded animate-pulse" />
+                      <div className="h-3 w-64 bg-slate-100 rounded animate-pulse" />
+                    </div>
+                  ))}
+                </div>
+              ) : tripLogs.length === 0 ? (
+                <div className="text-center py-10 px-4 bg-slate-50 rounded-xl border border-dashed border-slate-300 space-y-3">
+                  <Navigation className="w-6 h-6 text-slate-400 mx-auto" />
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold text-slate-800">
+                      No en-route status logs recorded yet
+                    </p>
+                    <p className="text-[11px] text-slate-500 max-w-md mx-auto">
+                      Track loading gate arrival, toll checkpoints, vehicle breakdowns, or consignee delivery timestamps with GPS-like location notes.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => openNewLogForm('Reached Loading Point')}
+                      className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
+                    >
+                      Log Reached Loading Point
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="border border-slate-200 rounded-xl overflow-hidden bg-white divide-y divide-slate-100 text-xs">
+                  {tripLogs.map((log) => {
+                    const sevBadge = getLogSeverityBadge(log);
+                    const formattedTs = (() => {
+                      const d = new Date(log.timestamp);
+                      if (Number.isNaN(d.getTime())) return log.timestamp;
+                      return d.toLocaleString('en-IN', {
+                        day: '2-digit',
+                        month: 'short',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      });
+                    })();
+                    return (
+                      <div
+                        key={log.id}
+                        className="p-3.5 flex flex-col sm:flex-row sm:items-start justify-between gap-3 hover:bg-slate-50/70 transition-colors"
+                      >
+                        <div className="space-y-1.5 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-slate-900 text-sm">
+                              {log.status}
+                            </span>
+                            <Badge variant={sevBadge.variant} size="sm">
+                              {sevBadge.label}
+                            </Badge>
+                          </div>
+
+                          <div className="flex items-center gap-2 text-[11px] text-slate-700">
+                            <MapPin className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                            <span className="font-medium break-words">{log.locationNote}</span>
+                          </div>
+
+                          <div className="flex items-center gap-2 text-[11px] text-slate-500 flex-wrap font-mono tabular-nums">
+                            <span className="inline-flex items-center gap-1">
+                              <Clock className="w-3 h-3 text-slate-400" />
+                              {formattedTs}
+                            </span>
+                            {typeof log.latitude === 'number' && typeof log.longitude === 'number' && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span>
+                                  GPS {log.latitude.toFixed(4)}, {log.longitude.toFixed(4)}
+                                </span>
+                              </>
+                            )}
+                            {typeof log.odometerKm === 'number' && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span>{log.odometerKm.toLocaleString()} KM</span>
+                              </>
+                            )}
+                            {log.loggedByName && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="font-sans">By {log.loggedByName}</span>
+                              </>
+                            )}
+                          </div>
+
+                          {log.notes && (
+                            <p className="text-[11px] text-slate-600 pt-0.5 leading-relaxed">
+                              {log.notes}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-start">
+                          <button
+                            type="button"
+                            onClick={() => openEditLogForm(log)}
+                            title="Edit status log"
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTripLog(log)}
+                            disabled={deletingLogId === log.id}
+                            title="Delete status log"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-50 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 5: OPERATIONAL WORKFLOW */}
           {activeTab === 'workflow' && (
             <div className="space-y-4">
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
@@ -805,27 +1267,261 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
 
                 {data.allowedNextStatuses.length === 0 ? (
                   <p className="text-xs text-slate-500 italic">
-                    This trip is in terminal state ({trip.status}). No further state changes are permitted.
+                    No further workflow transitions available for {trip.status}.
                   </p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
-                    {data.allowedNextStatuses.map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => setTargetStatusToChange(st)}
-                        className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors shadow-xs ${
-                          st === 'CANCELLED'
-                            ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
-                            : st === 'COMPLETED'
-                            ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                            : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                        }`}
-                      >
-                        Advance to {st}
-                      </button>
-                    ))}
+                    {data.allowedNextStatuses.map((st) => {
+                      const order = ['PLANNED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'SETTLED'];
+                      const isReopenAction =
+                        trip.status === 'CANCELLED' ||
+                        (st !== 'CANCELLED' && order.indexOf(st) < order.indexOf(trip.status));
+                      return (
+                        <button
+                          key={st}
+                          onClick={() => setTargetStatusToChange(st)}
+                          className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors shadow-xs cursor-pointer ${
+                            st === 'CANCELLED'
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100'
+                              : st === 'COMPLETED'
+                              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                              : isReopenAction
+                              ? 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                              : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                          }`}
+                        >
+                          {isReopenAction ? `Reopen as ${st}` : `Advance to ${st}`}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Add / Edit Trip Log Sub-Modal */}
+          {isAddLogOpen && (
+            <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl p-5 max-w-lg w-full border border-slate-200 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                  <div>
+                    <h4 className="font-bold text-sm text-slate-900">
+                      {editingLogId ? 'Edit Trip Status Log' : 'Add Trip Status Update'}
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      {trip.tripNumber} · {trip.vehicleReg} · {trip.originCity} → {trip.destinationCity}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddLogOpen(false)}
+                    className="text-xs text-slate-500 hover:text-slate-900 px-2 py-1 rounded-lg"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                {logFormError && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>{logFormError}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleSaveTripLog} className="space-y-3.5 text-xs">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1.5">
+                      Status Checkpoint <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={logStatusPreset}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setLogStatusPreset(val);
+                        const match = TRIP_LOG_PRESET_STATUSES.find((p) => p.label === val);
+                        if (match) {
+                          setLogSeverity(match.severity);
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-900 font-medium"
+                    >
+                      {TRIP_LOG_PRESET_STATUSES.map((p) => (
+                        <option key={p.label} value={p.label}>
+                          {p.label}
+                        </option>
+                      ))}
+                      <option value="CUSTOM">Custom Status Update...</option>
+                    </select>
+                  </div>
+
+                  {logStatusPreset === 'CUSTOM' && (
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Custom Status Label <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={logCustomStatus}
+                        onChange={(e) => setLogCustomStatus(e.target.value)}
+                        maxLength={80}
+                        placeholder="e.g. Customs Inspection Cleared"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
+                        required
+                      />
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-semibold text-slate-700">
+                          Timestamp <span className="text-rose-500">*</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setLogTimestampLocal(toLocalDateTimeInput(new Date()))}
+                          className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 cursor-pointer"
+                        >
+                          Use Now
+                        </button>
+                      </div>
+                      <input
+                        type="datetime-local"
+                        value={logTimestampLocal}
+                        onChange={(e) => setLogTimestampLocal(e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono tabular-nums text-slate-900"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Priority / Severity
+                      </label>
+                      <select
+                        value={logSeverity}
+                        onChange={(e) => setLogSeverity(e.target.value as TripLogSeverity)}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white text-slate-900"
+                      >
+                        <option value="INFO">Checkpoint (Normal)</option>
+                        <option value="SUCCESS">Milestone Completed</option>
+                        <option value="WARNING">Delay / Attention</option>
+                        <option value="CRITICAL">Breakdown / Critical Alert</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1 gap-2">
+                      <label className="font-semibold text-slate-700">
+                        Location / GPS Checkpoint Note <span className="text-rose-500">*</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleCaptureGps}
+                        disabled={capturingGps}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-[11px] font-semibold whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                      >
+                        <Crosshair className="w-3 h-3" />
+                        <span>{capturingGps ? 'Locating...' : 'Capture GPS'}</span>
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={logLocationNote}
+                      onChange={(e) => setLogLocationNote(e.target.value)}
+                      maxLength={250}
+                      placeholder={
+                        TRIP_LOG_PRESET_STATUSES.find((p) => p.label === logStatusPreset)
+                          ?.placeholderLocation || 'e.g. NH-19 Dankuni Toll Plaza (22.6815, 88.3012)'
+                      }
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
+                      required
+                    />
+                    {gpsNotice && (
+                      <p className="text-[11px] text-slate-500 mt-1">{gpsNotice}</p>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Latitude (Optional)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        min="-90"
+                        max="90"
+                        value={logLatitude}
+                        onChange={(e) => setLogLatitude(e.target.value)}
+                        placeholder="e.g. 22.6815"
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-lg font-mono tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Longitude (Optional)
+                      </label>
+                      <input
+                        type="number"
+                        step="0.000001"
+                        min="-180"
+                        max="180"
+                        value={logLongitude}
+                        onChange={(e) => setLogLongitude(e.target.value)}
+                        placeholder="e.g. 88.3012"
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-lg font-mono tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Odometer KM
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={logOdometerKm}
+                        onChange={(e) => setLogOdometerKm(e.target.value)}
+                        placeholder="e.g. 142500"
+                        className="w-full px-3 py-1.5 border border-slate-300 rounded-lg font-mono tabular-nums"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Driver / Dispatch Remarks
+                    </label>
+                    <textarea
+                      rows={2}
+                      maxLength={500}
+                      value={logNotes}
+                      onChange={(e) => setLogNotes(e.target.value)}
+                      placeholder="e.g. Waiting at weighbridge bay 2; mechanic dispatched for rear tyre check."
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => setIsAddLogOpen(false)}
+                      disabled={savingLog}
+                      className="px-4 py-2 border border-slate-300 rounded-lg text-slate-600 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingLog}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-700 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-60"
+                    >
+                      {savingLog ? 'Saving...' : editingLogId ? 'Update Log' : 'Save Status Log'}
+                    </button>
+                  </div>
+                </form>
               </div>
             </div>
           )}

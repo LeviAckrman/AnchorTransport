@@ -23,17 +23,16 @@ export const tripsRouter = Router();
 
 /**
  * Valid Status Transitions Matrix
- * Strictly enforces that trips move forward in operational order.
- * Terminal states (COMPLETED, CANCELLED) cannot be transitioned out of.
+ * Supports forward operational progression and owner-authorized operational reopening.
  */
 export const ALLOWED_STATUS_TRANSITIONS: Record<TripStatus, TripStatus[]> = {
   PLANNED: ['DISPATCHED', 'CANCELLED'],
-  DISPATCHED: ['IN_TRANSIT', 'DELIVERED', 'CANCELLED'],
-  IN_TRANSIT: ['DELIVERED', 'CANCELLED'],
-  DELIVERED: ['COMPLETED', 'SETTLED'],
-  SETTLED: ['COMPLETED'],
-  COMPLETED: [], // Terminal state
-  CANCELLED: [], // Terminal state: historical records preserved
+  DISPATCHED: ['IN_TRANSIT', 'DELIVERED', 'PLANNED', 'CANCELLED'],
+  IN_TRANSIT: ['DELIVERED', 'DISPATCHED', 'CANCELLED'],
+  DELIVERED: ['COMPLETED', 'IN_TRANSIT', 'SETTLED', 'CANCELLED'],
+  SETTLED: ['COMPLETED', 'DELIVERED'],
+  COMPLETED: ['DELIVERED'],
+  CANCELLED: ['PLANNED'],
 };
 
 /**
@@ -550,22 +549,6 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
       return;
     }
 
-    // Completed or cancelled trips cannot have freight/routing altered
-    if (['COMPLETED', 'CANCELLED'].includes(trip.status)) {
-      if (req.body.notes !== undefined) {
-        trip.notes = req.body.notes;
-        trip.updatedAt = new Date().toISOString();
-        await serverFleetStore.persistToFirestore(companyId, 'trips', trip.id, trip);
-        res.json({ success: true, message: 'Trip notes updated.', trip });
-        return;
-      }
-      res.status(400).json({
-        success: false,
-        error: `Cannot modify trip in ${trip.status} state. Historical records are preserved.`,
-      });
-      return;
-    }
-
     const {
       customerId,
       vehicleId,
@@ -573,7 +556,15 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
       originCity,
       destinationCity,
       dispatchDate,
+      dispatchRemarks,
       expectedDeliveryDate,
+      actualDeliveryDate,
+      lrNumber,
+      lrDocumentUrl,
+      dispatchDocumentUrl,
+      podReceived,
+      podDocumentUrl,
+      podRemarks,
       goodsType,
       weightTonnes,
       ratePerTonnePaise,
@@ -644,7 +635,15 @@ tripsRouter.put('/trips/:id', requireAuth, async (req: AuthenticatedRequest, res
     if (originCity) trip.originCity = originCity.trim();
     if (destinationCity) trip.destinationCity = destinationCity.trim();
     if (dispatchDate) trip.dispatchDate = dispatchDate;
+    if (dispatchRemarks !== undefined) trip.dispatchRemarks = String(dispatchRemarks).trim();
     if (expectedDeliveryDate) trip.expectedDeliveryDate = expectedDeliveryDate;
+    if (actualDeliveryDate !== undefined) trip.actualDeliveryDate = actualDeliveryDate;
+    if (lrNumber !== undefined) trip.lrNumber = String(lrNumber).trim();
+    if (lrDocumentUrl !== undefined) trip.lrDocumentUrl = lrDocumentUrl || undefined;
+    if (dispatchDocumentUrl !== undefined) trip.dispatchDocumentUrl = dispatchDocumentUrl || undefined;
+    if (podReceived !== undefined) trip.podReceived = Boolean(podReceived);
+    if (podDocumentUrl !== undefined) trip.podDocumentUrl = podDocumentUrl || undefined;
+    if (podRemarks !== undefined) trip.podRemarks = String(podRemarks).trim();
     if (goodsType) trip.goodsType = goodsType.trim();
 
     if (weightTonnes !== undefined) trip.weightTonnes = Math.max(0, parseFloat(weightTonnes) || 0);
@@ -802,6 +801,21 @@ async function handleStatusTransition(req: AuthenticatedRequest, res: Response) 
         driver.status = 'AVAILABLE';
         driver.totalTripsCompleted = (driver.totalTripsCompleted || 0) + 1;
       }
+    } else if (targetStatus === 'PLANNED') {
+      if (trip.status === 'CANCELLED') {
+        trip.cancellationReason = undefined;
+        trip.cancelledAt = undefined;
+        trip.cancelledBy = undefined;
+      }
+      trip.reopenedAt = nowIso;
+      trip.reopenedBy = req.user?.name || req.user?.email || 'Authorized Owner';
+      if (vehicle && vehicle.activeTripId === trip.id) {
+        vehicle.status = 'AVAILABLE';
+        vehicle.activeTripId = undefined;
+      }
+      if (driver && driver.status === 'ON_TRIP') {
+        driver.status = 'AVAILABLE';
+      }
     } else if (targetStatus === 'CANCELLED') {
       // Cancellation preserves history and frees vehicle & driver
       trip.cancellationReason = (cancellationReason || 'Cancelled by transporter operations').trim();
@@ -815,6 +829,16 @@ async function handleStatusTransition(req: AuthenticatedRequest, res: Response) 
       if (driver && driver.status === 'ON_TRIP') {
         driver.status = 'AVAILABLE';
       }
+    }
+
+    if (
+      (trip.status === 'COMPLETED' && targetStatus === 'DELIVERED') ||
+      (trip.status === 'SETTLED' && (targetStatus === 'COMPLETED' || targetStatus === 'DELIVERED')) ||
+      (trip.status === 'DELIVERED' && targetStatus === 'IN_TRANSIT') ||
+      (trip.status === 'IN_TRANSIT' && targetStatus === 'DISPATCHED')
+    ) {
+      trip.reopenedAt = nowIso;
+      trip.reopenedBy = req.user?.name || req.user?.email || 'Authorized Owner';
     }
 
     trip.status = targetStatus;

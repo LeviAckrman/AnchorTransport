@@ -26,23 +26,11 @@ service firebase.storage {
       return /databases/ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d/documents/companies/$(companyId);
     }
 
-    function memberDocPath(companyId, uid) {
-      return /databases/ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d/documents/companies/$(companyId)/members/$(uid);
-    }
-
-    function isAuthorizedCompanyUser(companyId) {
+    function isVerifiedCompanyOwner(companyId) {
       return isVerifiedUser()
         && isValidSegment(companyId)
-        && (
-          (
-            firestore.exists(companyDocPath(companyId))
-            && firestore.get(companyDocPath(companyId)).data.ownerId == request.auth.uid
-          )
-          || (
-            firestore.exists(memberDocPath(companyId, request.auth.uid))
-            && firestore.get(memberDocPath(companyId, request.auth.uid)).data.status == 'ACTIVE'
-          )
-        );
+        && firestore.exists(companyDocPath(companyId))
+        && firestore.get(companyDocPath(companyId)).data.ownerId == request.auth.uid;
     }
 
     function isAllowedFolder(folder) {
@@ -60,11 +48,11 @@ service firebase.storage {
 
     // Company-scoped compliance documents (RC, Insurance, PUC, Permit, POD, LR, Dispatch, Fuel, Expense)
     match /companies/{companyId}/{folder}/{fileName} {
-      // Only verified owners/active members of THIS company can read its files
-      allow read: if isAuthorizedCompanyUser(companyId) && isAllowedFolder(folder);
+      // Strictly only the verified company owner can read its files
+      allow read: if isVerifiedCompanyOwner(companyId) && isAllowedFolder(folder);
 
-      // Uploads must verify company membership, file type, 15MB cap, and matching customMetadata
-      allow create, update: if isAuthorizedCompanyUser(companyId)
+      // Uploads must verify company ownership, file type, 15MB cap, and matching customMetadata
+      allow create, update: if isVerifiedCompanyOwner(companyId)
                             && isAllowedFolder(folder)
                             && isImageOrPdf()
                             && isUnderMaxSize(15)
@@ -72,8 +60,8 @@ service firebase.storage {
                             && request.resource.metadata.companyId == companyId
                             && request.resource.metadata.uploadedByUid == request.auth.uid;
 
-      // Only verified owners/active members of THIS company can delete its files
-      allow delete: if isAuthorizedCompanyUser(companyId) && isAllowedFolder(folder);
+      // Strictly only the verified company owner can delete its files
+      allow delete: if isVerifiedCompanyOwner(companyId) && isAllowedFolder(folder);
     }
   }
 }

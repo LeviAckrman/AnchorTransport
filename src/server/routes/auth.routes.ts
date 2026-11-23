@@ -302,7 +302,6 @@ authRouter.post('/session', async (req, res) => {
     // Rehydrate company & owner membership from Firestore payload when ownerId matches user.id
     if (
       memberships.length === 0 &&
-      !adminAuth &&
       firestoreCompany &&
       typeof firestoreCompany === 'object' &&
       typeof firestoreCompany.id === 'string' &&
@@ -831,6 +830,46 @@ authRouter.post('/onboard-company', requireAuth, async (req: AuthenticatedReques
     const cleanGstin = gstin.trim().toUpperCase();
     if (!/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(cleanGstin)) {
       res.status(400).json({ success: false, error: 'Invalid Indian GSTIN format (15 characters alphanumeric).' });
+      return;
+    }
+
+    // Never create a duplicate company for an owner who already has one
+    const alreadyOwnedCompany = serverCompanies.find((c) => c.ownerId === userId);
+    if (alreadyOwnedCompany) {
+      const userRecord = serverUsers.find((u) => u.id === userId);
+      const token = signSessionToken({
+        userId,
+        email: req.user!.email,
+        name: req.user!.name,
+        companyId: alreadyOwnedCompany.id,
+        role: 'OWNER',
+      });
+      setSessionCookie(res, token);
+      res.status(200).json({
+        success: true,
+        token,
+        needsOnboarding: false,
+        onboardingCompleted: true,
+        user: userRecord
+          ? {
+              id: userRecord.id,
+              email: userRecord.email,
+              name: userRecord.name,
+              phone: userRecord.phone,
+              onboardingCompleted: true,
+              onboardingCompletedAt: userRecord.onboardingCompletedAt,
+            }
+          : undefined,
+        company: alreadyOwnedCompany,
+        role: 'OWNER',
+        accessibleCompanies: [
+          {
+            companyId: alreadyOwnedCompany.id,
+            companyName: alreadyOwnedCompany.name,
+            role: 'OWNER',
+          },
+        ],
+      });
       return;
     }
 

@@ -45,6 +45,7 @@ import { SettlementsView } from './modules/financials/SettlementsView';
 import { InvoicesView } from './modules/invoices/InvoicesView';
 import { ReportsView } from './modules/reports/ReportsView';
 import { VehicleDocumentsView } from './modules/vehicles/VehicleDocumentsView';
+import { MaintenanceView } from './modules/maintenance/MaintenanceView';
 
 // Auth, Firestore Data & Security Components
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -104,13 +105,17 @@ function AppContent() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
   // Quick Dispatch Modal State
   const [isQuickTripOpen, setIsQuickTripOpen] = useState(false);
   const [quickTripSubmitting, setQuickTripSubmitting] = useState(false);
+  const [quickTripError, setQuickTripError] = useState<string | null>(null);
   const [newTripCustomer, setNewTripCustomer] = useState('');
   const [newTripVehicle, setNewTripVehicle] = useState('');
   const [newTripDriver, setNewTripDriver] = useState('');
@@ -122,6 +127,7 @@ function AppContent() {
   const [newTripGoods, setNewTripGoods] = useState('');
 
   const resetQuickTripForm = () => {
+    setQuickTripError(null);
     setNewTripCustomer('');
     setNewTripVehicle('');
     setNewTripDriver('');
@@ -144,14 +150,14 @@ function AppContent() {
     }
   }, [isAuthenticated]);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
+  const showToast = (text: string, type: 'success' | 'error' = 'success') => {
+    setToastMessage({ type, text });
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
   const handleResetData = () => {
     if (!permissions?.canManageCompany) {
-      showToast('Only the authorized company Owner can clear company operational data.');
+      showToast('Only the authorized company Owner can clear company operational data.', 'error');
       return;
     }
     setIsResetDialogOpen(true);
@@ -165,7 +171,7 @@ function AppContent() {
       clearClientTmsCaches();
       showToast('All operational company data cleared in Firestore.');
     } catch (err: any) {
-      showToast(err?.message || 'Failed to clear operational data.');
+      showToast(err?.message || 'Failed to clear operational data.', 'error');
     } finally {
       setIsResetting(false);
       setIsResetDialogOpen(false);
@@ -175,31 +181,37 @@ function AppContent() {
   // Quick Dispatch Submission -> Atomic Firestore writeBatch
   const handleCreateTrip = async (e: React.FormEvent) => {
     e.preventDefault();
+    setQuickTripError(null);
     if (!company?.id) {
-      showToast('No active company selected.');
+      const msg = 'No active company selected.';
+      setQuickTripError(msg);
+      showToast(msg, 'error');
       return;
     }
     if (!newTripCustomer || !newTripVehicle || !newTripDriver) {
-      showToast('Please select customer, vehicle, and driver.');
+      const msg = 'Please select customer, vehicle, and driver.';
+      setQuickTripError(msg);
       return;
     }
     if (!newTripOrigin.trim() || !newTripDestination.trim()) {
-      showToast('Please provide both loading origin and unloading destination cities.');
+      const msg = 'Please provide both loading origin and unloading destination cities.';
+      setQuickTripError(msg);
       return;
     }
     if (!newTripGoods.trim()) {
-      showToast('Please enter commodity / goods description.');
+      const msg = 'Please enter commodity / goods description.';
+      setQuickTripError(msg);
       return;
     }
 
     const weight = parseFloat(newTripWeight);
     const rateRupees = parseFloat(newTripRate);
     if (isNaN(weight) || weight <= 0) {
-      showToast('Cargo weight must be a positive number in tonnes.');
+      setQuickTripError('Cargo weight must be a positive number in tonnes.');
       return;
     }
     if (isNaN(rateRupees) || rateRupees <= 0) {
-      showToast('Freight rate per tonne must be greater than zero.');
+      setQuickTripError('Freight rate per tonne must be greater than zero.');
       return;
     }
 
@@ -208,7 +220,7 @@ function AppContent() {
     const driverObj = drivers.find((d) => d.id === newTripDriver);
 
     if (!customerObj || !vehicleObj || !driverObj) {
-      showToast('Selected customer, vehicle, or driver could not be found.');
+      setQuickTripError('Selected customer, vehicle, or driver could not be found.');
       return;
     }
 
@@ -288,9 +300,11 @@ function AppContent() {
 
       resetQuickTripForm();
       setIsQuickTripOpen(false);
-      showToast(`Trip ${tripNumber} (${vehicleObj.registrationNumber}) saved to Firestore!`);
+      showToast(`Trip ${tripNumber} (${vehicleObj.registrationNumber}) saved to Firestore!`, 'success');
     } catch (err: any) {
-      showToast(err?.message || 'Failed to dispatch trip.');
+      const msg = err?.message || 'Failed to dispatch trip.';
+      setQuickTripError(msg);
+      showToast(msg, 'error');
     } finally {
       setQuickTripSubmitting(false);
     }
@@ -333,9 +347,19 @@ function AppContent() {
   return (
     <div className="flex h-screen bg-slate-100 overflow-hidden text-slate-900 antialiased font-sans">
       {toastMessage && (
-        <div className="fixed top-4 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-lg shadow-xl text-xs sm:text-sm font-medium flex items-center gap-2 border border-slate-700 animate-in fade-in slide-in-from-top-4 duration-200">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <span>{toastMessage}</span>
+        <div
+          className={`fixed top-4 right-4 z-50 px-4 py-2.5 rounded-lg shadow-xl text-xs sm:text-sm font-medium flex items-center gap-2 border animate-in fade-in slide-in-from-top-4 duration-200 ${
+            toastMessage.type === 'success'
+              ? 'bg-slate-900 text-white border-slate-700'
+              : 'bg-rose-900 text-white border-rose-700'
+          }`}
+        >
+          {toastMessage.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0" />
+          )}
+          <span>{toastMessage.text}</span>
         </div>
       )}
 
@@ -408,35 +432,18 @@ function AppContent() {
             <SettlementsView userRole={effectiveRole} onNavigateTab={setActiveTab} />
           )}
           {(activeTab === 'invoices' || activeTab === 'payments') && (
-            <InvoicesView userRole={effectiveRole} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
+            <InvoicesView
+              userRole={effectiveRole}
+              initialTab={activeTab === 'payments' ? 'receivables' : 'invoices'}
+              onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)}
+            />
           )}
           {activeTab === 'documents' && (
             <VehicleDocumentsView userRole={effectiveRole} onNavigateTab={(tab) => setActiveTab(tab as ActiveTab)} />
           )}
           {activeTab === 'settings' && <CompanyProfilePage />}
           {activeTab === 'reports' && <ReportsView userRole={effectiveRole} />}
-
-          {activeTab === 'maintenance' && (
-            <div className="max-w-4xl mx-auto py-12 text-center bg-white rounded-xl border border-slate-200 p-8 shadow-xs">
-              <div className="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3">
-                <CheckCircle2 className="w-6 h-6" />
-              </div>
-              <h3 className="text-lg font-bold text-slate-900">
-                Maintenance Module Prepared
-              </h3>
-              <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-md mx-auto">
-                Firestore collections and security permissions are active for maintenance records.
-              </p>
-              <div className="mt-6 flex justify-center gap-3">
-                <button
-                  onClick={() => setActiveTab('dashboard')}
-                  className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 transition-colors"
-                >
-                  Return to Dashboard
-                </button>
-              </div>
-            </div>
-          )}
+          {activeTab === 'maintenance' && <MaintenanceView userRole={effectiveRole} />}
         </main>
       </div>
 
@@ -459,6 +466,12 @@ function AppContent() {
         maxWidth="lg"
       >
         <form onSubmit={handleCreateTrip} className="space-y-4">
+          {quickTripError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center gap-2 text-rose-700 text-xs font-medium">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{quickTripError}</span>
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-700 uppercase mb-1">

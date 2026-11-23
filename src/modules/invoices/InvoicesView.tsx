@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FileText,
   Plus,
@@ -33,17 +33,23 @@ import { downloadInvoicePdf } from '../../lib/pdfGenerator';
 
 interface InvoicesViewProps {
   userRole: UserRole;
+  initialTab?: 'invoices' | 'receivables';
   onNavigateTab?: (tab: string) => void;
 }
 
 export const InvoicesView: React.FC<InvoicesViewProps> = ({
   userRole: _userRole,
+  initialTab = 'invoices',
   onNavigateTab: _onNavigateTab,
 }) => {
   const { company: authCompany } = useAuth();
   const { company: liveCompany, invoices: allInvoices, payments: allPayments, customers, loading, error } = useFirestoreData();
   const company = liveCompany?.id ? liveCompany : authCompany;
-  const [activeTab, setActiveTab] = useState<'invoices' | 'receivables'>('invoices');
+  const [activeTab, setActiveTab] = useState<'invoices' | 'receivables'>(initialTab);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // Filters & Pagination
   const [statusFilter, setStatusFilter] = useState<string>('');

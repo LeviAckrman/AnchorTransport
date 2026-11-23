@@ -1,6 +1,7 @@
 /**
- * AnchorTransport TMS - Role-Based Access Control Permissions
- * Supports Company Owner full governance plus company-scoped employee RBAC
+ * AnchorTransport TMS - Strict Owner-Only Access Control Permissions
+ * Only the authenticated company OWNER is authorized for all TMS operations.
+ * Employee, staff, and team-management permission sets are intentionally denied.
  */
 
 import { UserRole } from '../types/tms';
@@ -21,7 +22,7 @@ export interface RolePermissionSet {
 
 export const OWNER_PERMISSIONS: RolePermissionSet = {
   canManageCompany: true,
-  canManageUsers: true,
+  canManageUsers: false,
   canDispatchTrips: true,
   canSettleTrips: true,
   canGenerateInvoices: true,
@@ -33,67 +34,31 @@ export const OWNER_PERMISSIONS: RolePermissionSet = {
   canManageFleet: true,
 };
 
+const DENIED_PERMISSIONS: RolePermissionSet = {
+  canManageCompany: false,
+  canManageUsers: false,
+  canDispatchTrips: false,
+  canSettleTrips: false,
+  canGenerateInvoices: false,
+  canRecordPayments: false,
+  canLogExpenses: false,
+  canDisburseAdvances: false,
+  canViewReports: false,
+  canViewSensitiveDriverInfo: false,
+  canManageFleet: false,
+};
+
 export const ROLE_PERMISSIONS: Record<UserRole, RolePermissionSet> = {
   OWNER: OWNER_PERMISSIONS,
-  ADMIN: {
-    canManageCompany: true,
-    canManageUsers: true,
-    canDispatchTrips: true,
-    canSettleTrips: true,
-    canGenerateInvoices: true,
-    canRecordPayments: true,
-    canLogExpenses: true,
-    canDisburseAdvances: true,
-    canViewReports: true,
-    canViewSensitiveDriverInfo: true,
-    canManageFleet: true,
-  },
-  MANAGER: {
-    canManageCompany: false,
-    canManageUsers: false,
-    canDispatchTrips: true,
-    canSettleTrips: false,
-    canGenerateInvoices: false,
-    canRecordPayments: false,
-    canLogExpenses: true,
-    canDisburseAdvances: true,
-    canViewReports: true,
-    canViewSensitiveDriverInfo: false,
-    canManageFleet: true,
-  },
-  ACCOUNTANT: {
-    canManageCompany: false,
-    canManageUsers: false,
-    canDispatchTrips: false,
-    canSettleTrips: true,
-    canGenerateInvoices: true,
-    canRecordPayments: true,
-    canLogExpenses: true,
-    canDisburseAdvances: true,
-    canViewReports: true,
-    canViewSensitiveDriverInfo: true,
-    canManageFleet: false,
-  },
-  OPERATIONS: {
-    canManageCompany: false,
-    canManageUsers: false,
-    canDispatchTrips: true,
-    canSettleTrips: false,
-    canGenerateInvoices: false,
-    canRecordPayments: false,
-    canLogExpenses: true,
-    canDisburseAdvances: false,
-    canViewReports: false,
-    canViewSensitiveDriverInfo: false,
-    canManageFleet: false,
-  },
+  ADMIN: DENIED_PERMISSIONS,
+  MANAGER: DENIED_PERMISSIONS,
+  ACCOUNTANT: DENIED_PERMISSIONS,
+  OPERATIONS: DENIED_PERMISSIONS,
 };
 
 export function hasPermission(role: UserRole | undefined | null, permission: keyof RolePermissionSet): boolean {
-  if (!role) return false;
-  const perms = ROLE_PERMISSIONS[role];
-  if (!perms) return false;
-  return Boolean(perms[permission]);
+  if (role !== 'OWNER') return false;
+  return Boolean(OWNER_PERMISSIONS[permission]);
 }
 
 export function canViewSensitiveDriverInfo(role: UserRole | undefined | null): boolean {

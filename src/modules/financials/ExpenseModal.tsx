@@ -263,7 +263,7 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
         odometerReading: odometerReading ? parseInt(odometerReading, 10) : undefined,
         receiptNumber: receiptNumber.trim() ? receiptNumber.trim().slice(0, 60) : undefined,
         voucherNumber: voucherNumber.trim() ? voucherNumber.trim().slice(0, 60) : undefined,
-        receiptUrl: receiptUrl.trim() ? receiptUrl.trim().slice(0, 500) : undefined,
+        receiptUrl: receiptUrl.trim() ? receiptUrl.trim().slice(0, 1500) : undefined,
         notes: cleanNotes || undefined,
         recordedBy: expenseToEdit?.recordedBy || (user?.name || user?.email || 'Owner').slice(0, 100),
         isDriverDisbursed,

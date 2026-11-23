@@ -199,6 +199,7 @@ export interface Trip {
   
   // Trip lifecycle
   dispatchDate: string;
+  dispatchRemarks?: string;
   expectedDeliveryDate: string;
   actualDeliveryDate?: string;
   status: TripStatus;
@@ -224,13 +225,88 @@ export interface Trip {
   invoiceId?: string;
   invoiceNumber?: string;
 
-  // Cancellation audit
+  // Cancellation & reopen audit
   cancellationReason?: string;
   cancelledAt?: string;
   cancelledBy?: string;
+  reopenedAt?: string;
+  reopenedBy?: string;
 
   notes?: string;
   createdAt: string;
+  updatedAt?: string;
+}
+
+export type TripLogSeverity = 'INFO' | 'SUCCESS' | 'WARNING' | 'CRITICAL';
+
+export const TRIP_LOG_PRESET_STATUSES: Array<{
+  label: string;
+  severity: TripLogSeverity;
+  placeholderLocation: string;
+}> = [
+  {
+    label: 'Reached Loading Point',
+    severity: 'INFO',
+    placeholderLocation: 'e.g. Tata Steel Gate No. 3, Jamshedpur (22.7891, 86.2029)',
+  },
+  {
+    label: 'Loading Started',
+    severity: 'INFO',
+    placeholderLocation: 'e.g. Bay 4 Weighbridge & Crane Yard',
+  },
+  {
+    label: 'Loaded & Sealed',
+    severity: 'SUCCESS',
+    placeholderLocation: 'e.g. Dispatched from Plant Gate with LR & E-Way Bill',
+  },
+  {
+    label: 'Dispatched / En Route',
+    severity: 'INFO',
+    placeholderLocation: 'e.g. NH-16 Kharagpur Bypass KM 128',
+  },
+  {
+    label: 'In-Transit Checkpoint',
+    severity: 'INFO',
+    placeholderLocation: 'e.g. NH-19 Dankuni Toll Plaza (22.6815, 88.3012)',
+  },
+  {
+    label: 'Traffic / Permit Delay',
+    severity: 'WARNING',
+    placeholderLocation: 'e.g. State Border Checkpost Queue, NH-60',
+  },
+  {
+    label: 'Vehicle Breakdown',
+    severity: 'CRITICAL',
+    placeholderLocation: 'e.g. NH-2 Barhi Ghat, 12 km before Chouparan',
+  },
+  {
+    label: 'Reached Unloading Point',
+    severity: 'INFO',
+    placeholderLocation: 'e.g. Consignee Warehouse Gate, Bhiwandi',
+  },
+  {
+    label: 'Unloaded / POD Signed',
+    severity: 'SUCCESS',
+    placeholderLocation: 'e.g. Unloading Dock 2, Consignee Stamp Collected',
+  },
+];
+
+export interface TripLog {
+  id: string;
+  companyId: string;
+  tripId: string;
+  tripNumber?: string;
+  status: string;
+  severity?: TripLogSeverity;
+  timestamp: string;
+  locationNote: string;
+  latitude?: number;
+  longitude?: number;
+  odometerKm?: number;
+  notes?: string;
+  loggedByUid?: string;
+  loggedByName?: string;
+  createdAt?: string;
   updatedAt?: string;
 }
 
@@ -361,7 +437,7 @@ export interface TripSettlement {
 }
 
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
-export type InvoicePaymentStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE';
+export type InvoicePaymentStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
 
 export interface Invoice {
   id: string;
@@ -446,6 +522,8 @@ export interface VehicleDocument {
   documentUrl?: string;
   daysUntilExpiry: number; // Derived
   status: 'VALID' | 'EXPIRING_SOON' | 'EXPIRED'; // Green, Amber, Red
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface MaintenanceRecord {
@@ -461,6 +539,8 @@ export interface MaintenanceRecord {
   partsReplaced?: string;
   invoiceNumber?: string;
   notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface FileRecord {
@@ -504,6 +584,7 @@ export interface AuditLog {
   action: 'CREATE' | 'UPDATE' | 'DELETE' | 'DISPATCH' | 'SETTLE' | 'APPROVE' | 'INVOICE' | 'PAYMENT' | 'CANCEL';
   entityType:
     | 'TRIP'
+    | 'TRIP_LOG'
     | 'DISPATCH'
     | 'VEHICLE'
     | 'DRIVER'
@@ -517,6 +598,7 @@ export interface AuditLog {
     | 'CUSTOMER'
     | 'BROKER'
     | 'DOCUMENT'
+    | 'MAINTENANCE'
     | 'FILE_RECORD'
     | 'SETTINGS'
     | 'COMPANY'

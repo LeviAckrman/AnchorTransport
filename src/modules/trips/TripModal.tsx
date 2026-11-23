@@ -78,6 +78,14 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [uploadingLr, setUploadingLr] = useState(false);
   const [uploadingDispatch, setUploadingDispatch] = useState(false);
 
+  const [dispatchRemarks, setDispatchRemarks] = useState('');
+  const [actualDeliveryDate, setActualDeliveryDate] = useState('');
+  const [endOdometerKm, setEndOdometerKm] = useState('');
+  const [podReceived, setPodReceived] = useState(false);
+  const [podDocumentUrl, setPodDocumentUrl] = useState('');
+  const [podRemarks, setPodRemarks] = useState('');
+  const [uploadingPod, setUploadingPod] = useState(false);
+  const [lrNumberInput, setLrNumberInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -114,6 +122,13 @@ export const TripModal: React.FC<TripModalProps> = ({
     setInitialAdvanceRupees('0');
     setStatus('DISPATCHED');
     setNotes('');
+    setDispatchRemarks('');
+    setActualDeliveryDate('');
+    setEndOdometerKm('');
+    setPodReceived(false);
+    setPodDocumentUrl('');
+    setPodRemarks('');
+    setLrNumberInput(getNextLrNumber(allTrips, company));
     setLrDocumentUrl('');
     setDispatchDocumentUrl('');
     setError(null);
@@ -122,32 +137,50 @@ export const TripModal: React.FC<TripModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       if (tripToEdit) {
-        setCustomerId(tripToEdit.customerId);
+        setCustomerId(tripToEdit.customerId || '');
         setBrokerId(tripToEdit.brokerId || '');
         setBrokerCommissionRupees(
           tripToEdit.brokerCommissionPaise !== undefined
             ? String(paiseToRupees(tripToEdit.brokerCommissionPaise))
             : ''
         );
-        setVehicleId(tripToEdit.vehicleId);
-        setDriverId(tripToEdit.driverId);
-        setOriginCity(tripToEdit.originCity);
-        setDestinationCity(tripToEdit.destinationCity);
+        setVehicleId(tripToEdit.vehicleId || '');
+        setDriverId(tripToEdit.driverId || '');
+        setOriginCity(tripToEdit.originCity || '');
+        setDestinationCity(tripToEdit.destinationCity || '');
         setPickupAddress(tripToEdit.pickupAddress || '');
         setDeliveryAddress(tripToEdit.deliveryAddress || '');
         setLoadingDetails(tripToEdit.loadingDetails || '');
         setUnloadingDetails(tripToEdit.unloadingDetails || '');
-        setDispatchDate(tripToEdit.dispatchDate.split('T')[0]);
+        setDispatchDate(
+          (tripToEdit.dispatchDate || '').split('T')[0] ||
+            new Date().toISOString().split('T')[0]
+        );
         setExpectedDeliveryDate(
           tripToEdit.expectedDeliveryDate ? tripToEdit.expectedDeliveryDate.split('T')[0] : ''
         );
-        setGoodsType(tripToEdit.goodsType);
-        setWeightTonnes(tripToEdit.weightTonnes.toString());
-        setRatePerTonneRupees((tripToEdit.ratePerTonnePaise / 100).toString());
+        setGoodsType(tripToEdit.goodsType || '');
+        setWeightTonnes(
+          tripToEdit.weightTonnes != null ? tripToEdit.weightTonnes.toString() : ''
+        );
+        setRatePerTonneRupees(
+          tripToEdit.ratePerTonnePaise != null ? (tripToEdit.ratePerTonnePaise / 100).toString() : ''
+        );
         setOtherChargesRupees(((tripToEdit.otherChargesPaise || 0) / 100).toString());
         setInitialAdvanceRupees('0');
-        setStatus(tripToEdit.status);
+        setStatus(tripToEdit.status || 'PLANNED');
         setNotes(tripToEdit.notes || '');
+        setDispatchRemarks(tripToEdit.dispatchRemarks || '');
+        setActualDeliveryDate(
+          tripToEdit.actualDeliveryDate ? tripToEdit.actualDeliveryDate.split('T')[0] : ''
+        );
+        setEndOdometerKm(
+          tripToEdit.endOdometerKm != null ? tripToEdit.endOdometerKm.toString() : ''
+        );
+        setPodReceived(Boolean(tripToEdit.podReceived));
+        setPodDocumentUrl(tripToEdit.podDocumentUrl || '');
+        setPodRemarks(tripToEdit.podRemarks || '');
+        setLrNumberInput(tripToEdit.lrNumber || '');
         setLrDocumentUrl(tripToEdit.lrDocumentUrl || '');
         setDispatchDocumentUrl(tripToEdit.dispatchDocumentUrl || '');
         setError(null);
@@ -215,8 +248,8 @@ export const TripModal: React.FC<TripModalProps> = ({
         expectedDeliveryDate ||
         new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().split('T')[0];
 
-      const freightAmountPaise = rupeesToPaise(computedFreightRupees);
-      const otherChargesPaise = rupeesToPaise(otherRupees);
+      const freightAmountPaise = Math.max(0, rupeesToPaise(computedFreightRupees));
+      const otherChargesPaise = Math.max(0, rupeesToPaise(otherRupees));
       const totalRevenuePaise = freightAmountPaise + otherChargesPaise;
       const initialAdvancePaise = !tripToEdit ? rupeesToPaise(Math.max(0, advanceRupees)) : 0;
 
@@ -231,7 +264,7 @@ export const TripModal: React.FC<TripModalProps> = ({
         id: tripId,
         companyId: company.id,
         tripNumber: computedTripNumber,
-        lrNumber: computedLrNumber,
+        lrNumber: lrNumberInput.trim() || computedLrNumber,
         customerId: selectedCustomer.id,
         customerName: selectedCustomer.name,
         customerGstin: selectedCustomer.gstin || '',
@@ -253,11 +286,21 @@ export const TripModal: React.FC<TripModalProps> = ({
         otherChargesPaise,
         totalRevenuePaise,
         dispatchDate,
+        dispatchRemarks: dispatchRemarks.trim() || undefined,
         expectedDeliveryDate: finalExpectedDelivery,
+        actualDeliveryDate: actualDeliveryDate.trim() || undefined,
         status,
-        startOdometerKm:
-          tripToEdit?.startOdometerKm ?? selectedVehicle.currentOdometerKm ?? 0,
-        podReceived: tripToEdit?.podReceived ?? false,
+        startOdometerKm: Math.max(
+          0,
+          tripToEdit?.startOdometerKm ?? selectedVehicle.currentOdometerKm ?? 0
+        ),
+        endOdometerKm:
+          endOdometerKm.trim() !== '' && !Number.isNaN(Number(endOdometerKm))
+            ? Math.max(0, Math.round(Number(endOdometerKm)))
+            : undefined,
+        podReceived,
+        podDocumentUrl: podDocumentUrl.trim() || undefined,
+        podRemarks: podRemarks.trim() || undefined,
         lrDocumentUrl: lrDocumentUrl.trim() || undefined,
         dispatchDocumentUrl: dispatchDocumentUrl.trim() || undefined,
         brokerId: selectedBroker ? selectedBroker.id : undefined,
@@ -294,10 +337,19 @@ export const TripModal: React.FC<TripModalProps> = ({
             }
           : null;
 
+      const previousVehicle = tripToEdit
+        ? effectiveVehicles.find((v) => v.id === tripToEdit.vehicleId)
+        : undefined;
+      const previousDriver = tripToEdit
+        ? effectiveDrivers.find((d) => d.id === tripToEdit.driverId)
+        : undefined;
+
       await createOrUpdateTripInFirestore(company.id, {
         trip: tripPayload,
         vehicle: selectedVehicle,
         driver: selectedDriver,
+        previousVehicle,
+        previousDriver,
         initialAdvance,
       });
 
@@ -336,36 +388,63 @@ export const TripModal: React.FC<TripModalProps> = ({
             <div className="h-6 w-px bg-slate-200" />
             <div>
               <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">LR / Bilty Number</span>
-              <span className="font-mono font-bold text-indigo-700 text-sm">{computedLrNumber || 'Auto-generated'}</span>
+              <input
+                type="text"
+                value={lrNumberInput}
+                onChange={(e) => setLrNumberInput(e.target.value)}
+                placeholder={computedLrNumber || 'Auto-generated'}
+                maxLength={50}
+                aria-label="LR Number"
+                className="mt-0.5 w-36 px-2 py-0.5 bg-white border border-slate-300 rounded font-mono font-bold text-indigo-700 text-xs focus:ring-2 focus:ring-indigo-500"
+              />
             </div>
           </div>
 
           <div className="text-right">
-            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">Initial Status</span>
-            <div className="flex items-center gap-1.5 mt-0.5">
-              <label className="flex items-center gap-1 text-xs font-medium text-slate-700 cursor-pointer">
-                <input
-                  type="radio"
-                  name="tripStatus"
-                  value="DISPATCHED"
-                  checked={status === 'DISPATCHED'}
-                  onChange={() => setStatus('DISPATCHED')}
-                  className="text-indigo-600 focus:ring-indigo-500"
-                />
-                <span>Dispatched</span>
-              </label>
-              <label className="flex items-center gap-1 text-xs font-medium text-slate-700 cursor-pointer ml-2">
-                <input
-                  type="radio"
-                  name="tripStatus"
-                  value="PLANNED"
-                  checked={status === 'PLANNED'}
-                  onChange={() => setStatus('PLANNED')}
-                  className="text-indigo-600 focus:ring-indigo-500"
-                />
-                <span>Planned</span>
-              </label>
-            </div>
+            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+              {tripToEdit ? 'Trip Status' : 'Initial Status'}
+            </span>
+            {tripToEdit ? (
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value as TripStatus)}
+                aria-label="Trip Status"
+                className="mt-0.5 px-2.5 py-1 border border-slate-300 rounded-lg text-xs font-semibold text-slate-800 bg-white focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="PLANNED">Planned</option>
+                <option value="DISPATCHED">Dispatched</option>
+                <option value="IN_TRANSIT">In Transit</option>
+                <option value="DELIVERED">Delivered</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="SETTLED">Settled</option>
+                <option value="CANCELLED">Cancelled</option>
+              </select>
+            ) : (
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <label className="flex items-center gap-1 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="tripStatus"
+                    value="DISPATCHED"
+                    checked={status === 'DISPATCHED'}
+                    onChange={() => setStatus('DISPATCHED')}
+                    className="text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Dispatched</span>
+                </label>
+                <label className="flex items-center gap-1 text-xs font-medium text-slate-700 cursor-pointer ml-2">
+                  <input
+                    type="radio"
+                    name="tripStatus"
+                    value="PLANNED"
+                    checked={status === 'PLANNED'}
+                    onChange={() => setStatus('PLANNED')}
+                    className="text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Planned</span>
+                </label>
+              </div>
+            )}
           </div>
         </div>
 
@@ -784,22 +863,34 @@ export const TripModal: React.FC<TripModalProps> = ({
               type="date"
               value={expectedDeliveryDate}
               onChange={(e) => setExpectedDeliveryDate(e.target.value)}
-              min={dispatchDate}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
               required
             />
           </div>
         </div>
 
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">Dispatch Notes / Consignment Special Instructions</label>
-          <input
-            type="text"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="e.g. Tarpaulin cover mandatory, weighbridge token at Dankuni required..."
-            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
-          />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Dispatch Remarks</label>
+            <input
+              type="text"
+              value={dispatchRemarks}
+              onChange={(e) => setDispatchRemarks(e.target.value)}
+              placeholder="e.g. Gate pass #412 issued, driver briefed on toll route"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Dispatch Notes / Consignment Instructions</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="e.g. Tarpaulin cover mandatory, weighbridge token at Dankuni required..."
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
         </div>
 
         {/* Section 5: LR / Bilty & Dispatch Documents */}
@@ -913,6 +1004,111 @@ export const TripModal: React.FC<TripModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Delivery & POD Corrections (always editable by verified owner) */}
+          {(tripToEdit || ['DELIVERED', 'COMPLETED', 'SETTLED'].includes(status)) && (
+            <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-3 text-xs">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="font-bold text-slate-800 uppercase tracking-wider text-[11px]">
+                  Delivery &amp; Stamped POD Details
+                </span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={podReceived}
+                    onChange={(e) => setPodReceived(e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                  />
+                  <span className="font-semibold text-slate-800">Stamped POD Received</span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">Actual Delivery Date</label>
+                  <input
+                    type="date"
+                    value={actualDeliveryDate}
+                    onChange={(e) => setActualDeliveryDate(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">End Odometer (KM)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={endOdometerKm}
+                    onChange={(e) => setEndOdometerKm(e.target.value)}
+                    placeholder="Optional ending odometer"
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">POD / Receiver Remarks</label>
+                  <input
+                    type="text"
+                    value={podRemarks}
+                    onChange={(e) => setPodRemarks(e.target.value)}
+                    placeholder="Consignee stamp, receiver name, or shortage note..."
+                    className="w-full px-3 py-1.5 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-semibold cursor-pointer">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{uploadingPod ? 'Uploading POD...' : podDocumentUrl ? 'Replace POD Copy' : 'Upload POD Copy'}</span>
+                    <input
+                      type="file"
+                      accept="image/*,.pdf"
+                      className="hidden"
+                      disabled={uploadingPod || !company?.id}
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file || !company?.id) return;
+                        setError(null);
+                        setUploadingPod(true);
+                        try {
+                          const downloadUrl = await uploadCompanyDocument(company.id, 'pod', file);
+                          setPodDocumentUrl(downloadUrl);
+                          setPodReceived(true);
+                        } catch (err: any) {
+                          setError(err.message || 'POD document upload failed.');
+                        } finally {
+                          setUploadingPod(false);
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                  </label>
+                  {podDocumentUrl && (
+                    <>
+                      <a
+                        href={podDocumentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-medium"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        View POD
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => setPodDocumentUrl('')}
+                        className="text-rose-600 hover:text-rose-700 p-1"
+                        title="Remove POD document link"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Action Buttons */}

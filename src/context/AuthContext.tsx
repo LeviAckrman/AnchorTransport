@@ -242,18 +242,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // 1. Identify UID & retrieve /users/{uid} profile from Firestore
       let userDoc = null;
+      let userDocReadFailed = false;
       try {
         userDoc =
           (await ensureFirestoreUserProfile(firebaseUser)) ||
           (await fetchUserDocFromFirestore(firebaseUser.uid));
       } catch {
-        // Ignore if unverified or unavailable
+        userDocReadFailed = true;
       }
 
       // 2. Retrieve associated owned company directly from Firestore (strict Owner-Only)
       let firestoreCompany: Company | undefined;
       let firestoreRole: UserRole | undefined;
-      let targetCompanyId = userDoc?.activeCompanyId || userDoc?.defaultCompanyId;
+      let companyLookupFailed = false;
+      const targetCompanyId = userDoc?.activeCompanyId || userDoc?.defaultCompanyId;
 
       if (targetCompanyId) {
         try {
@@ -263,7 +265,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             firestoreRole = companyRes.role;
           }
         } catch {
-          // Stale or inaccessible targetCompanyId — fall through to query owned companies
+          companyLookupFailed = true;
         }
       }
 
@@ -274,8 +276,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             firestoreCompany = owned[0];
             firestoreRole = 'OWNER';
           }
+          companyLookupFailed = false;
         } catch {
-          // Ignore if no owned companies exist yet
+          // Retry once in case token/network had a brief transient glitch
+          try {
+            await new Promise((r) => setTimeout(r, 350));
+            const ownedRetry = await listOwnedCompaniesFromFirestore(firebaseUser.uid);
+            if (ownedRetry.length > 0) {
+              firestoreCompany = ownedRetry[0];
+              firestoreRole = 'OWNER';
+            }
+            companyLookupFailed = false;
+          } catch {
+            companyLookupFailed = true;
+          }
         }
       }
 
@@ -336,7 +350,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const resolvedCompleted =
         Boolean(resolvedCompany) ||
         (Boolean(resolvedUser.onboardingCompleted) && !targetCompanyId);
-      const resolvedNeedsOnboarding = !resolvedCompany;
+      const resolvedNeedsOnboarding =
+        !resolvedCompany && !companyLookupFailed && !userDocReadFailed && !resolvedCompleted;
 
       // Accessible companies restricted strictly to Firestore-owned companies for this UID
       const mergedAccessible: AccessibleCompany[] = [...fsAccessible];
@@ -631,6 +646,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<{ success: boolean; error?: string }> => {
     try {
       const fbUser = auth.currentUser;
+      if (fbUser && fbUser.emailVerified) {
+        await fbUser.getIdToken(true).catch(() => null);
+        const existingOwned = await listOwnedCompaniesFromFirestore(fbUser.uid);
+        if (existingOwned.length > 0) {
+          await syncAuthenticatedFirebaseUser(fbUser);
+          return { success: true };
+        }
+      }
+
       const activeTok =
         token ||
         (typeof window !== 'undefined'
@@ -688,13 +712,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await reloadFirebaseUser();
           setIsEmailVerified(Boolean(auth.currentUser?.emailVerified));
         }
-        if (auth.currentUser && auth.currentUser.emailVerified) {
-          await auth.currentUser.getIdToken(true).catch(() => null);
-          await createCompanyInFirestoreAtomic(
-            { ...newCompany, fleetSize: payload.fleetSize, ownerId: auth.currentUser.uid },
-            auth.currentUser
-          );
+        if (!auth.currentUser || !auth.currentUser.emailVerified) {
+          return {
+            success: false,
+            error: 'Please verify your email address before creating your company workspace.',
+          };
         }
+        newCompany.ownerId = auth.currentUser.uid;
+        await auth.currentUser.getIdToken(true).catch(() => null);
+        await createCompanyInFirestoreAtomic(
+          { ...newCompany, fleetSize: payload.fleetSize, ownerId: auth.currentUser.uid },
+          auth.currentUser
+        );
       }
 
       const nextUser: AuthUser = {
@@ -761,35 +790,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setVerificationDispatchError(null);
       await ensureFirestoreUserProfile(reloaded);
 
-      // Complete pending 1-step registration company creation if user entered company details before verifying
+      // Complete pending 1-step registration company creation only if user does not already own a company
       const pendingCo = pendingRegistrationCompanyRef.current;
       if (pendingCo) {
         pendingRegistrationCompanyRef.current = null;
-        const companyId = `comp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        const createdCo: Company & { ownerId?: string } = {
-          id: companyId,
-          name: pendingCo.companyName,
-          tradeName: pendingCo.companyName,
-          gstin: pendingCo.gstin,
-          pan: pendingCo.gstin.length >= 12 ? pendingCo.gstin.substring(2, 12) : '',
-          phone: pendingCo.phone || '',
-          email: reloaded.email || '',
-          address: '',
-          city: '',
-          state: '',
-          stateCode: pendingCo.gstin.length >= 2 ? pendingCo.gstin.substring(0, 2) : '',
-          pincode: '',
-          bankName: '',
-          accountNumber: '',
-          ifscCode: '',
-          branch: '',
-          lrPrefix: 'AT/25-26/',
-          invoicePrefix: 'INV/25-26/',
-          tripPrefix: 'TR-',
-          createdAt: new Date().toISOString(),
-          ownerId: reloaded.uid,
-        };
-        await createCompanyInFirestoreAtomic(createdCo, reloaded);
+        const existingOwned = await listOwnedCompaniesFromFirestore(reloaded.uid).catch(() => []);
+        if (existingOwned.length === 0) {
+          const companyId = `comp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const createdCo: Company & { ownerId?: string } = {
+            id: companyId,
+            name: pendingCo.companyName,
+            tradeName: pendingCo.companyName,
+            gstin: pendingCo.gstin,
+            pan: pendingCo.gstin.length >= 12 ? pendingCo.gstin.substring(2, 12) : '',
+            phone: pendingCo.phone || '',
+            email: reloaded.email || '',
+            address: '',
+            city: '',
+            state: '',
+            stateCode: pendingCo.gstin.length >= 2 ? pendingCo.gstin.substring(0, 2) : '',
+            pincode: '',
+            bankName: '',
+            accountNumber: '',
+            ifscCode: '',
+            branch: '',
+            lrPrefix: 'AT/25-26/',
+            invoicePrefix: 'INV/25-26/',
+            tripPrefix: 'TR-',
+            createdAt: new Date().toISOString(),
+            ownerId: reloaded.uid,
+          };
+          await createCompanyInFirestoreAtomic(createdCo, reloaded);
+        }
       } else if (company?.id) {
         const existingCompany = await fetchUserCompanyFromFirestore(company.id, reloaded.uid);
         if (!existingCompany) {

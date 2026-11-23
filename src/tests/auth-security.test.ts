@@ -147,11 +147,11 @@ async function runAuthSecurityTests() {
   }
 
   // ============================================================
-  // TEST 5: Multi-Role RBAC & Owner Access Control Matrix
+  // TEST 5: Strict Owner-Only Access Control Matrix
   // ============================================================
   {
     const { hasPermission } = await import('../lib/permissions');
-    // Owner has complete operational, financial, company, and team governance
+    // Verified Owner has complete operational, financial, and company governance (without team/staff management)
     assert(
       ROLE_PERMISSIONS.OWNER.canManageCompany &&
         ROLE_PERMISSIONS.OWNER.canDispatchTrips &&
@@ -161,33 +161,24 @@ async function runAuthSecurityTests() {
         ROLE_PERMISSIONS.OWNER.canLogExpenses &&
         ROLE_PERMISSIONS.OWNER.canDisburseAdvances &&
         ROLE_PERMISSIONS.OWNER.canViewReports &&
-        ROLE_PERMISSIONS.OWNER.canManageUsers,
-      'RBAC: OWNER possesses complete company, operational, financial, and team governance',
+        ROLE_PERMISSIONS.OWNER.canViewSensitiveDriverInfo &&
+        ROLE_PERMISSIONS.OWNER.canManageFleet &&
+        !ROLE_PERMISSIONS.OWNER.canManageUsers,
+      'Owner-Only: OWNER possesses complete company, operational, and financial access without team management',
       'Owner permission mismatch'
     );
 
-    // OPERATIONS staff can dispatch/log expenses but cannot touch billing, settlements, or company settings
+    // Non-owner / legacy staff roles are strictly denied across all capabilities
     assert(
-      hasPermission('OPERATIONS', 'canDispatchTrips') &&
-        hasPermission('OPERATIONS', 'canLogExpenses') &&
-        !hasPermission('OPERATIONS', 'canManageCompany') &&
-        !hasPermission('OPERMISSIONS_INVALID' as unknown as UserRole, 'canManageCompany') &&
-        !hasPermission('OPERATIONS', 'canGenerateInvoices') &&
-        !hasPermission('OPERATIONS', 'canSettleTrips') &&
-        !hasPermission('OPERATIONS', 'canManageUsers'),
-      'RBAC: OPERATIONS restricted to dispatch/expense operations and denied billing/company controls',
-      'Operations role permissions invalid'
-    );
-
-    // ACCOUNTANT can settle trips, invoice, and record payments, but cannot manage company or users
-    assert(
-      hasPermission('ACCOUNTANT', 'canGenerateInvoices') &&
-        hasPermission('ACCOUNTANT', 'canRecordPayments') &&
-        hasPermission('ACCOUNTANT', 'canSettleTrips') &&
-        !hasPermission('ACCOUNTANT', 'canManageCompany') &&
-        !hasPermission('ACCOUNTANT', 'canManageUsers'),
-      'RBAC: ACCOUNTANT granted financial capabilities and denied company/member management',
-      'Accountant role permissions invalid'
+      !hasPermission('ADMIN', 'canManageCompany') &&
+        !hasPermission('MANAGER', 'canDispatchTrips') &&
+        !hasPermission('OPERATIONS', 'canDispatchTrips') &&
+        !hasPermission('OPERATIONS', 'canLogExpenses') &&
+        !hasPermission('ACCOUNTANT', 'canGenerateInvoices') &&
+        !hasPermission('ACCOUNTANT', 'canSettleTrips') &&
+        !hasPermission('OWNER', 'canManageUsers'),
+      'Owner-Only: All non-owner/staff roles and team-management permissions are strictly denied',
+      'Non-owner role was granted permission'
     );
 
     // Unknown or tampered role claims are strictly rejected
@@ -197,7 +188,7 @@ async function runAuthSecurityTests() {
         !hasPermission(invalidRole, 'canDispatchTrips') &&
         !hasPermission(invalidRole, 'canSettleTrips') &&
         !hasPermission(invalidRole, 'canGenerateInvoices'),
-      'RBAC: Unknown or forged role claims are strictly denied across all capabilities',
+      'Owner-Only: Unknown or forged role claims are strictly denied across all capabilities',
       'Unknown role was granted permission'
     );
   }

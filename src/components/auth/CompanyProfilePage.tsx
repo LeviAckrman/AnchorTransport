@@ -112,6 +112,8 @@ export const CompanyProfilePage: React.FC = () => {
     setAutoGenerateLr(companySettings.autoGenerateLr ?? true);
   }, [companySettings]);
 
+  const canEdit = permissions?.canManageCompany ?? true;
+
   const handleSavePreferences = async () => {
     if (!canEdit || !company?.id) return;
     setSavingSettings(true);
@@ -162,8 +164,6 @@ export const CompanyProfilePage: React.FC = () => {
       setIsResetDialogOpen(false);
     }
   };
-
-  const canEdit = permissions?.canManageCompany ?? true;
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -336,15 +336,31 @@ export const CompanyProfilePage: React.FC = () => {
               />
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">State & GST Code (WB = 19)</label>
-              <input
-                type="text"
-                disabled={!canEdit}
-                value={`${state} (Code: ${stateCode})`}
-                onChange={(e) => setState(e.target.value)}
-                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">State</label>
+                <input
+                  type="text"
+                  disabled={!canEdit}
+                  maxLength={60}
+                  value={state}
+                  onChange={(e) => setState(e.target.value)}
+                  placeholder="e.g. West Bengal"
+                  className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">GST State Code (WB = 19)</label>
+                <input
+                  type="text"
+                  disabled={!canEdit}
+                  maxLength={5}
+                  value={stateCode}
+                  onChange={(e) => setStateCode(e.target.value)}
+                  placeholder="e.g. 19"
+                  className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 font-mono disabled:bg-slate-50 disabled:text-slate-500"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -426,6 +442,19 @@ export const CompanyProfilePage: React.FC = () => {
                 className="w-full text-xs sm:text-sm font-mono border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50"
               />
               <span className="text-[11px] text-slate-500 mt-1 block">Output: AT/25-26/0001</span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Invoice Numbering Prefix</label>
+              <input
+                type="text"
+                disabled={!canEdit}
+                value={invoicePrefix}
+                onChange={(e) => setInvoicePrefix(e.target.value)}
+                placeholder="INV/25-26/"
+                className="w-full text-xs sm:text-sm font-mono border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50"
+              />
+              <span className="text-[11px] text-slate-500 mt-1 block">Output: INV/25-26/0001</span>
             </div>
 
             <div>
