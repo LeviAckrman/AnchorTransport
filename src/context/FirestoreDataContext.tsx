@@ -9,6 +9,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useMemo 
 import { useAuth } from './AuthContext';
 import {
   subscribeToCompanyOperationalData,
+  subscribeToUserFilesInFirestore,
   type FirestoreCompanyMember,
 } from '../lib/firebase/firestoreService';
 import type {
@@ -26,6 +27,7 @@ import type {
   VehicleDocument,
   MaintenanceRecord,
   FileRecord,
+  UserFileMetadata,
   CompanySettings,
   AuditLog,
   CompanyDashboardMetrics,
@@ -50,6 +52,7 @@ interface FirestoreDataContextType {
   documents: VehicleDocument[];
   maintenance: MaintenanceRecord[];
   fileRecords: FileRecord[];
+  userFiles: UserFileMetadata[];
   auditLogs: AuditLog[];
   metrics: CompanyDashboardMetrics;
   loading: boolean;
@@ -87,11 +90,14 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const [documents, setDocuments] = useState<VehicleDocument[]>([]);
   const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
   const [fileRecords, setFileRecords] = useState<FileRecord[]>([]);
+  const [userFiles, setUserFiles] = useState<UserFileMetadata[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
+  const { user } = useAuth();
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const unsubscribeUserFilesRef = useRef<(() => void) | null>(null);
 
   const clearFrontendOperationalState = () => {
     setLiveCompany(null);
@@ -110,6 +116,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     setDocuments([]);
     setMaintenance([]);
     setFileRecords([]);
+    setUserFiles([]);
     setAuditLogs([]);
     setError(null);
     setLoading(false);
@@ -126,10 +133,40 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         }
         unsubscribeRef.current = null;
       }
+      if (unsubscribeUserFilesRef.current) {
+        try {
+          unsubscribeUserFilesRef.current();
+        } catch {
+          // Ignore unsubscribe errors
+        }
+        unsubscribeUserFilesRef.current = null;
+      }
       clearFrontendOperationalState();
     });
     return unregister;
   }, [registerLogoutCleanup]);
+
+  // Subscribe to UID-isolated /users/{uid}/files metadata whenever verified user is signed in
+  useEffect(() => {
+    if (unsubscribeUserFilesRef.current) {
+      unsubscribeUserFilesRef.current();
+      unsubscribeUserFilesRef.current = null;
+    }
+    if (!isAuthenticated || !isFirebaseUser || !isEmailVerified || !user?.id) {
+      setUserFiles([]);
+      return;
+    }
+    const unsubFiles = subscribeToUserFilesInFirestore(user.id, (items) => {
+      setUserFiles(items);
+    });
+    unsubscribeUserFilesRef.current = unsubFiles;
+    return () => {
+      unsubFiles();
+      if (unsubscribeUserFilesRef.current === unsubFiles) {
+        unsubscribeUserFilesRef.current = null;
+      }
+    };
+  }, [isAuthenticated, isFirebaseUser, isEmailVerified, user?.id]);
 
   // Manage live Firestore subscriptions tied strictly to authenticated UID & company membership
   useEffect(() => {
@@ -227,6 +264,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         documents,
         maintenance,
         fileRecords,
+        userFiles,
         auditLogs,
         metrics,
         loading,

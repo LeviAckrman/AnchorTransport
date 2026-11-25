@@ -13,6 +13,7 @@ import { Driver, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 
 interface DriverDetailModalProps {
   isOpen: boolean;
@@ -32,7 +33,7 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
   onEdit,
   onDelete,
 }) => {
-  const { drivers, trips: allTrips, advances: allAdvances } = useFirestoreData();
+  const { company, drivers, trips: allTrips, advances: allAdvances } = useFirestoreData();
 
   const canAccessSensitive = true;
   const canDelete = true;
@@ -332,6 +333,15 @@ export const DriverDetailModal: React.FC<DriverDetailModalProps> = ({
                   </div>
                 )}
               </div>
+
+              <DocumentAttachmentsSection
+                companyId={company?.id}
+                category="drivers"
+                relatedRecordId={driver.id}
+                entityType="DRIVER"
+                title="Driver Documents & KYC Files"
+                compact
+              />
             </>
           )}
         </div>

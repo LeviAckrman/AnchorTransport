@@ -510,7 +510,7 @@
         "userId": { "type": "string", "maxLength": 128 },
         "userName": { "type": "string", "maxLength": 100 },
         "action": { "type": "string", "enum": ["CREATE", "UPDATE", "DELETE", "DISPATCH", "SETTLE", "APPROVE", "INVOICE", "PAYMENT", "CANCEL"] },
-        "entityType": { "type": "string", "enum": ["TRIP", "TRIP_LOG", "DISPATCH", "VEHICLE", "DRIVER", "ADVANCE", "SETTLEMENT", "INVOICE", "BILLING", "PAYMENT", "EXPENSE", "FUEL", "CUSTOMER", "BROKER", "DOCUMENT", "MAINTENANCE", "FILE_RECORD", "SETTINGS", "COMPANY", "MEMBER"] },
+        "entityType": { "type": "string", "enum": ["TRIP", "JOURNAL_TRIP", "TRIP_LOG", "DISPATCH", "VEHICLE", "DRIVER", "ADVANCE", "SETTLEMENT", "INVOICE", "BILLING", "PAYMENT", "EXPENSE", "FUEL", "CUSTOMER", "BROKER", "DOCUMENT", "MAINTENANCE", "FILE_RECORD", "SETTINGS", "COMPANY", "MEMBER"] },
         "entityId": { "type": "string", "maxLength": 128 },
         "moduleName": { "type": "string", "maxLength": 60 },
         "summary": { "type": "string", "maxLength": 500 },
@@ -522,25 +522,56 @@
     },
     "FileRecord": {
       "title": "FileRecord",
-      "description": "Metadata index for uploaded compliance documents, PODs, LR copies, and receipts in Firebase Storage",
+      "description": "Metadata index for uploaded compliance documents, PODs, LR copies, invoices, and receipts in Firebase Storage",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
+        "fileId": { "type": "string", "maxLength": 128 },
         "companyId": { "type": "string", "maxLength": 128 },
+        "uploadedBy": { "type": "string", "maxLength": 128 },
         "uploadedByUid": { "type": "string", "maxLength": 128 },
         "uploadedByName": { "type": "string", "maxLength": 100 },
-        "folder": { "type": "string", "enum": ["trips", "dispatches", "pod", "expenses", "fuel", "documents", "company"] },
-        "fileName": { "type": "string", "maxLength": 200 },
-        "mimeType": { "type": "string", "maxLength": 100 },
+        "folder": { "type": "string", "enum": ["company", "documents", "invoices", "receipts", "trips", "drivers", "vehicles", "expenses", "fuel", "settlements", "customer-documents", "profile", "other", "dispatches", "pod"] },
+        "category": { "type": "string", "enum": ["company", "documents", "invoices", "receipts", "trips", "drivers", "vehicles", "expenses", "fuel", "settlements", "customer-documents", "profile", "other", "dispatches", "pod"] },
+        "fileName": { "type": "string", "maxLength": 250 },
+        "originalFileName": { "type": "string", "maxLength": 250 },
+        "mimeType": { "type": "string", "maxLength": 120 },
+        "contentType": { "type": "string", "maxLength": 120 },
         "sizeBytes": { "type": "number" },
+        "fileSize": { "type": "number" },
         "storagePath": { "type": "string", "maxLength": 500 },
-        "downloadUrl": { "type": "string", "maxLength": 1500 },
+        "downloadUrl": { "type": "string", "maxLength": 2000 },
+        "downloadURL": { "type": "string", "maxLength": 2000 },
+        "relatedRecordId": { "type": "string", "maxLength": 128 },
         "entityType": { "type": "string", "maxLength": 40 },
         "entityId": { "type": "string", "maxLength": 128 },
+        "uploadedAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "companyId", "uploadedByUid", "folder", "fileName", "storagePath", "downloadUrl", "createdAt", "updatedAt"]
+    },
+    "UserFileMetadata": {
+      "title": "UserFileMetadata",
+      "description": "Strict UID-isolated metadata record for files uploaded to Firebase Storage at users/{userId}/{category}/{fileName}",
+      "type": "object",
+      "properties": {
+        "fileId": { "type": "string", "maxLength": 128 },
+        "fileName": { "type": "string", "maxLength": 250 },
+        "originalFileName": { "type": "string", "maxLength": 250 },
+        "storagePath": { "type": "string", "maxLength": 500 },
+        "downloadURL": { "type": "string", "maxLength": 2000 },
+        "contentType": { "type": "string", "maxLength": 120 },
+        "fileSize": { "type": "number" },
+        "uploadedBy": { "type": "string", "maxLength": 128 },
+        "uploadedAt": { "type": "string", "format": "date-time" },
+        "relatedRecordId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "enum": ["company", "documents", "invoices", "receipts", "trips", "drivers", "vehicles", "expenses", "fuel", "settlements", "customer-documents", "profile", "other", "dispatches", "pod"] },
+        "companyId": { "type": "string", "maxLength": 128 },
+        "entityType": { "type": "string", "maxLength": 40 },
+        "entityId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["fileId", "fileName", "originalFileName", "storagePath", "downloadURL", "contentType", "fileSize", "uploadedBy", "uploadedAt", "category"]
     },
     "CompanySettings": {
       "title": "CompanySettings",
@@ -586,12 +617,91 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "companyId", "tripId", "status", "timestamp", "locationNote", "createdAt", "updatedAt"]
+    },
+    "JournalTrip": {
+      "title": "JournalTrip",
+      "description": "Historical, offline, or manual register trip record stored separately from live TMS dispatch and settlements",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string", "maxLength": 128 },
+        "journalTripId": { "type": "string", "maxLength": 128 },
+        "tripDate": { "type": "string", "format": "date-time" },
+        "vehicleId": { "type": ["string", "null"], "maxLength": 128 },
+        "vehicleNumber": { "type": "string", "maxLength": 40 },
+        "driverId": { "type": ["string", "null"], "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "customerId": { "type": ["string", "null"], "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 150 },
+        "fromLocation": { "type": "string", "maxLength": 200 },
+        "toLocation": { "type": "string", "maxLength": 200 },
+        "entryType": { "type": "string", "enum": ["offline", "historical", "manual_book"] },
+        "externalReferenceNumber": { "type": ["string", "null"], "maxLength": 100 },
+        "freightAmountPaise": { "type": "integer" },
+        "expenses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "expenseName": { "type": "string", "maxLength": 120 },
+              "amountPaise": { "type": "integer" },
+              "description": { "type": "string", "maxLength": 300 }
+            },
+            "required": ["expenseName", "amountPaise", "description"]
+          }
+        },
+        "totalExpensesPaise": { "type": "integer" },
+        "profitPaise": { "type": "integer" },
+        "odometerStart": { "type": ["number", "null"] },
+        "odometerEnd": { "type": ["number", "null"] },
+        "distanceTravelled": { "type": ["number", "null"] },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "attachmentPaths": { "type": "array", "items": { "type": "string", "maxLength": 500 } },
+        "status": { "type": "string", "enum": ["completed", "cancelled"] },
+        "searchTokens": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": [
+        "companyId",
+        "journalTripId",
+        "tripDate",
+        "vehicleId",
+        "vehicleNumber",
+        "driverId",
+        "driverName",
+        "customerId",
+        "customerName",
+        "fromLocation",
+        "toLocation",
+        "entryType",
+        "externalReferenceNumber",
+        "freightAmountPaise",
+        "expenses",
+        "totalExpensesPaise",
+        "profitPaise",
+        "odometerStart",
+        "odometerEnd",
+        "distanceTravelled",
+        "notes",
+        "attachmentPaths",
+        "status",
+        "createdAt",
+        "updatedAt",
+        "createdBy",
+        "updatedBy"
+      ]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "Private user profiles managed by authenticated users"
+    },
+    "/users/{userId}/files/{fileId}": {
+      "schema": "UserFileMetadata",
+      "description": "Private UID-isolated Storage file metadata records owned by the user"
     },
     "/companies/{companyId}": {
       "schema": "Company",
@@ -620,6 +730,10 @@
     "/companies/{companyId}/trips/{tripId}": {
       "schema": "Trip",
       "description": "Commercial shipment dispatches and freight trips"
+    },
+    "/companies/{companyId}/journalTrips/{journalTripId}": {
+      "schema": "JournalTrip",
+      "description": "Historical, offline, and manual book trips isolated from live dispatch and settlements"
     },
     "/companies/{companyId}/trips/{tripId}/trip_logs/{logId}": {
       "schema": "TripLog",

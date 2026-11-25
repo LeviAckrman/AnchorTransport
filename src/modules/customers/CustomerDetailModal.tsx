@@ -10,6 +10,7 @@ import { Customer, Invoice, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 
 interface CustomerDetailModalProps {
   isOpen: boolean;
@@ -29,7 +30,7 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
   onEdit,
   onDelete,
 }) => {
-  const { customers, invoices: allInvoices, trips: allTrips } = useFirestoreData();
+  const { company, customers, invoices: allInvoices, trips: allTrips } = useFirestoreData();
 
   const canDelete = true;
 
@@ -280,6 +281,15 @@ export const CustomerDetailModal: React.FC<CustomerDetailModalProps> = ({
                   </div>
                 )}
               </div>
+
+              <DocumentAttachmentsSection
+                companyId={company?.id}
+                category="customer-documents"
+                relatedRecordId={customer.id}
+                entityType="CUSTOMER"
+                title="Customer Contracts & KYC Documents"
+                compact
+              />
             </>
           )}
         </div>

@@ -20,14 +20,16 @@ export interface FirebaseClientConfig {
 }
 
 // Retrieve config from Vite environment variables with graceful fallback
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+
 export const firebaseClientConfig: FirebaseClientConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || fallbackConfig.apiKey || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || fallbackConfig.authDomain || '',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || fallbackConfig.projectId || '',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || fallbackConfig.storageBucket || '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || fallbackConfig.messagingSenderId || '',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || fallbackConfig.appId || '',
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || fallbackConfig.measurementId || '',
+  apiKey: viteEnv?.VITE_FIREBASE_API_KEY || fallbackConfig.apiKey || '',
+  authDomain: viteEnv?.VITE_FIREBASE_AUTH_DOMAIN || fallbackConfig.authDomain || '',
+  projectId: viteEnv?.VITE_FIREBASE_PROJECT_ID || fallbackConfig.projectId || '',
+  storageBucket: viteEnv?.VITE_FIREBASE_STORAGE_BUCKET || fallbackConfig.storageBucket || '',
+  messagingSenderId: viteEnv?.VITE_FIREBASE_MESSAGING_SENDER_ID || fallbackConfig.messagingSenderId || '',
+  appId: viteEnv?.VITE_FIREBASE_APP_ID || fallbackConfig.appId || '',
+  measurementId: viteEnv?.VITE_FIREBASE_MEASUREMENT_ID || fallbackConfig.measurementId || '',
 };
 
 // Singleton App Initialization
@@ -36,7 +38,7 @@ export const app: FirebaseApp = getApps().length
   : initializeApp(firebaseClientConfig);
 
 export const FIRESTORE_DATABASE_ID =
-  import.meta.env.VITE_FIRESTORE_DATABASE_ID ||
+  viteEnv?.VITE_FIRESTORE_DATABASE_ID ||
   fallbackConfig.firestoreDatabaseId ||
   'ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d';
 
@@ -46,13 +48,13 @@ export const db: Firestore = getFirestore(app, FIRESTORE_DATABASE_ID);
 export const storage: FirebaseStorage = getStorage(app);
 
 // Connect Local Emulators if configured
-const useEmulator = import.meta.env.VITE_USE_FIREBASE_EMULATOR === 'true';
+const useEmulator = viteEnv?.VITE_USE_FIREBASE_EMULATOR === 'true';
 
 if (typeof window !== 'undefined' && useEmulator) {
   try {
-    const authEmulatorHost = import.meta.env.VITE_FIREBASE_AUTH_EMULATOR_HOST || 'http://localhost:9099';
-    const firestoreEmulatorHost = import.meta.env.VITE_FIRESTORE_EMULATOR_HOST || 'localhost:8080';
-    const storageEmulatorHost = import.meta.env.VITE_FIREBASE_STORAGE_EMULATOR_HOST || 'localhost:9199';
+    const authEmulatorHost = viteEnv?.VITE_FIREBASE_AUTH_EMULATOR_HOST || 'http://localhost:9099';
+    const firestoreEmulatorHost = viteEnv?.VITE_FIRESTORE_EMULATOR_HOST || 'localhost:8080';
+    const storageEmulatorHost = viteEnv?.VITE_FIREBASE_STORAGE_EMULATOR_HOST || 'localhost:9199';
 
     const [fHost, fPort] = firestoreEmulatorHost.split(':');
     const [sHost, sPort] = storageEmulatorHost.split(':');

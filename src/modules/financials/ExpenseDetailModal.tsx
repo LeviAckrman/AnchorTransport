@@ -12,12 +12,14 @@ import {
   CreditCard,
   Edit,
   Trash2,
-  ExternalLink,
+  Eye,
 } from 'lucide-react';
 import { TripExpense, UserRole } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { FilePreviewModal } from '../../components/ui/FilePreviewModal';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 import { formatINR } from '../../lib/currency';
 
 interface ExpenseDetailModalProps {
@@ -37,6 +39,7 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
   onDelete,
 }) => {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [previewReceiptOpen, setPreviewReceiptOpen] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -202,18 +205,17 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
             <div className="p-3 bg-slate-100 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 truncate text-slate-700">
                 <FileText className="w-4 h-4 text-indigo-600 shrink-0" />
-                <span className="truncate">{expense.receiptUrl}</span>
+                <span className="truncate font-medium">Primary Receipt / Fuel Slip</span>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <a
-                  href={expense.receiptUrl}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => setPreviewReceiptOpen(true)}
                   className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white border border-slate-300 text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
                 >
-                  <span>View</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
+                  <Eye className="w-3 h-3" />
+                  <span>Preview</span>
+                </button>
                 <a
                   href={expense.receiptUrl}
                   download={`receipt-${expense.voucherNumber || expense.id}`}
@@ -226,6 +228,15 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
               </div>
             </div>
           )}
+
+          <DocumentAttachmentsSection
+            companyId={expense.companyId}
+            category={expense.category === 'FUEL' || expense.category === 'DIESEL' ? 'fuel' : 'expenses'}
+            relatedRecordId={expense.id}
+            entityType="EXPENSE"
+            title="Expense Receipts & Fuel Slips"
+            compact
+          />
 
           {expense.notes && (
             <div className="text-xs text-slate-600 bg-white p-3 rounded-xl border border-slate-200">
@@ -288,6 +299,16 @@ export const ExpenseDetailModal: React.FC<ExpenseDetailModalProps> = ({
         confirmLabel="Delete Voucher"
         variant="danger"
       />
+
+      {previewReceiptOpen && expense.receiptUrl && (
+        <FilePreviewModal
+          isOpen={previewReceiptOpen}
+          onClose={() => setPreviewReceiptOpen(false)}
+          fileName={`Receipt_${expense.voucherNumber || expense.id}`}
+          downloadUrl={expense.receiptUrl}
+          categoryLabel={expense.category === 'FUEL' || expense.category === 'DIESEL' ? 'Fuel Slips' : 'Expenses'}
+        />
+      )}
     </Modal>
   );
 };

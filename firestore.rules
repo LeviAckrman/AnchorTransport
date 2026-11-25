@@ -300,6 +300,60 @@ service cloud.firestore {
     // Trips & Dispatch use direct Verified Company Owner authorization
     // without restrictive schema, timestamp, or field-allowlist checks.
 
+    function isValidJournalTrip(data, companyId, journalTripId) {
+      return data.keys().hasAll([
+          'companyId', 'journalTripId', 'tripDate', 'vehicleId', 'vehicleNumber',
+          'driverId', 'driverName', 'customerId', 'customerName',
+          'fromLocation', 'toLocation', 'entryType', 'externalReferenceNumber',
+          'freightAmountPaise', 'expenses', 'totalExpensesPaise', 'profitPaise',
+          'odometerStart', 'odometerEnd', 'distanceTravelled',
+          'notes', 'attachmentPaths', 'status',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'companyId', 'journalTripId', 'tripDate', 'vehicleId', 'vehicleNumber',
+          'driverId', 'driverName', 'customerId', 'customerName',
+          'fromLocation', 'toLocation', 'entryType', 'externalReferenceNumber',
+          'freightAmountPaise', 'expenses', 'totalExpensesPaise', 'profitPaise',
+          'odometerStart', 'odometerEnd', 'distanceTravelled',
+          'notes', 'attachmentPaths', 'status', 'searchTokens',
+          'createdAt', 'updatedAt', 'createdBy', 'updatedBy'
+        ])
+        && data.companyId == companyId
+        && data.journalTripId == journalTripId
+        && data.tripDate is timestamp
+        && isOptString(data, 'vehicleId', 128)
+        && isReqString(data, 'vehicleNumber', 40)
+        && isOptString(data, 'driverId', 128)
+        && isReqString(data, 'driverName', 120)
+        && isOptString(data, 'customerId', 128)
+        && isReqString(data, 'customerName', 150)
+        && isReqString(data, 'fromLocation', 200)
+        && isReqString(data, 'toLocation', 200)
+        && data.entryType is string
+        && data.entryType in ['offline', 'historical', 'manual_book']
+        && isOptString(data, 'externalReferenceNumber', 100)
+        && data.freightAmountPaise is int && data.freightAmountPaise >= 0
+        && data.expenses is list && data.expenses.size() <= 30
+        && data.totalExpensesPaise is int && data.totalExpensesPaise >= 0
+        && data.profitPaise is int
+        && data.profitPaise == data.freightAmountPaise - data.totalExpensesPaise
+        && isOptNumber(data, 'odometerStart')
+        && (!('odometerStart' in data) || data.odometerStart == null || data.odometerStart >= 0)
+        && isOptNumber(data, 'odometerEnd')
+        && (!('odometerEnd' in data) || data.odometerEnd == null || data.odometerEnd >= 0)
+        && isOptNumber(data, 'distanceTravelled')
+        && (!('distanceTravelled' in data) || data.distanceTravelled == null || data.distanceTravelled >= 0)
+        && data.notes is string && data.notes.size() <= 2000
+        && data.attachmentPaths is list && data.attachmentPaths.size() <= 15
+        && data.status is string && data.status in ['completed', 'cancelled']
+        && (!('searchTokens' in data) || (data.searchTokens is list && data.searchTokens.size() <= 40))
+        && data.createdAt is timestamp
+        && data.updatedAt == request.time
+        && isReqString(data, 'createdBy', 128)
+        && data.updatedBy == request.auth.uid;
+    }
+
     function isValidTripLog(data, companyId, tripId, logId) {
       return data.keys().hasAll([
           'id', 'companyId', 'tripId', 'status', 'timestamp', 'locationNote', 'createdAt', 'updatedAt'
@@ -600,26 +654,93 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    function isValidUserFileMetadata(data, userId, fileId) {
+      return data.keys().hasAll([
+          'fileId', 'fileName', 'originalFileName', 'storagePath',
+          'downloadURL', 'contentType', 'fileSize', 'uploadedBy',
+          'uploadedAt', 'category'
+        ])
+        && data.keys().hasOnly([
+          'id', 'fileId', 'companyId', 'fileName', 'originalFileName',
+          'storagePath', 'downloadURL', 'downloadUrl', 'contentType', 'mimeType',
+          'fileSize', 'sizeBytes', 'uploadedBy', 'uploadedByUid', 'uploadedByName',
+          'uploadedAt', 'relatedRecordId', 'entityType', 'entityId',
+          'category', 'folder', 'createdAt', 'updatedAt'
+        ])
+        && data.fileId == fileId
+        && (!('id' in data) || data.id == fileId)
+        && data.uploadedBy == request.auth.uid
+        && data.uploadedBy == userId
+        && (!('uploadedByUid' in data) || data.uploadedByUid == request.auth.uid)
+        && isOptString(data, 'uploadedByName', 100)
+        && isOptString(data, 'companyId', 128)
+        && isReqString(data, 'fileName', 250)
+        && isReqString(data, 'originalFileName', 250)
+        && isReqString(data, 'storagePath', 500)
+        && data.storagePath.matches('^users/' + userId + '/.+')
+        && isReqString(data, 'downloadURL', 2000)
+        && isOptString(data, 'downloadUrl', 2000)
+        && isReqString(data, 'contentType', 120)
+        && isOptString(data, 'mimeType', 120)
+        && isReqNumber(data, 'fileSize')
+        && data.fileSize > 0
+        && data.fileSize < 20 * 1024 * 1024
+        && isOptNumber(data, 'sizeBytes')
+        && data.uploadedAt is timestamp
+        && isOptString(data, 'relatedRecordId', 128)
+        && isOptString(data, 'entityType', 40)
+        && isOptString(data, 'entityId', 128)
+        && data.category is string
+        && data.category in [
+          'company', 'documents', 'invoices', 'receipts', 'trips',
+          'drivers', 'vehicles', 'expenses', 'fuel', 'settlements',
+          'customer-documents', 'profile', 'other', 'dispatches', 'pod'
+        ]
+        && (!('folder' in data) || data.folder == null || (data.folder is string && data.folder in [
+          'company', 'documents', 'invoices', 'receipts', 'trips',
+          'drivers', 'vehicles', 'expenses', 'fuel', 'settlements',
+          'customer-documents', 'profile', 'other', 'dispatches', 'pod'
+        ]));
+    }
+
     function isValidFileRecord(data, companyId, fileId) {
       return data.keys().hasAll(['id', 'companyId', 'uploadedByUid', 'folder', 'fileName', 'storagePath', 'downloadUrl', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
-          'id', 'companyId', 'uploadedByUid', 'uploadedByName', 'folder', 'fileName',
-          'mimeType', 'sizeBytes', 'storagePath', 'downloadUrl', 'entityType', 'entityId',
-          'createdAt', 'updatedAt'
+          'id', 'fileId', 'companyId', 'uploadedBy', 'uploadedByUid', 'uploadedByName',
+          'folder', 'category', 'fileName', 'originalFileName', 'mimeType', 'contentType',
+          'sizeBytes', 'fileSize', 'storagePath', 'downloadUrl', 'downloadURL',
+          'relatedRecordId', 'entityType', 'entityId', 'uploadedAt', 'createdAt', 'updatedAt'
         ])
         && data.id == fileId
+        && (!('fileId' in data) || data.fileId == fileId)
         && data.companyId == companyId
         && data.uploadedByUid == request.auth.uid
+        && (!('uploadedBy' in data) || data.uploadedBy == request.auth.uid)
         && isOptString(data, 'uploadedByName', 100)
         && data.folder is string
-        && data.folder in ['trips', 'dispatches', 'pod', 'expenses', 'fuel', 'documents', 'company']
-        && isReqString(data, 'fileName', 200)
-        && isOptString(data, 'mimeType', 100)
+        && data.folder in [
+          'company', 'documents', 'invoices', 'receipts', 'trips',
+          'drivers', 'vehicles', 'expenses', 'fuel', 'settlements',
+          'customer-documents', 'profile', 'other', 'dispatches', 'pod'
+        ]
+        && (!('category' in data) || data.category == null || (data.category is string && data.category in [
+          'company', 'documents', 'invoices', 'receipts', 'trips',
+          'drivers', 'vehicles', 'expenses', 'fuel', 'settlements',
+          'customer-documents', 'profile', 'other', 'dispatches', 'pod'
+        ]))
+        && isReqString(data, 'fileName', 250)
+        && isOptString(data, 'originalFileName', 250)
+        && isOptString(data, 'mimeType', 120)
+        && isOptString(data, 'contentType', 120)
         && isOptNumber(data, 'sizeBytes')
+        && (!('fileSize' in data) || data.fileSize == null || ((data.fileSize is int || data.fileSize is float) && data.fileSize > 0 && data.fileSize < 20 * 1024 * 1024))
         && isReqString(data, 'storagePath', 500)
-        && isReqString(data, 'downloadUrl', 1500)
+        && isReqString(data, 'downloadUrl', 2000)
+        && isOptString(data, 'downloadURL', 2000)
+        && isOptString(data, 'relatedRecordId', 128)
         && isOptString(data, 'entityType', 40)
         && isOptString(data, 'entityId', 128)
+        && (!('uploadedAt' in data) || data.uploadedAt == null || data.uploadedAt is timestamp)
         && data.createdAt is timestamp
         && data.updatedAt == request.time;
     }
@@ -661,7 +782,7 @@ service cloud.firestore {
         && data.action in ['CREATE', 'UPDATE', 'DELETE', 'DISPATCH', 'SETTLE', 'APPROVE', 'INVOICE', 'PAYMENT', 'CANCEL']
         && data.entityType is string
         && data.entityType in [
-          'TRIP', 'TRIP_LOG', 'DISPATCH', 'VEHICLE', 'DRIVER', 'ADVANCE', 'SETTLEMENT',
+          'TRIP', 'JOURNAL_TRIP', 'TRIP_LOG', 'DISPATCH', 'VEHICLE', 'DRIVER', 'ADVANCE', 'SETTLEMENT',
           'INVOICE', 'BILLING', 'PAYMENT', 'EXPENSE', 'FUEL', 'CUSTOMER',
           'BROKER', 'DOCUMENT', 'MAINTENANCE', 'FILE_RECORD', 'SETTINGS', 'COMPANY', 'MEMBER'
         ]
@@ -726,6 +847,33 @@ service cloud.firestore {
                       )
                     );
       allow delete: if false;
+
+      // --------------------------------------------------------------------
+      // 5.1 USER-ISOLATED UPLOADED FILE METADATA (/users/{userId}/files/{fileId})
+      // Strictly isolated by verified Firebase Auth UID
+      // --------------------------------------------------------------------
+      match /files/{fileId} {
+        allow get: if isValidId(userId) && isValidId(fileId) && isVerifiedUser() && request.auth.uid == userId;
+        allow list: if isValidId(userId) && isVerifiedUser() && request.auth.uid == userId;
+
+        allow create: if isValidId(userId)
+                      && isValidId(fileId)
+                      && isVerifiedUser()
+                      && request.auth.uid == userId
+                      && isValidUserFileMetadata(incoming(), userId, fileId)
+                      && incoming().uploadedAt == request.time;
+
+        allow update: if isValidId(userId)
+                      && isValidId(fileId)
+                      && isVerifiedUser()
+                      && request.auth.uid == userId
+                      && isValidUserFileMetadata(incoming(), userId, fileId)
+                      && incoming().fileId == existing().fileId
+                      && incoming().uploadedBy == existing().uploadedBy
+                      && incoming().uploadedAt == existing().uploadedAt;
+
+        allow delete: if isValidId(userId) && isValidId(fileId) && isVerifiedUser() && request.auth.uid == userId;
+      }
     }
 
     // ------------------------------------------------------------------------
@@ -970,6 +1118,33 @@ service cloud.firestore {
       }
 
       // ----------------------------------------------------------------------
+      // 6.5C TRIPS JOURNAL (/companies/{companyId}/journalTrips/{journalTripId})
+      // Isolated historical, offline, and manual book trips ledger
+      // ----------------------------------------------------------------------
+      match /journalTrips/{journalTripId} {
+        allow get: if isValidId(companyId) && isValidId(journalTripId) && isVerifiedCompanyOwner(companyId);
+        allow list: if isValidId(companyId) && isVerifiedCompanyOwner(companyId);
+
+        allow create: if isValidId(companyId)
+                      && isValidId(journalTripId)
+                      && isVerifiedCompanyOwner(companyId)
+                      && isValidJournalTrip(incoming(), companyId, journalTripId)
+                      && incoming().createdBy == request.auth.uid
+                      && incoming().createdAt == request.time;
+
+        allow update: if isValidId(companyId)
+                      && isValidId(journalTripId)
+                      && isVerifiedCompanyOwner(companyId)
+                      && isValidJournalTrip(incoming(), companyId, journalTripId)
+                      && incoming().companyId == existing().companyId
+                      && incoming().journalTripId == existing().journalTripId
+                      && incoming().createdBy == existing().createdBy
+                      && incoming().createdAt == existing().createdAt;
+
+        allow delete: if isValidId(companyId) && isValidId(journalTripId) && isVerifiedCompanyOwner(companyId);
+      }
+
+      // ----------------------------------------------------------------------
       // 6.6 EXPENSES & FUEL (/companies/{companyId}/expenses/{expenseId})
       // ----------------------------------------------------------------------
       match /expenses/{expenseId} {
@@ -1119,12 +1294,17 @@ service cloud.firestore {
         allow create: if isValidId(companyId)
                       && isValidId(fileId)
                       && isVerifiedCompanyOwner(companyId)
-                      && (!('companyId' in incoming()) || incoming().companyId == companyId);
+                      && isValidFileRecord(incoming(), companyId, fileId)
+                      && incoming().createdAt == request.time;
 
         allow update: if isValidId(companyId)
                       && isValidId(fileId)
                       && isVerifiedCompanyOwner(companyId)
-                      && (!('companyId' in incoming()) || incoming().companyId == companyId);
+                      && isValidFileRecord(incoming(), companyId, fileId)
+                      && isCreatedAtPreservedOrMigrated()
+                      && incoming().id == existing().id
+                      && incoming().companyId == existing().companyId
+                      && incoming().uploadedByUid == existing().uploadedByUid;
 
         allow delete: if isValidId(companyId) && isValidId(fileId) && isVerifiedCompanyOwner(companyId);
       }

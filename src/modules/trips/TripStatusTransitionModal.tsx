@@ -10,13 +10,14 @@ import {
   Gauge,
   Calendar,
   Upload,
-  ExternalLink,
+  Eye,
 } from 'lucide-react';
 import { Trip, TripStatus } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { Badge } from '../../components/ui/Badge';
+import { FilePreviewModal } from '../../components/ui/FilePreviewModal';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
-import { uploadCompanyDocument } from '../../lib/firebase/storageService';
+import { uploadUserFile, STORAGE_ACCEPT_ATTR } from '../../lib/firebase/storageService';
 
 interface TripStatusTransitionModalProps {
   isOpen: boolean;
@@ -57,6 +58,8 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
   const [podReceived, setPodReceived] = useState(trip.podReceived || false);
   const [podDocumentUrl, setPodDocumentUrl] = useState(trip.podDocumentUrl || '');
   const [uploadingPod, setUploadingPod] = useState(false);
+  const [podProgress, setPodProgress] = useState(0);
+  const [previewPodOpen, setPreviewPodOpen] = useState(false);
   const [podRemarks, setPodRemarks] = useState(trip.podRemarks || '');
   const [error, setError] = useState<string | null>(null);
 
@@ -266,42 +269,56 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
               <div className="flex items-center gap-2 flex-wrap pt-1">
                 <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer">
                   <Upload className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>{uploadingPod ? 'Uploading POD...' : podDocumentUrl ? 'Replace Stamped POD' : 'Upload POD Document'}</span>
+                  <span>{uploadingPod ? `Uploading ${podProgress}%` : podDocumentUrl ? 'Replace Stamped POD' : 'Upload POD Document'}</span>
                   <input
                     type="file"
-                    accept="image/*,.pdf"
+                    accept={STORAGE_ACCEPT_ATTR}
                     className="hidden"
                     disabled={uploadingPod || !company?.id}
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
+                      e.target.value = '';
                       if (!file || !company?.id) return;
                       setError(null);
                       setUploadingPod(true);
+                      setPodProgress(0);
                       try {
-                        const downloadUrl = await uploadCompanyDocument(company.id, 'pod', file);
-                        setPodDocumentUrl(downloadUrl);
+                        const uploaded = await uploadUserFile({
+                          file,
+                          category: 'pod',
+                          companyId: company.id,
+                          relatedRecordId: trip.id,
+                          entityType: 'TRIP_POD',
+                          entityId: trip.id,
+                          onProgress: setPodProgress,
+                        });
+                        setPodDocumentUrl(uploaded.downloadURL);
                         setPodReceived(true);
                       } catch (err: any) {
                         setError(err.message || 'POD document upload failed.');
                       } finally {
                         setUploadingPod(false);
-                        e.target.value = '';
+                        setPodProgress(0);
                       }
                     }}
                   />
                 </label>
                 {podDocumentUrl && (
-                  <a
-                    href={podDocumentUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => setPreviewPodOpen(true)}
                     className="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 hover:underline"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    View Uploaded POD
-                  </a>
+                    <Eye className="w-3.5 h-3.5" />
+                    Preview Uploaded POD
+                  </button>
                 )}
               </div>
+              {uploadingPod && (
+                <div className="w-full h-1 bg-slate-200 rounded-full overflow-hidden">
+                  <div className="h-full bg-indigo-600 transition-all" style={{ width: `${podProgress}%` }} />
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -381,6 +398,15 @@ export const TripStatusTransitionModal: React.FC<TripStatusTransitionModalProps>
           </button>
         </div>
       </form>
+      {previewPodOpen && podDocumentUrl && (
+        <FilePreviewModal
+          isOpen={previewPodOpen}
+          onClose={() => setPreviewPodOpen(false)}
+          fileName={`POD_${trip.tripNumber}`}
+          downloadUrl={podDocumentUrl}
+          categoryLabel="Proof of Delivery"
+        />
+      )}
     </Modal>
   );
 };

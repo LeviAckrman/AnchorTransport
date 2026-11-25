@@ -26,6 +26,7 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { deleteExpenseInFirestore } from '../../lib/firebase/firestoreService';
+import { deleteUserFile, extractStoragePathFromUrl } from '../../lib/firebase/storageService';
 import { getExpenseDate } from '../../lib/tmsCalculations';
 
 interface ExpensesViewProps {
@@ -183,6 +184,15 @@ export const ExpensesView: React.FC<ExpensesViewProps> = ({ userRole, onNavigate
       const remainingTripExpenses = allExpenses.filter(
         (e) => e.tripId === expense.tripId && e.id !== expense.id
       );
+
+      const storagePath = extractStoragePathFromUrl(expense.receiptUrl);
+      if (storagePath) {
+        await deleteUserFile({
+          storagePath,
+          downloadUrl: expense.receiptUrl,
+          companyId: activeCompanyId,
+        });
+      }
 
       await deleteExpenseInFirestore(activeCompanyId, expense, trip, remainingTripExpenses);
 

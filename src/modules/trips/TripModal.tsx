@@ -8,17 +8,22 @@ import {
   MapPin,
   Upload,
   FileText,
-  ExternalLink,
+  Eye,
   Trash2,
 } from 'lucide-react';
 import { Trip, Vehicle, Driver, Customer, TripStatus, DriverAdvance } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
+import { FilePreviewModal } from '../../components/ui/FilePreviewModal';
 import { formatINR, paiseToRupees, rupeesToPaise } from '../../lib/currency';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { getNextTripNumber, getNextLrNumber } from '../../lib/tmsCalculations';
 import { createOrUpdateTripInFirestore } from '../../lib/firebase/firestoreService';
-import { uploadCompanyDocument } from '../../lib/firebase/storageService';
+import {
+  uploadUserFile,
+  deleteUserFile,
+  STORAGE_ACCEPT_ATTR,
+} from '../../lib/firebase/storageService';
 
 interface TripModalProps {
   isOpen: boolean;
@@ -77,6 +82,8 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [dispatchDocumentUrl, setDispatchDocumentUrl] = useState('');
   const [uploadingLr, setUploadingLr] = useState(false);
   const [uploadingDispatch, setUploadingDispatch] = useState(false);
+  const [lrProgress, setLrProgress] = useState(0);
+  const [dispatchProgress, setDispatchProgress] = useState(0);
 
   const [dispatchRemarks, setDispatchRemarks] = useState('');
   const [actualDeliveryDate, setActualDeliveryDate] = useState('');
@@ -85,6 +92,12 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [podDocumentUrl, setPodDocumentUrl] = useState('');
   const [podRemarks, setPodRemarks] = useState('');
   const [uploadingPod, setUploadingPod] = useState(false);
+  const [podProgress, setPodProgress] = useState(0);
+  const [previewDoc, setPreviewDoc] = useState<{
+    fileName: string;
+    downloadUrl: string;
+    category: string;
+  } | null>(null);
   const [lrNumberInput, setLrNumberInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -905,51 +918,82 @@ export const TripModal: React.FC<TripModalProps> = ({
               <div className="flex items-center gap-2 flex-wrap">
                 <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-semibold cursor-pointer">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>{uploadingLr ? 'Uploading...' : lrDocumentUrl ? 'Replace LR Copy' : 'Upload LR Copy'}</span>
+                  <span>{uploadingLr ? `Uploading ${lrProgress}%` : lrDocumentUrl ? 'Replace LR Copy' : 'Upload LR Copy'}</span>
                   <input
                     type="file"
-                    accept="image/*,.pdf"
+                    accept={STORAGE_ACCEPT_ATTR}
                     className="hidden"
                     disabled={uploadingLr || !company?.id}
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
+                      e.target.value = '';
                       if (!file || !company?.id) return;
                       setError(null);
                       setUploadingLr(true);
+                      setLrProgress(0);
+                      const prevUrl = lrDocumentUrl;
                       try {
-                        const downloadUrl = await uploadCompanyDocument(company.id, 'trips', file);
-                        setLrDocumentUrl(downloadUrl);
+                        const uploaded = await uploadUserFile({
+                          file,
+                          category: 'trips',
+                          companyId: company.id,
+                          relatedRecordId: tripToEdit?.id || computedTripNumber,
+                          entityType: 'TRIP_LR',
+                          entityId: tripToEdit?.id || computedTripNumber,
+                          onProgress: setLrProgress,
+                        });
+                        setLrDocumentUrl(uploaded.downloadURL);
+                        if (prevUrl) {
+                          await deleteUserFile({ downloadUrl: prevUrl, companyId: company.id }).catch(() => null);
+                        }
                       } catch (err: any) {
                         setError(err.message || 'LR document upload failed.');
                       } finally {
                         setUploadingLr(false);
-                        e.target.value = '';
+                        setLrProgress(0);
                       }
                     }}
                   />
                 </label>
                 {lrDocumentUrl && (
                   <>
-                    <a
-                      href={lrDocumentUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline font-medium"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      View
-                    </a>
                     <button
                       type="button"
-                      onClick={() => setLrDocumentUrl('')}
+                      onClick={() =>
+                        setPreviewDoc({
+                          fileName: `LR_${computedLrNumber || computedTripNumber}`,
+                          downloadUrl: lrDocumentUrl,
+                          category: 'Trips & POD',
+                        })
+                      }
+                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline font-medium"
+                    >
+                      <Eye className="w-3 h-3" />
+                      Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await deleteUserFile({ downloadUrl: lrDocumentUrl, companyId: company?.id });
+                          setLrDocumentUrl('');
+                        } catch (err: any) {
+                          setError(err?.message || 'Failed to delete LR document from Storage.');
+                        }
+                      }}
                       className="text-rose-600 hover:text-rose-700 p-1"
-                      title="Remove LR document link"
+                      title="Delete LR document"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </>
                 )}
               </div>
+              {uploadingLr && (
+                <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-indigo-600 transition-all" style={{ width: `${lrProgress}%` }} />
+                </div>
+              )}
             </div>
 
             <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-2">
@@ -957,51 +1001,82 @@ export const TripModal: React.FC<TripModalProps> = ({
               <div className="flex items-center gap-2 flex-wrap">
                 <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg font-semibold cursor-pointer">
                   <Upload className="w-3.5 h-3.5" />
-                  <span>{uploadingDispatch ? 'Uploading...' : dispatchDocumentUrl ? 'Replace Dispatch Doc' : 'Upload Dispatch Doc'}</span>
+                  <span>{uploadingDispatch ? `Uploading ${dispatchProgress}%` : dispatchDocumentUrl ? 'Replace Dispatch Doc' : 'Upload Dispatch Doc'}</span>
                   <input
                     type="file"
-                    accept="image/*,.pdf"
+                    accept={STORAGE_ACCEPT_ATTR}
                     className="hidden"
                     disabled={uploadingDispatch || !company?.id}
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
+                      e.target.value = '';
                       if (!file || !company?.id) return;
                       setError(null);
                       setUploadingDispatch(true);
+                      setDispatchProgress(0);
+                      const prevUrl = dispatchDocumentUrl;
                       try {
-                        const downloadUrl = await uploadCompanyDocument(company.id, 'dispatches', file);
-                        setDispatchDocumentUrl(downloadUrl);
+                        const uploaded = await uploadUserFile({
+                          file,
+                          category: 'dispatches',
+                          companyId: company.id,
+                          relatedRecordId: tripToEdit?.id || computedTripNumber,
+                          entityType: 'TRIP_DISPATCH',
+                          entityId: tripToEdit?.id || computedTripNumber,
+                          onProgress: setDispatchProgress,
+                        });
+                        setDispatchDocumentUrl(uploaded.downloadURL);
+                        if (prevUrl) {
+                          await deleteUserFile({ downloadUrl: prevUrl, companyId: company.id }).catch(() => null);
+                        }
                       } catch (err: any) {
                         setError(err.message || 'Dispatch document upload failed.');
                       } finally {
                         setUploadingDispatch(false);
-                        e.target.value = '';
+                        setDispatchProgress(0);
                       }
                     }}
                   />
                 </label>
                 {dispatchDocumentUrl && (
                   <>
-                    <a
-                      href={dispatchDocumentUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline font-medium"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                      View
-                    </a>
                     <button
                       type="button"
-                      onClick={() => setDispatchDocumentUrl('')}
+                      onClick={() =>
+                        setPreviewDoc({
+                          fileName: `Dispatch_${computedTripNumber}`,
+                          downloadUrl: dispatchDocumentUrl,
+                          category: 'Dispatches',
+                        })
+                      }
+                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline font-medium"
+                    >
+                      <Eye className="w-3 h-3" />
+                      Preview
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await deleteUserFile({ downloadUrl: dispatchDocumentUrl, companyId: company?.id });
+                          setDispatchDocumentUrl('');
+                        } catch (err: any) {
+                          setError(err?.message || 'Failed to delete dispatch document from Storage.');
+                        }
+                      }}
                       className="text-rose-600 hover:text-rose-700 p-1"
-                      title="Remove dispatch document link"
+                      title="Delete dispatch document"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </>
                 )}
               </div>
+              {uploadingDispatch && (
+                <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-indigo-600 transition-all" style={{ width: `${dispatchProgress}%` }} />
+                </div>
+              )}
             </div>
           </div>
 
@@ -1060,52 +1135,83 @@ export const TripModal: React.FC<TripModalProps> = ({
                 <div className="flex items-center gap-2 flex-wrap">
                   <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg font-semibold cursor-pointer">
                     <Upload className="w-3.5 h-3.5" />
-                    <span>{uploadingPod ? 'Uploading POD...' : podDocumentUrl ? 'Replace POD Copy' : 'Upload POD Copy'}</span>
+                    <span>{uploadingPod ? `Uploading ${podProgress}%` : podDocumentUrl ? 'Replace POD Copy' : 'Upload POD Copy'}</span>
                     <input
                       type="file"
-                      accept="image/*,.pdf"
+                      accept={STORAGE_ACCEPT_ATTR}
                       className="hidden"
                       disabled={uploadingPod || !company?.id}
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
+                        e.target.value = '';
                         if (!file || !company?.id) return;
                         setError(null);
                         setUploadingPod(true);
+                        setPodProgress(0);
+                        const prevUrl = podDocumentUrl;
                         try {
-                          const downloadUrl = await uploadCompanyDocument(company.id, 'pod', file);
-                          setPodDocumentUrl(downloadUrl);
+                          const uploaded = await uploadUserFile({
+                            file,
+                            category: 'pod',
+                            companyId: company.id,
+                            relatedRecordId: tripToEdit?.id || computedTripNumber,
+                            entityType: 'TRIP_POD',
+                            entityId: tripToEdit?.id || computedTripNumber,
+                            onProgress: setPodProgress,
+                          });
+                          setPodDocumentUrl(uploaded.downloadURL);
                           setPodReceived(true);
+                          if (prevUrl) {
+                            await deleteUserFile({ downloadUrl: prevUrl, companyId: company.id }).catch(() => null);
+                          }
                         } catch (err: any) {
                           setError(err.message || 'POD document upload failed.');
                         } finally {
                           setUploadingPod(false);
-                          e.target.value = '';
+                          setPodProgress(0);
                         }
                       }}
                     />
                   </label>
                   {podDocumentUrl && (
                     <>
-                      <a
-                        href={podDocumentUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-medium"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        View POD
-                      </a>
                       <button
                         type="button"
-                        onClick={() => setPodDocumentUrl('')}
+                        onClick={() =>
+                          setPreviewDoc({
+                            fileName: `POD_${computedTripNumber}`,
+                            downloadUrl: podDocumentUrl,
+                            category: 'Proof of Delivery',
+                          })
+                        }
+                        className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-medium"
+                      >
+                        <Eye className="w-3 h-3" />
+                        Preview POD
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await deleteUserFile({ downloadUrl: podDocumentUrl, companyId: company?.id });
+                            setPodDocumentUrl('');
+                          } catch (err: any) {
+                            setError(err?.message || 'Failed to delete POD document from Storage.');
+                          }
+                        }}
                         className="text-rose-600 hover:text-rose-700 p-1"
-                        title="Remove POD document link"
+                        title="Delete POD document"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </>
                   )}
                 </div>
+                {uploadingPod && (
+                  <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden col-span-full">
+                    <div className="h-full bg-emerald-600 transition-all" style={{ width: `${podProgress}%` }} />
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1150,6 +1256,15 @@ export const TripModal: React.FC<TripModalProps> = ({
           </div>
         </div>
       </form>
+      {previewDoc && (
+        <FilePreviewModal
+          isOpen={Boolean(previewDoc)}
+          onClose={() => setPreviewDoc(null)}
+          fileName={previewDoc.fileName}
+          downloadUrl={previewDoc.downloadUrl}
+          categoryLabel={previewDoc.category}
+        />
+      )}
     </Modal>
   );
 };

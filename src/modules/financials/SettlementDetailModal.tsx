@@ -18,6 +18,7 @@ import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { approveSettlementInFirestore } from '../../lib/firebase/firestoreService';
 import { calculateTripProfitLoss } from '../../lib/financialEngine';
 import { downloadSettlementPdf } from '../../lib/pdfGenerator';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 
 interface SettlementDetailModalProps {
   isOpen: boolean;
@@ -362,6 +363,15 @@ export const SettlementDetailModal: React.FC<SettlementDetailModalProps> = ({
               <p className="text-slate-600">{settlement.settlementNotes}</p>
             </div>
           )}
+
+          <DocumentAttachmentsSection
+            companyId={company?.id}
+            category="settlements"
+            relatedRecordId={settlement.id}
+            entityType="SETTLEMENT"
+            title="Settlement Vouchers & Payment Proof"
+            compact
+          />
 
           {/* Actions */}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200">

@@ -46,6 +46,8 @@ import type {
   VehicleDocument,
   MaintenanceRecord,
   FileRecord,
+  UserFileMetadata,
+  StorageFileCategory,
   CompanySettings,
   AuditLog,
   UserRole,
@@ -109,11 +111,11 @@ export function isVerifiedEmailUser(): boolean {
   return Boolean(auth.currentUser && auth.currentUser.emailVerified);
 }
 
-function isValidDocSegment(value: unknown): value is string {
+export function isValidDocSegment(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value.trim());
 }
 
-function isFirestoreTimestamp(val: unknown): val is Timestamp {
+export function isFirestoreTimestamp(val: unknown): val is Timestamp {
   return (
     val instanceof Timestamp ||
     (typeof val === 'object' &&
@@ -249,7 +251,7 @@ function buildServerPreservingUpdatePayload(
 /**
  * Converts Firestore Timestamp fields back into ISO date strings for UI / REST consistency
  */
-function normalizeTimestamps<T>(raw: DocumentData): T {
+export function normalizeTimestamps<T>(raw: DocumentData): T {
   const out: Record<string, any> = {};
   for (const [key, val] of Object.entries(raw)) {
     if (val instanceof Timestamp) {
@@ -283,7 +285,23 @@ const VALID_VEHICLE_STATUSES = ['AVAILABLE', 'IN_TRANSIT', 'UNDER_MAINTENANCE', 
 const VALID_DRIVER_STATUSES = ['AVAILABLE', 'ON_TRIP', 'ON_LEAVE', 'INACTIVE'];
 const VALID_CUSTOMER_STATUSES = ['ACTIVE', 'INACTIVE', 'BLOCKED'];
 const VALID_BROKER_STATUSES = ['ACTIVE', 'INACTIVE', 'BLOCKED'];
-const VALID_STORAGE_FOLDERS = ['trips', 'dispatches', 'pod', 'expenses', 'fuel', 'documents', 'company'];
+const VALID_STORAGE_FOLDERS: StorageFileCategory[] = [
+  'company',
+  'documents',
+  'invoices',
+  'receipts',
+  'trips',
+  'drivers',
+  'vehicles',
+  'expenses',
+  'fuel',
+  'settlements',
+  'customer-documents',
+  'profile',
+  'other',
+  'dispatches',
+  'pod',
+];
 const VALID_TRIP_STATUSES = ['PLANNED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'COMPLETED', 'SETTLED', 'CANCELLED'];
 const VALID_EXPENSE_CATEGORIES = [
   'FUEL', 'DIESEL', 'TOLL', 'TOLL_FASTAG', 'PARKING', 'DRIVER_ALLOWANCE',
@@ -861,25 +879,41 @@ export function sanitizeSubcollectionPayload(
     }
 
     case 'fileRecords': {
-      const uploadedByUid = clipStr(item.uploadedByUid || auth.currentUser?.uid, 128);
-      const folder = VALID_STORAGE_FOLDERS.includes(item.folder) ? item.folder : 'documents';
-      const fileName = clipStr(item.fileName, 200);
+      const uploadedByUid = clipStr(item.uploadedByUid || item.uploadedBy || auth.currentUser?.uid, 128);
+      const rawCat = item.category || item.folder;
+      const folder: StorageFileCategory = VALID_STORAGE_FOLDERS.includes(rawCat) ? rawCat : 'documents';
+      const fileName = clipStr(item.fileName, 250);
       const storagePath = clipStr(item.storagePath, 500);
-      const downloadUrl = clipStr(item.downloadUrl, 1500);
+      const downloadUrl = clipStr(item.downloadUrl || item.downloadURL, 2000);
       if (!uploadedByUid || !fileName || !storagePath || !downloadUrl) return null;
+      const uploadedAt = isFirestoreTimestamp(existingData?.uploadedAt)
+        ? existingData!.uploadedAt
+        : isFirestoreTimestamp(item.uploadedAt)
+        ? item.uploadedAt
+        : createdAt;
+      const sizeNum = toNum(item.fileSize ?? item.sizeBytes);
       return stripUndefined({
         id: item.id,
+        fileId: clipStr(item.fileId, 128) || item.id,
         companyId,
+        uploadedBy: uploadedByUid,
         uploadedByUid,
         uploadedByName: clipStr(item.uploadedByName, 100),
         folder,
+        category: folder,
         fileName,
-        mimeType: clipStr(item.mimeType, 100),
-        sizeBytes: toNum(item.sizeBytes),
+        originalFileName: clipStr(item.originalFileName, 250) || fileName,
+        mimeType: clipStr(item.mimeType || item.contentType, 120),
+        contentType: clipStr(item.contentType || item.mimeType, 120),
+        sizeBytes: sizeNum,
+        fileSize: sizeNum,
         storagePath,
         downloadUrl,
+        downloadURL: downloadUrl,
+        relatedRecordId: clipStr(item.relatedRecordId || item.entityId, 128),
         entityType: clipStr(item.entityType, 40),
-        entityId: clipStr(item.entityId, 128),
+        entityId: clipStr(item.entityId || item.relatedRecordId, 128),
+        uploadedAt,
         createdAt,
         updatedAt,
       });
@@ -976,6 +1010,7 @@ function buildSanitizedUserWritePayload(
   overrides: {
     name?: string;
     phone?: string;
+    photoUrl?: string;
     defaultCompanyId?: string;
     activeCompanyId?: string;
     onboardingCompleted?: boolean;
@@ -1021,7 +1056,9 @@ function buildSanitizedUserWritePayload(
       ? clipStr(overrides.phone, 20) || ''
       : clipStr(existing.phone, 20) ?? clipStr(fbUser?.phoneNumber, 20) ?? '';
   const nextPhotoUrl =
-    clipStr(existing.photoUrl, 1500) ?? clipStr(fbUser?.photoURL, 1500);
+    overrides.photoUrl !== undefined
+      ? clipStr(overrides.photoUrl, 1500)
+      : clipStr(existing.photoUrl, 1500) ?? clipStr(fbUser?.photoURL, 1500);
   const preservedRole =
     typeof existing.role === 'string' && VALID_USER_ROLES.includes(existing.role as any)
       ? (existing.role as UserRole | 'USER')
@@ -1122,6 +1159,7 @@ export async function updateFirestoreUserProfile(
   updates: {
     name?: string;
     phone?: string;
+    photoUrl?: string;
     defaultCompanyId?: string;
     activeCompanyId?: string;
     onboardingCompleted?: boolean;
@@ -2178,7 +2216,7 @@ export function subscribeToCompanyOperationalData(
   };
 }
 
-async function assertWritableFirestoreUser(companyId: string): Promise<string> {
+export async function assertWritableFirestoreUser(companyId: string): Promise<string> {
   if (!auth.currentUser) {
     throw new Error('Authentication required. Please sign in to save changes.');
   }
@@ -2298,7 +2336,7 @@ function addAuditLogToBatch(
   batch.set(ref, built.payload);
 }
 
-async function writeAuditLogBestEffort(companyId: string, entry: AuditLogBatchEntry): Promise<void> {
+export async function writeAuditLogBestEffort(companyId: string, entry: AuditLogBatchEntry): Promise<void> {
   const built = buildAuditLogPayload(companyId, entry);
   if (!built) return;
   try {
@@ -4368,8 +4406,212 @@ export async function deleteBrokerInFirestore(
 }
 
 /**
- * Record / Delete Uploaded File Record Metadata in Firestore
+ * Record / List / Delete Uploaded File Record Metadata in Firestore
+ * Stores strict UID-isolated metadata at /users/{uid}/files/{fileId}
+ * and optionally indexes company-linked records at /companies/{companyId}/fileRecords/{fileId}.
  */
+export async function recordUserFileMetadataInFirestore(
+  metadata: {
+    fileId: string;
+    fileName: string;
+    originalFileName: string;
+    storagePath: string;
+    downloadURL: string;
+    contentType: string;
+    fileSize: number;
+    category: StorageFileCategory;
+    relatedRecordId?: string;
+    companyId?: string;
+    entityType?: string;
+    entityId?: string;
+    uploadedByName?: string;
+  }
+): Promise<UserFileMetadata> {
+  if (!auth.currentUser) {
+    throw new Error('Authentication required to save file metadata.');
+  }
+  if (!isVerifiedEmailUser()) {
+    throw new Error('Email verification required to save file metadata.');
+  }
+  const uid = auth.currentUser.uid;
+  const fileId = isValidDocSegment(metadata.fileId)
+    ? metadata.fileId.trim()
+    : `fil_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+  if (!metadata.storagePath.startsWith(`users/${uid}/`)) {
+    throw new Error('Access denied: file storagePath must belong to the authenticated user.');
+  }
+
+  const category: StorageFileCategory = VALID_STORAGE_FOLDERS.includes(metadata.category)
+    ? metadata.category
+    : 'other';
+  const userFilePath = `users/${uid}/files/${fileId}`;
+
+  const cleanFileName = clipStr(metadata.fileName, 250) || 'document';
+  const cleanOriginalFileName = clipStr(metadata.originalFileName, 250) || cleanFileName;
+  const cleanStoragePath = clipStr(metadata.storagePath, 500) || metadata.storagePath;
+  const cleanDownloadURL = clipStr(metadata.downloadURL, 2000) || metadata.downloadURL;
+  const cleanContentType = clipStr(metadata.contentType, 120) || 'application/octet-stream';
+  const cleanFileSize = Math.max(1, Number(metadata.fileSize) || 1);
+  const cleanRelatedRecordId = clipStr(metadata.relatedRecordId || metadata.entityId, 128);
+  const cleanCompanyId = isValidDocSegment(metadata.companyId) ? metadata.companyId!.trim() : undefined;
+
+  const userFilePayload = stripUndefined({
+    id: fileId,
+    fileId,
+    companyId: cleanCompanyId,
+    fileName: cleanFileName,
+    originalFileName: cleanOriginalFileName,
+    storagePath: cleanStoragePath,
+    downloadURL: cleanDownloadURL,
+    downloadUrl: cleanDownloadURL,
+    contentType: cleanContentType,
+    mimeType: cleanContentType,
+    fileSize: cleanFileSize,
+    sizeBytes: cleanFileSize,
+    uploadedBy: uid,
+    uploadedByUid: uid,
+    uploadedByName: clipStr(
+      metadata.uploadedByName || auth.currentUser.displayName || auth.currentUser.email || undefined,
+      100
+    ),
+    uploadedAt: serverTimestamp(),
+    relatedRecordId: cleanRelatedRecordId,
+    entityType: clipStr(metadata.entityType, 40),
+    entityId: clipStr(metadata.entityId || cleanRelatedRecordId, 128),
+    category,
+    folder: category,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  try {
+    await setDoc(doc(db, 'users', uid, 'files', fileId), userFilePayload);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, userFilePath);
+  }
+
+  if (cleanCompanyId) {
+    await recordFileUploadInFirestore(cleanCompanyId, {
+      id: fileId,
+      fileId,
+      companyId: cleanCompanyId,
+      uploadedBy: uid,
+      uploadedByUid: uid,
+      uploadedByName: userFilePayload.uploadedByName,
+      folder: category,
+      category,
+      fileName: cleanFileName,
+      originalFileName: cleanOriginalFileName,
+      mimeType: cleanContentType,
+      contentType: cleanContentType,
+      sizeBytes: cleanFileSize,
+      fileSize: cleanFileSize,
+      storagePath: cleanStoragePath,
+      downloadUrl: cleanDownloadURL,
+      downloadURL: cleanDownloadURL,
+      relatedRecordId: cleanRelatedRecordId,
+      entityType: userFilePayload.entityType,
+      entityId: userFilePayload.entityId,
+    });
+  }
+
+  return {
+    fileId,
+    fileName: cleanFileName,
+    originalFileName: cleanOriginalFileName,
+    storagePath: cleanStoragePath,
+    downloadURL: cleanDownloadURL,
+    contentType: cleanContentType,
+    fileSize: cleanFileSize,
+    uploadedBy: uid,
+    uploadedAt: new Date().toISOString(),
+    relatedRecordId: cleanRelatedRecordId,
+    category,
+    companyId: cleanCompanyId,
+    entityType: userFilePayload.entityType,
+    entityId: userFilePayload.entityId,
+    uploadedByName: userFilePayload.uploadedByName,
+  };
+}
+
+export async function fetchUserFilesFromFirestore(
+  uid?: string
+): Promise<UserFileMetadata[]> {
+  if (!auth.currentUser || !isVerifiedEmailUser()) return [];
+  const targetUid = (uid || auth.currentUser.uid).trim();
+  if (!isValidDocSegment(targetUid) || targetUid !== auth.currentUser.uid) {
+    throw new Error('Access denied: cannot query another user’s files.');
+  }
+  const path = `users/${targetUid}/files`;
+  try {
+    const snap = await getDocs(collection(db, 'users', targetUid, 'files'));
+    return snap.docs
+      .map((d) => normalizeTimestamps<UserFileMetadata>({ ...d.data(), fileId: d.id }))
+      .sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, path);
+  }
+}
+
+export function subscribeToUserFilesInFirestore(
+  uid: string,
+  onFiles: (files: UserFileMetadata[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  if (!auth.currentUser || !isVerifiedEmailUser() || !isValidDocSegment(uid) || uid.trim() !== auth.currentUser.uid) {
+    onFiles([]);
+    return () => {};
+  }
+  const safeUid = uid.trim();
+  const path = `users/${safeUid}/files`;
+  return onSnapshot(
+    collection(db, 'users', safeUid, 'files'),
+    (snap) => {
+      const items = snap.docs
+        .map((d) => normalizeTimestamps<UserFileMetadata>({ ...d.data(), fileId: d.id }))
+        .sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+      onFiles(items);
+    },
+    (err) => {
+      if (onError) onError(err);
+      else console.warn(`User files listener notice (${path}):`, err);
+    }
+  );
+}
+
+export async function deleteUserFileMetadataInFirestore(params: {
+  fileId: string;
+  companyId?: string;
+  fileName?: string;
+}): Promise<void> {
+  if (!auth.currentUser || !isVerifiedEmailUser()) {
+    throw new Error('Verified authentication required to delete file metadata.');
+  }
+  const uid = auth.currentUser.uid;
+  if (!isValidDocSegment(params.fileId)) {
+    throw new Error('Valid fileId is required.');
+  }
+  const safeFileId = params.fileId.trim();
+  const userFilePath = `users/${uid}/files/${safeFileId}`;
+  try {
+    await deleteDoc(doc(db, 'users', uid, 'files', safeFileId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, userFilePath);
+  }
+
+  if (isValidDocSegment(params.companyId)) {
+    try {
+      await deleteFileRecordInFirestore(params.companyId!.trim(), safeFileId, params.fileName);
+    } catch (err) {
+      // If company fileRecord does not exist, ignore only missing errors; otherwise surface
+      if (!String((err as any)?.code || '').includes('not-found')) {
+        throw err;
+      }
+    }
+  }
+}
+
 export async function recordFileUploadInFirestore(
   companyId: string,
   fileRec: FileRecord
@@ -4385,7 +4627,7 @@ export async function recordFileUploadInFirestore(
       entityType: 'FILE_RECORD',
       entityId: fileRec.id,
       moduleName: 'DOCUMENTS',
-      summary: `Uploaded ${fileRec.folder} document: ${fileRec.fileName}`,
+      summary: `Uploaded ${fileRec.category || fileRec.folder} document: ${fileRec.originalFileName || fileRec.fileName}`,
     });
     await batch.commit();
   } catch (err) {

@@ -13,6 +13,7 @@ import { Vehicle, UserRole } from '../../types/tms';
 import { formatINR } from '../../lib/currency';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 
 interface VehicleDetailModalProps {
   isOpen: boolean;
@@ -31,7 +32,7 @@ export const VehicleDetailModal: React.FC<VehicleDetailModalProps> = ({
   onEdit,
   onDelete,
 }) => {
-  const { vehicles, drivers, trips: allTrips, loading } = useFirestoreData();
+  const { company, vehicles, drivers, trips: allTrips, loading } = useFirestoreData();
 
   const vehicle = useMemo(
     () => (vehicleId ? vehicles.find((v) => v.id === vehicleId) || null : null),
@@ -369,6 +370,15 @@ export const VehicleDetailModal: React.FC<VehicleDetailModalProps> = ({
                   </div>
                 )}
               </div>
+
+              <DocumentAttachmentsSection
+                companyId={company?.id}
+                category="vehicles"
+                relatedRecordId={vehicle.id}
+                entityType="VEHICLE"
+                title="Vehicle Files & Attachments"
+                compact
+              />
             </>
           ) : null}
         </div>

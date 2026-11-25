@@ -16,12 +16,14 @@ import {
   BarChart3,
   Building,
   ChevronRight,
+  BookOpen,
 } from 'lucide-react';
 import { UserRole } from '../../types/tms';
 import { ROLE_PERMISSIONS } from '../../lib/permissions';
 
 export type ActiveTab = 
   | 'dashboard'
+  | 'journalTrips'
   | 'trips'
   | 'vehicles'
   | 'drivers'
@@ -73,6 +75,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'dashboard',
           label: 'Dashboard',
           icon: LayoutDashboard,
+        },
+        {
+          id: 'journalTrips',
+          label: 'Trips Journal',
+          icon: BookOpen,
         },
         {
           id: 'trips',

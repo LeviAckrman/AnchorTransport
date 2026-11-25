@@ -12,7 +12,7 @@ import {
   Phone,
   XCircle,
   CreditCard,
-  ExternalLink,
+  Eye,
   Download,
   Navigation,
   Crosshair,
@@ -32,6 +32,8 @@ import {
 } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
+import { FilePreviewModal } from '../../components/ui/FilePreviewModal';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 import { formatINR, paiseToRupees } from '../../lib/currency';
 import { TripStatusTransitionModal } from './TripStatusTransitionModal';
 import { useAuth } from '../../context/AuthContext';
@@ -89,6 +91,11 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
 
   const [activeTab, setActiveTab] = useState<TripDetailTab>(initialTab);
   const [targetStatusToChange, setTargetStatusToChange] = useState<TripStatus | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<{
+    fileName: string;
+    downloadUrl: string;
+    category: string;
+  } | null>(null);
 
   // Quick Expense Modal State
   const [isAddExpenseOpen, setIsAddExpenseOpen] = useState(false);
@@ -863,43 +870,88 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                 {(trip.lrDocumentUrl || trip.dispatchDocumentUrl || trip.podDocumentUrl) && (
                   <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-200">
                     {trip.lrDocumentUrl && (
-                      <a
-                        href={trip.lrDocumentUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        download
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-[11px] font-semibold hover:bg-indigo-50"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>LR / Bilty Document</span>
-                        <Download className="w-3 h-3" />
-                      </a>
+                      <div className="inline-flex items-center gap-1 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-[11px] font-semibold px-2.5 py-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPreviewDoc({
+                              fileName: `LR_${trip.lrNumber || trip.tripNumber}`,
+                              downloadUrl: trip.lrDocumentUrl!,
+                              category: 'Trips & POD',
+                            })
+                          }
+                          className="inline-flex items-center gap-1 hover:underline"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>LR / Bilty Document</span>
+                        </button>
+                        <a
+                          href={trip.lrDocumentUrl}
+                          download={`LR_${trip.lrNumber || trip.tripNumber}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="pl-1 text-indigo-500 hover:text-indigo-800"
+                          title="Download LR Document"
+                        >
+                          <Download className="w-3 h-3" />
+                        </a>
+                      </div>
                     )}
                     {trip.dispatchDocumentUrl && (
-                      <a
-                        href={trip.dispatchDocumentUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        download
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-[11px] font-semibold hover:bg-indigo-50"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>Dispatch Document</span>
-                        <Download className="w-3 h-3" />
-                      </a>
+                      <div className="inline-flex items-center gap-1 bg-white border border-indigo-200 text-indigo-700 rounded-lg text-[11px] font-semibold px-2.5 py-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPreviewDoc({
+                              fileName: `Dispatch_${trip.tripNumber}`,
+                              downloadUrl: trip.dispatchDocumentUrl!,
+                              category: 'Dispatches',
+                            })
+                          }
+                          className="inline-flex items-center gap-1 hover:underline"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>Dispatch Document</span>
+                        </button>
+                        <a
+                          href={trip.dispatchDocumentUrl}
+                          download={`Dispatch_${trip.tripNumber}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="pl-1 text-indigo-500 hover:text-indigo-800"
+                          title="Download Dispatch Document"
+                        >
+                          <Download className="w-3 h-3" />
+                        </a>
+                      </div>
                     )}
                     {trip.podDocumentUrl && (
-                      <a
-                        href={trip.podDocumentUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        download
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white border border-emerald-200 text-emerald-700 rounded-lg text-[11px] font-semibold hover:bg-emerald-50"
-                      >
-                        <ExternalLink className="w-3 h-3" />
-                        <span>Stamped POD Copy</span>
-                        <Download className="w-3 h-3" />
-                      </a>
+                      <div className="inline-flex items-center gap-1 bg-white border border-emerald-200 text-emerald-700 rounded-lg text-[11px] font-semibold px-2.5 py-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPreviewDoc({
+                              fileName: `POD_${trip.tripNumber}`,
+                              downloadUrl: trip.podDocumentUrl!,
+                              category: 'Proof of Delivery',
+                            })
+                          }
+                          className="inline-flex items-center gap-1 hover:underline"
+                        >
+                          <Eye className="w-3 h-3" />
+                          <span>Stamped POD Copy</span>
+                        </button>
+                        <a
+                          href={trip.podDocumentUrl}
+                          download={`POD_${trip.tripNumber}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="pl-1 text-emerald-500 hover:text-emerald-800"
+                          title="Download POD Document"
+                        >
+                          <Download className="w-3 h-3" />
+                        </a>
+                      </div>
                     )}
                   </div>
                 )}
@@ -920,6 +972,15 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
                   </p>
                 )}
               </div>
+
+              <DocumentAttachmentsSection
+                companyId={company?.id}
+                category="trips"
+                relatedRecordId={trip.id}
+                entityType="TRIP"
+                title="Trip & Dispatch Documents (LR, POD, E-Way Bill)"
+                compact
+              />
             </div>
           )}
 
@@ -1706,6 +1767,16 @@ export const TripDetailModal: React.FC<TripDetailModalProps> = ({
               trip={trip}
               targetStatus={targetStatusToChange}
               onConfirm={handleStatusTransitionConfirm}
+            />
+          )}
+
+          {previewDoc && (
+            <FilePreviewModal
+              isOpen={Boolean(previewDoc)}
+              onClose={() => setPreviewDoc(null)}
+              fileName={previewDoc.fileName}
+              downloadUrl={previewDoc.downloadUrl}
+              categoryLabel={previewDoc.category}
             />
           )}
         </div>

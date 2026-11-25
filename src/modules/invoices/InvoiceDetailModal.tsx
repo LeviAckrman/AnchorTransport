@@ -16,6 +16,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { cancelInvoiceInFirestore } from '../../lib/firebase/firestoreService';
 import { downloadInvoicePdf } from '../../lib/pdfGenerator';
+import { DocumentAttachmentsSection } from '../../components/ui/DocumentAttachmentsSection';
 
 interface InvoiceDetailModalProps {
   isOpen: boolean;
@@ -422,6 +423,15 @@ export const InvoiceDetailModal: React.FC<InvoiceDetailModalProps> = ({
             {GTA_GST_DISCLAIMER}
           </div>
         </div>
+
+        <DocumentAttachmentsSection
+          companyId={company?.id}
+          category="invoices"
+          relatedRecordId={invoice.id}
+          entityType="INVOICE"
+          title="Signed Invoice & Supporting Documents"
+          compact
+        />
 
         {/* Cancel Invoice Prompt */}
         {showCancelPrompt && (

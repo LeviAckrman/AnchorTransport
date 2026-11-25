@@ -5,15 +5,20 @@ import {
   AlertTriangle,
   CheckCircle2,
   Upload,
-  ExternalLink,
+  Eye,
   Trash2,
 } from 'lucide-react';
 import { TripExpense, ExpenseCategory, PaymentMode } from '../../types/tms';
 import { Modal } from '../../components/ui/Modal';
+import { FilePreviewModal } from '../../components/ui/FilePreviewModal';
 import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { saveExpenseInFirestore } from '../../lib/firebase/firestoreService';
-import { uploadCompanyDocument } from '../../lib/firebase/storageService';
+import {
+  uploadUserFile,
+  deleteUserFile,
+  STORAGE_ACCEPT_ATTR,
+} from '../../lib/firebase/storageService';
 
 interface ExpenseModalProps {
   isOpen: boolean;
@@ -80,6 +85,8 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
   const [receiptNumber, setReceiptNumber] = useState('');
   const [receiptUrl, setReceiptUrl] = useState('');
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [previewReceiptOpen, setPreviewReceiptOpen] = useState(false);
   const [notes, setNotes] = useState('');
   const [isDriverDisbursed, setIsDriverDisbursed] = useState(true);
 
@@ -179,14 +186,28 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
     if (!file || !company?.id) return;
     setError(null);
     setUploadingReceipt(true);
+    setUploadProgress(0);
+    const prevUrl = receiptUrl;
     try {
       const folder = category === 'FUEL' || category === 'DIESEL' ? 'fuel' : 'expenses';
-      const url = await uploadCompanyDocument(company.id, folder, file);
-      setReceiptUrl(url);
+      const uploaded = await uploadUserFile({
+        file,
+        category: folder,
+        companyId: company.id,
+        relatedRecordId: expenseToEdit?.id || tripId || company.id,
+        entityType: 'EXPENSE_RECEIPT',
+        entityId: expenseToEdit?.id || tripId || company.id,
+        onProgress: setUploadProgress,
+      });
+      setReceiptUrl(uploaded.downloadURL);
+      if (prevUrl) {
+        await deleteUserFile({ downloadUrl: prevUrl, companyId: company.id }).catch(() => null);
+      }
     } catch (err: any) {
       setError(err.message || 'Receipt upload failed.');
     } finally {
       setUploadingReceipt(false);
+      setUploadProgress(0);
     }
   };
 
@@ -614,10 +635,10 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-semibold cursor-pointer transition-colors">
               <Upload className="w-3.5 h-3.5" />
-              <span>{uploadingReceipt ? 'Uploading...' : 'Upload Receipt (PDF / Image)'}</span>
+              <span>{uploadingReceipt ? `Uploading ${uploadProgress}%` : receiptUrl ? 'Replace Receipt' : 'Upload Receipt'}</span>
               <input
                 type="file"
-                accept="image/*,.pdf"
+                accept={STORAGE_ACCEPT_ATTR}
                 disabled={uploadingReceipt}
                 onChange={handleReceiptUpload}
                 className="hidden"
@@ -625,18 +646,24 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
             </label>
             {receiptUrl && (
               <>
-                <a
-                  href={receiptUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold hover:bg-emerald-100"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>View Receipt</span>
-                </a>
                 <button
                   type="button"
-                  onClick={() => setReceiptUrl('')}
+                  onClick={() => setPreviewReceiptOpen(true)}
+                  className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold hover:bg-emerald-100"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Preview Receipt</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await deleteUserFile({ downloadUrl: receiptUrl, companyId: company?.id });
+                      setReceiptUrl('');
+                    } catch (err: any) {
+                      setError(err?.message || 'Failed to delete receipt from Storage.');
+                    }
+                  }}
                   className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold hover:bg-rose-100 cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -645,6 +672,11 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
               </>
             )}
           </div>
+          {uploadingReceipt && (
+            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-full bg-indigo-600 transition-all" style={{ width: `${uploadProgress}%` }} />
+            </div>
+          )}
           <input
             type="text"
             placeholder="Or paste receipt document URL (optional)"
@@ -692,6 +724,15 @@ export const ExpenseModal: React.FC<ExpenseModalProps> = ({
           </button>
         </div>
       </form>
+      {previewReceiptOpen && receiptUrl && (
+        <FilePreviewModal
+          isOpen={previewReceiptOpen}
+          onClose={() => setPreviewReceiptOpen(false)}
+          fileName={`Receipt_${voucherNumber || receiptNumber || 'Expense'}`}
+          downloadUrl={receiptUrl}
+          categoryLabel={category === 'FUEL' || category === 'DIESEL' ? 'Fuel Slips' : 'Expenses'}
+        />
+      )}
     </Modal>
   );
 };

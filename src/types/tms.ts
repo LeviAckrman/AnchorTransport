@@ -543,19 +543,63 @@ export interface MaintenanceRecord {
   updatedAt?: string;
 }
 
-export interface FileRecord {
-  id: string;
-  companyId: string;
-  uploadedByUid: string;
-  uploadedByName?: string;
-  folder: 'trips' | 'dispatches' | 'pod' | 'expenses' | 'fuel' | 'documents' | 'company';
+export type StorageFileCategory =
+  | 'company'
+  | 'documents'
+  | 'invoices'
+  | 'receipts'
+  | 'trips'
+  | 'drivers'
+  | 'vehicles'
+  | 'expenses'
+  | 'fuel'
+  | 'settlements'
+  | 'customer-documents'
+  | 'profile'
+  | 'other'
+  | 'dispatches'
+  | 'pod';
+
+export interface UserFileMetadata {
+  fileId: string;
   fileName: string;
-  mimeType?: string;
-  sizeBytes?: number;
+  originalFileName: string;
   storagePath: string;
-  downloadUrl: string;
+  downloadURL: string;
+  contentType: string;
+  fileSize: number;
+  uploadedBy: string;
+  uploadedAt: string;
+  relatedRecordId?: string;
+  category: StorageFileCategory;
+  companyId?: string;
   entityType?: string;
   entityId?: string;
+  uploadedByName?: string;
+}
+
+export interface FileRecord {
+  id: string;
+  fileId?: string;
+  companyId: string;
+  uploadedBy?: string;
+  uploadedByUid: string;
+  uploadedByName?: string;
+  folder: StorageFileCategory;
+  category?: StorageFileCategory;
+  fileName: string;
+  originalFileName?: string;
+  mimeType?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  fileSize?: number;
+  storagePath: string;
+  downloadUrl: string;
+  downloadURL?: string;
+  relatedRecordId?: string;
+  entityType?: string;
+  entityId?: string;
+  uploadedAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -584,6 +628,7 @@ export interface AuditLog {
   action: 'CREATE' | 'UPDATE' | 'DELETE' | 'DISPATCH' | 'SETTLE' | 'APPROVE' | 'INVOICE' | 'PAYMENT' | 'CANCEL';
   entityType:
     | 'TRIP'
+    | 'JOURNAL_TRIP'
     | 'TRIP_LOG'
     | 'DISPATCH'
     | 'VEHICLE'
@@ -609,6 +654,56 @@ export interface AuditLog {
   previousValues?: Record<string, string | number | boolean>;
   updatedValues?: Record<string, string | number | boolean>;
   timestamp: string;
+}
+
+export type JournalEntryType = 'offline' | 'historical' | 'manual_book';
+export type JournalTripStatus = 'completed' | 'cancelled';
+
+export interface JournalTripExpenseItem {
+  expenseName: string;
+  amountPaise: number;
+  description: string;
+}
+
+export interface JournalTrip {
+  id: string;
+  companyId: string;
+  journalTripId: string;
+  tripDate: string; // ISO date string normalized from Firestore Timestamp
+  vehicleId: string | null;
+  vehicleNumber: string;
+  driverId: string | null;
+  driverName: string;
+  customerId: string | null;
+  customerName: string;
+  fromLocation: string;
+  toLocation: string;
+  entryType: JournalEntryType;
+  externalReferenceNumber: string | null;
+  freightAmountPaise: number;
+  expenses: JournalTripExpenseItem[];
+  totalExpensesPaise: number;
+  profitPaise: number;
+  odometerStart: number | null;
+  odometerEnd: number | null;
+  distanceTravelled: number | null;
+  notes: string;
+  attachmentPaths: string[];
+  status: JournalTripStatus;
+  searchTokens?: string[];
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+export interface JournalTripSummaryStats {
+  totalTripsCount: number;
+  completedTripsCount: number;
+  cancelledTripsCount: number;
+  totalFreightRevenuePaise: number;
+  totalExpensesPaise: number;
+  totalProfitPaise: number;
 }
 
 export const GTA_GST_DISCLAIMER =

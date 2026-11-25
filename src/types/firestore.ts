@@ -294,20 +294,64 @@ export interface FirestoreBroker {
   updatedAt?: string;
 }
 
+export type FirestoreStorageCategory =
+  | 'company'
+  | 'documents'
+  | 'invoices'
+  | 'receipts'
+  | 'trips'
+  | 'drivers'
+  | 'vehicles'
+  | 'expenses'
+  | 'fuel'
+  | 'settlements'
+  | 'customer-documents'
+  | 'profile'
+  | 'other'
+  | 'dispatches'
+  | 'pod';
+
+// User-Isolated File Metadata (/users/{userId}/files/{fileId})
+export interface FirestoreUserFileMetadata {
+  fileId: string;
+  fileName: string;
+  originalFileName: string;
+  storagePath: string;
+  downloadURL: string;
+  contentType: string;
+  fileSize: number;
+  uploadedBy: string;
+  uploadedAt: string;
+  relatedRecordId?: string;
+  category: FirestoreStorageCategory;
+  companyId?: string;
+  entityType?: string;
+  entityId?: string;
+}
+
 // Subcollection 15: File Records
 export interface FirestoreFileRecord {
   id: string;
+  fileId?: string;
   companyId: string;
+  uploadedBy?: string;
   uploadedByUid: string;
   uploadedByName?: string;
-  folder: 'trips' | 'dispatches' | 'pod' | 'expenses' | 'fuel' | 'documents' | 'company';
+  folder: FirestoreStorageCategory;
+  category?: FirestoreStorageCategory;
   fileName: string;
+  originalFileName?: string;
   mimeType?: string;
+  contentType?: string;
   sizeBytes?: number;
+  fileSize?: number;
   storagePath: string;
   downloadUrl: string;
+  downloadURL?: string;
+  relatedRecordId?: string;
   entityType?: string;
   entityId?: string;
+  uploadedAt?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -352,6 +396,8 @@ export interface FirestoreTripLog {
 // Standardized collection path builders
 export const FirestorePaths = {
   user: (userId: string) => `users/${userId}`,
+  userFiles: (userId: string) => `users/${userId}/files`,
+  userFile: (userId: string, fileId: string) => `users/${userId}/files/${fileId}`,
   company: (companyId: string) => `companies/${companyId}`,
   members: (companyId: string) => `companies/${companyId}/members`,
   member: (companyId: string, userId: string) => `companies/${companyId}/members/${userId}`,

@@ -69,7 +69,7 @@ async function runFirebaseTests() {
     assert('Security: storage.rules exists', fs.existsSync(storageRulesPath));
 
     const storageRules = fs.readFileSync(storageRulesPath, 'utf8');
-    assert('Security: storage.rules enforces size and MIME-type restrictions for compliance docs', storageRules.includes('isImageOrPdf') && storageRules.includes('isUnderMaxSize'));
+    assert('Security: storage.rules enforces size and MIME-type restrictions for compliance docs', storageRules.includes('isAllowedContentType') && storageRules.includes('isUnderMaxFileSize'));
 
     // 5. Firestore Indexes Verification
     const indexesPath = path.resolve(process.cwd(), 'firestore.indexes.json');

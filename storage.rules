@@ -3,7 +3,7 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
 
-    // Default deny
+    // Default deny across the entire bucket
     match /{allPaths=**} {
       allow read, write: if false;
     }
@@ -12,8 +12,10 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function isVerifiedUser() {
+    function isVerifiedOwner(userId) {
       return isSignedIn()
+        && request.auth.uid == userId
+        && isValidSegment(userId)
         && ('email_verified' in request.auth.token)
         && request.auth.token.email_verified == true;
     }
@@ -22,46 +24,50 @@ service firebase.storage {
       return val is string && val.size() > 0 && val.size() <= 128 && val.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function companyDocPath(companyId) {
-      return /databases/ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d/documents/companies/$(companyId);
+    // Strict < 20 MB upload cap (and non-empty)
+    function isUnderMaxFileSize() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size < 20 * 1024 * 1024;
     }
 
-    function isVerifiedCompanyOwner(companyId) {
-      return isVerifiedUser()
-        && isValidSegment(companyId)
-        && firestore.exists(companyDocPath(companyId))
-        && firestore.get(companyDocPath(companyId)).data.ownerId == request.auth.uid;
+    // Allowed MIME types: Images (JPG/JPEG, PNG, WebP, GIF - excludes SVG to prevent XSS),
+    // PDF, Word (DOC/DOCX), Excel (XLS/XLSX), and CSV
+    function isAllowedContentType() {
+      return request.resource != null
+        && request.resource.contentType != null
+        && request.resource.contentType in [
+          'image/jpeg',
+          'image/jpg',
+          'image/png',
+          'image/webp',
+          'image/gif',
+          'application/pdf',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'application/vnd.ms-excel',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'text/csv'
+        ];
     }
 
-    function isAllowedFolder(folder) {
-      return folder in ['trips', 'dispatches', 'pod', 'expenses', 'fuel', 'documents', 'company'];
+    // Prevent spoofed uploadedBy customMetadata if provided
+    function isValidUploadMetadata() {
+      return request.resource.metadata == null
+        || !('uploadedBy' in request.resource.metadata)
+        || request.resource.metadata.uploadedBy == request.auth.uid;
     }
 
-    function isImageOrPdf() {
-      return request.resource.contentType.matches('image/.*')
-          || request.resource.contentType == 'application/pdf';
-    }
+    // Strict UID-isolated private user storage:
+    // users/{userId}/{category}/{fileName}
+    // (including users/{userId}/trips/journal_{journalTripId}/{fileName})
+    match /users/{userId}/{allPaths=**} {
+      allow read, delete: if isVerifiedOwner(userId);
 
-    function isUnderMaxSize(maxMegabytes) {
-      return request.resource.size <= maxMegabytes * 1024 * 1024;
-    }
-
-    // Company-scoped compliance documents (RC, Insurance, PUC, Permit, POD, LR, Dispatch, Fuel, Expense)
-    match /companies/{companyId}/{folder}/{fileName} {
-      // Strictly only the verified company owner can read its files
-      allow read: if isVerifiedCompanyOwner(companyId) && isAllowedFolder(folder);
-
-      // Uploads must verify company ownership, file type, 15MB cap, and matching customMetadata
-      allow create, update: if isVerifiedCompanyOwner(companyId)
-                            && isAllowedFolder(folder)
-                            && isImageOrPdf()
-                            && isUnderMaxSize(15)
-                            && request.resource.metadata != null
-                            && request.resource.metadata.companyId == companyId
-                            && request.resource.metadata.uploadedByUid == request.auth.uid;
-
-      // Strictly only the verified company owner can delete its files
-      allow delete: if isVerifiedCompanyOwner(companyId) && isAllowedFolder(folder);
+      allow create, update: if isVerifiedOwner(userId)
+                            && isUnderMaxFileSize()
+                            && isAllowedContentType()
+                            && isValidUploadMetadata();
     }
   }
 }

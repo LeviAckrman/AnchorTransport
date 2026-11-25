@@ -18,6 +18,7 @@ import {
   Wrench,
   BarChart3,
   Building,
+  BookOpen,
 } from 'lucide-react';
 import { ActiveTab } from './Sidebar';
 import { UserRole } from '../../types/tms';
@@ -39,6 +40,7 @@ export const MobileNav: React.FC<MobileNavProps> = ({
 
   const visibleDrawerItems: { id: ActiveTab; label: string; icon: React.ElementType }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'journalTrips', label: 'Trips Journal', icon: BookOpen },
     { id: 'trips', label: 'Trips & Dispatch', icon: Navigation },
     { id: 'vehicles', label: 'Vehicles / Trucks', icon: Truck },
     { id: 'drivers', label: 'Drivers', icon: Users },

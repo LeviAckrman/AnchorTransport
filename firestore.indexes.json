@@ -111,6 +111,100 @@
         { "fieldPath": "entityType", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "entryType", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "vehicleId", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "driverId", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "searchTokens", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "entryType", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "vehicleId", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "driverId", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "searchTokens", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "entryType", "order": "ASCENDING" },
+        { "fieldPath": "vehicleId", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "journalTrips",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "entryType", "order": "ASCENDING" },
+        { "fieldPath": "driverId", "order": "ASCENDING" },
+        { "fieldPath": "tripDate", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

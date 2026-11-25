@@ -35,6 +35,7 @@ import { MobileNav } from './components/layout/MobileNav';
 import { Modal } from './components/ui/Modal';
 import { ConfirmDialog } from './components/ui/ConfirmDialog';
 import { DashboardView } from './modules/dashboard/DashboardView';
+import { TripsJournalView } from './modules/journalTrips/TripsJournalView';
 import { TripsView } from './modules/trips/TripsView';
 import { VehiclesView } from './modules/vehicles/VehiclesView';
 import { DriversView } from './modules/drivers/DriversView';
@@ -418,6 +419,7 @@ function AppContent() {
             />
           )}
 
+          {activeTab === 'journalTrips' && <TripsJournalView userRole={effectiveRole} />}
           {activeTab === 'trips' && <TripsView userRole={effectiveRole} />}
           {activeTab === 'vehicles' && <VehiclesView userRole={effectiveRole} />}
           {activeTab === 'drivers' && <DriversView userRole={effectiveRole} />}

@@ -10,11 +10,15 @@ import {
   AlertCircle,
   KeyRound,
   RefreshCw,
+  UploadCloud,
+  Loader2,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import type { Company } from '../../types/tms';
 import { Modal } from '../ui/Modal';
 import { Badge } from '../ui/Badge';
+import { DocumentAttachmentsSection } from '../ui/DocumentAttachmentsSection';
+import { uploadUserFile } from '../../lib/firebase/storageService';
 
 interface UserProfileModalProps {
   isOpen: boolean;
@@ -48,6 +52,8 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [isSwitching, setIsSwitching] = useState<string | null>(null);
   const [isRefreshingVerify, setIsRefreshingVerify] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoProgress, setPhotoProgress] = useState(0);
 
   useEffect(() => {
     if (isOpen) {
@@ -142,12 +148,74 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
           {!isEditing ? (
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3.5 min-w-0">
-                <div className="w-12 h-12 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-base shadow-sm shrink-0">
-                  {initials}
+                <div className="relative shrink-0">
+                  {user.photoUrl ? (
+                    <img
+                      src={user.photoUrl}
+                      alt={user.name || 'User avatar'}
+                      className="w-12 h-12 rounded-full object-cover border border-indigo-200 shadow-sm"
+                    />
+                  ) : (
+                    <div className="w-12 h-12 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-base shadow-sm">
+                      {initials}
+                    </div>
+                  )}
+                  {isFirebaseUser && isEmailVerified && (
+                    <label
+                      className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-white border border-slate-200 shadow-xs flex items-center justify-center text-indigo-600 hover:bg-indigo-50 cursor-pointer"
+                      title="Upload profile photo"
+                    >
+                      {uploadingPhoto ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <UploadCloud className="w-3 h-3" />
+                      )}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        disabled={uploadingPhoto}
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (!file) return;
+                          setUploadingPhoto(true);
+                          setPhotoProgress(0);
+                          setSaveFeedback(null);
+                          try {
+                            const uploaded = await uploadUserFile({
+                              file,
+                              category: 'profile',
+                              relatedRecordId: `profile_${user.id}`,
+                              entityType: 'USER_AVATAR',
+                              entityId: user.id,
+                              onProgress: setPhotoProgress,
+                            });
+                            const res = await updateUserProfile({ photoUrl: uploaded.downloadURL });
+                            if (res.success) {
+                              setSaveFeedback({ type: 'success', text: 'Profile photo updated.' });
+                            } else {
+                              setSaveFeedback({ type: 'error', text: res.error || 'Failed to save photo URL.' });
+                            }
+                          } catch (err: any) {
+                            setSaveFeedback({ type: 'error', text: err?.message || 'Failed to upload profile photo.' });
+                          } finally {
+                            setUploadingPhoto(false);
+                            setPhotoProgress(0);
+                          }
+                        }}
+                      />
+                    </label>
+                  )}
                 </div>
                 <div className="min-w-0">
                   <h4 className="font-bold text-slate-900 text-sm truncate">{user.name || 'Fleet User'}</h4>
                   <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                  {uploadingPhoto && (
+                    <p className="text-[11px] font-semibold text-indigo-600 mt-0.5">
+                      Uploading photo: {photoProgress}%
+                    </p>
+                  )}
                   {user.phone && (
                     <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
                       <Phone className="w-3 h-3 text-slate-400 shrink-0" />
@@ -345,6 +413,18 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
               ))}
             </div>
           </div>
+        )}
+
+        {/* Personal Profile Documents (/users/{uid}/profile) */}
+        {isFirebaseUser && isEmailVerified && (
+          <DocumentAttachmentsSection
+            companyId={activeCompany?.id}
+            category="profile"
+            relatedRecordId={`profile_${user.id}`}
+            entityType="USER_PROFILE"
+            title="Personal Account Documents"
+            compact
+          />
         )}
 
         {/* Footer / Sign Out */}

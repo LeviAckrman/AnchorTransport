@@ -40,6 +40,7 @@ export interface AuthUser {
   email: string;
   name: string;
   phone: string;
+  photoUrl?: string;
   onboardingCompleted?: boolean;
   onboardingCompletedAt?: string;
 }
@@ -96,7 +97,7 @@ interface AuthContextType {
   refreshVerificationStatus: () => Promise<{ verified: boolean; error?: string }>;
   logout: () => Promise<void>;
   switchCompany: (companyId: string) => Promise<{ success: boolean; error?: string }>;
-  updateUserProfile: (data: { name?: string; phone?: string }) => Promise<{ success: boolean; error?: string }>;
+  updateUserProfile: (data: { name?: string; phone?: string; photoUrl?: string }) => Promise<{ success: boolean; error?: string }>;
   updateCompanyProfile: (data: Partial<Company>) => Promise<{ success: boolean; error?: string }>;
   registerLogoutCleanup: (cleanupFn: () => void) => () => void;
   permissions: RolePermissionSet | null;
@@ -322,6 +323,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             email: (firebaseUser.email || session.user.email || '').toLowerCase(),
             name: userDoc?.name || session.user.name || firebaseUser.displayName || 'Fleet Owner',
             phone: userDoc?.phone || session.user.phone || firebaseUser.phoneNumber || '',
+            photoUrl: userDoc?.photoUrl || firebaseUser.photoURL || undefined,
             onboardingCompleted:
               firestoreCompleted ||
               Boolean(session.onboardingCompleted) ||
@@ -334,6 +336,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             email: (firebaseUser.email || '').toLowerCase(),
             name: userDoc?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Fleet Owner',
             phone: userDoc?.phone || firebaseUser.phoneNumber || '',
+            photoUrl: userDoc?.photoUrl || firebaseUser.photoURL || undefined,
             onboardingCompleted: firestoreCompleted,
             onboardingCompletedAt: userDoc?.onboardingCompletedAt,
           };
@@ -948,6 +951,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateUserProfile = async (data: {
     name?: string;
     phone?: string;
+    photoUrl?: string;
   }): Promise<{ success: boolean; error?: string }> => {
     try {
       if (auth.currentUser) {
@@ -957,6 +961,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ...user,
             name: data.name ?? user.name,
             phone: data.phone ?? user.phone,
+            photoUrl: data.photoUrl ?? user.photoUrl,
           };
           saveSession(
             updatedUser,

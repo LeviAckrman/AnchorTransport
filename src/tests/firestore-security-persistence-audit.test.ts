@@ -522,28 +522,40 @@ class AuditRulesSimulator {
       return { allowed: false, reason: 'Unauthenticated or unverified user denied by storage.rules' };
     }
     const segs = objectPath.split('/').filter(Boolean);
-    if (segs.length !== 4 || segs[0] !== 'companies') {
-      return { allowed: false, reason: 'Default storage deny outside /companies/{companyId}/{folder}/{fileName}' };
+    if (segs.length < 3 || segs[0] !== 'users') {
+      return { allowed: false, reason: 'Default storage deny outside /users/{userId}/{allPaths=**}' };
     }
-    const [, companyId, folder] = segs;
-    const allowedFolders = ['trips', 'dispatches', 'pod', 'expenses', 'fuel', 'documents', 'company'];
-    if (!allowedFolders.includes(folder)) {
-      return { allowed: false, reason: `Folder '${folder}' is not allowlisted` };
-    }
-    if (!this.isVerifiedCompanyOwner(auth, companyId)) {
-      return { allowed: false, reason: `User ${auth.uid} is not the verified owner of ${companyId}` };
+    const [, userId] = segs;
+    if (auth.uid !== userId) {
+      return { allowed: false, reason: `User ${auth.uid} cannot access files owned by ${userId}` };
     }
     if (op === 'create' || op === 'update') {
       if (!upload) return { allowed: false, reason: 'Missing upload resource' };
-      const validType = upload.contentType.startsWith('image/') || upload.contentType === 'application/pdf';
-      if (!validType) return { allowed: false, reason: 'Unsupported MIME type' };
-      if (upload.size > 15 * 1024 * 1024) return { allowed: false, reason: 'Exceeds 15MB cap' };
+      const allowedTypes = [
+        'image/jpeg',
+        'image/jpg',
+        'image/png',
+        'image/webp',
+        'image/gif',
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.ms-excel',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'text/csv',
+      ];
+      if (!allowedTypes.includes(upload.contentType)) {
+        return { allowed: false, reason: 'Unsupported MIME type' };
+      }
+      if (upload.size <= 0 || upload.size >= 20 * 1024 * 1024) {
+        return { allowed: false, reason: 'File size must be > 0 and < 20MB' };
+      }
       if (
-        !upload.customMetadata ||
-        upload.customMetadata.companyId !== companyId ||
-        upload.customMetadata.uploadedByUid !== auth.uid
+        upload.customMetadata &&
+        'uploadedBy' in upload.customMetadata &&
+        upload.customMetadata.uploadedBy !== auth.uid
       ) {
-        return { allowed: false, reason: 'Missing or mismatched customMetadata companyId/uploadedByUid' };
+        return { allowed: false, reason: 'Spoofed customMetadata.uploadedBy rejected' };
       }
       return { allowed: true };
     }
@@ -614,14 +626,14 @@ async function runAuditSuite() {
   );
 
   assert(
-    storageRulesSrc.includes('/databases/ai-studio-anchortransportt-c5041a54-7d47-45d6-a1f6-5144adf1df5d/documents/companies/$(companyId)') &&
-      storageRulesSrc.includes('function isVerifiedCompanyOwner(companyId)') &&
-      !storageRulesSrc.includes('memberDocPath') &&
-      storageRulesSrc.includes('request.resource.metadata.companyId == companyId') &&
-      storageRulesSrc.includes('request.resource.metadata.uploadedByUid == request.auth.uid') &&
-      storageServiceSrc.includes('customMetadata:') &&
-      storageServiceSrc.includes('recordFileUploadInFirestore'),
-    'Storage Rules & Client: Enforces Owner-Only named-DB ownership check, customMetadata, and fileRecords audit tracking'
+    storageRulesSrc.includes('match /users/{userId}/{allPaths=**}') &&
+      storageRulesSrc.includes('function isVerifiedOwner(userId)') &&
+      storageRulesSrc.includes('isUnderMaxFileSize()') &&
+      storageRulesSrc.includes('isAllowedContentType()') &&
+      storageRulesSrc.includes('isValidUploadMetadata()') &&
+      storageServiceSrc.includes('customMetadata') &&
+      storageServiceSrc.includes('recordUserFileMetadataInFirestore'),
+    'Storage Rules & Client: Enforces UID-isolated verified owner access, size/type limits, customMetadata checks, and Firestore file metadata tracking'
   );
 
   const compCreateRes = sim.evalFirestore(ownerA, 'create', `companies/${compA}`, {
@@ -656,12 +668,12 @@ async function runAuditSuite() {
 
   sim.seedFirestore(`companies/${compB}`, { id: compB, name: 'Beta Carriers', ownerId: ownerB.uid });
 
-  const uploadAlpha = sim.evalStorage(ownerA, 'create', `companies/${compA}/pod/lr_001.pdf`, {
+  const uploadAlpha = sim.evalStorage(ownerA, 'create', `users/${ownerA.uid}/pod/lr_001.pdf`, {
     contentType: 'application/pdf',
     size: 512000,
-    customMetadata: { companyId: compA, uploadedByUid: ownerA.uid },
+    customMetadata: { uploadedBy: ownerA.uid, companyId: compA },
   });
-  assert(uploadAlpha.allowed, 'Sim: Verified Company A owner can upload POD PDF with matching customMetadata');
+  assert(uploadAlpha.allowed, 'Sim: Verified Owner A can upload POD PDF under users/{uid}/pod/ with matching customMetadata');
 
   // ========================================================================
   // TEST 2: Data Permanence on Logout & Re-Login + No Duplicate Company
@@ -805,7 +817,7 @@ async function runAuditSuite() {
   // Scenario 4: Owner B cannot read Owner A's trips
   const s4OwnerBGet = sim.evalFirestore(ownerB, 'get', `companies/${compA}/trips/trp_ownerA_01`);
   const s4OwnerBList = sim.evalFirestore(ownerB, 'list', `companies/${compA}/trips`);
-  const s4OwnerBStorage = sim.evalStorage(ownerB, 'read', `companies/${compA}/pod/lr_001.pdf`);
+  const s4OwnerBStorage = sim.evalStorage(ownerB, 'read', `users/${ownerA.uid}/pod/lr_001.pdf`);
   assert(
     !s4OwnerBGet.allowed && !s4OwnerBList.allowed && !s4OwnerBStorage.allowed,
     'Scenario 4: Owner B CANNOT read/list Owner A trips or Storage documents'
@@ -841,10 +853,10 @@ async function runAuditSuite() {
     createdAt: SERVER_TIME,
     updatedAt: SERVER_TIME,
   });
-  const s6UnverifiedStorage = sim.evalStorage(unverifiedOwnerA, 'create', `companies/${compA}/pod/doc.pdf`, {
+  const s6UnverifiedStorage = sim.evalStorage(unverifiedOwnerA, 'create', `users/${unverifiedOwnerA.uid}/pod/doc.pdf`, {
     contentType: 'application/pdf',
     size: 1000,
-    customMetadata: { companyId: compA, uploadedByUid: unverifiedOwnerA.uid },
+    customMetadata: { uploadedBy: unverifiedOwnerA.uid, companyId: compA },
   });
   assert(
     !s6AnonRead.allowed &&

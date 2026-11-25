@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   History,
   Search,
+  BookOpen,
 } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -35,6 +36,9 @@ import {
   exportRowsToCsv,
   REPORT_ACCOUNTING_DISCLAIMER,
 } from '../../lib/tmsCalculations';
+import { fetchCompletedJournalTripsForReport } from '../../lib/firebase/journalTripsService';
+import { JOURNAL_ENTRY_TYPE_LABELS, summarizeJournalTrips } from '../../lib/journalTripsHelpers';
+import type { JournalTrip } from '../../types/tms';
 
 export type ReportType = 'trips' | 'vehicles' | 'expenses' | 'receivables' | 'monthly' | 'audit';
 
@@ -48,6 +52,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   initialReport = 'trips',
 }) => {
   const {
+    company,
     vehicles,
     drivers,
     customers,
@@ -74,6 +79,59 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
   const [auditActionFilter, setAuditActionFilter] = useState<string>('');
   const [auditEntityFilter, setAuditEntityFilter] = useState<string>('');
   const [auditSearchQuery, setAuditSearchQuery] = useState<string>('');
+
+  // Explicit Opt-In for Trips Journal (default false — never mixed silently with operational reports)
+  const [includeJournalTrips, setIncludeJournalTrips] = useState<boolean>(false);
+  const [optInJournalTrips, setOptInJournalTrips] = useState<JournalTrip[]>([]);
+  const [journalReportLoading, setJournalReportLoading] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    let active = true;
+    const supportsJournalToggle =
+      activeReport === 'trips' ||
+      activeReport === 'vehicles' ||
+      activeReport === 'expenses' ||
+      activeReport === 'monthly';
+
+    if (!includeJournalTrips || !supportsJournalToggle || !company?.id) {
+      setOptInJournalTrips([]);
+      return;
+    }
+
+    setJournalReportLoading(true);
+    fetchCompletedJournalTripsForReport(company.id, {
+      startDate: startDate || undefined,
+      endDate: endDate || undefined,
+      vehicleId: selectedVehicleId || undefined,
+      driverId: selectedDriverId || undefined,
+    })
+      .then((rows) => {
+        if (active) setOptInJournalTrips(rows);
+      })
+      .catch(() => {
+        if (active) setOptInJournalTrips([]);
+      })
+      .finally(() => {
+        if (active) setJournalReportLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    includeJournalTrips,
+    activeReport,
+    company?.id,
+    startDate,
+    endDate,
+    selectedVehicleId,
+    selectedDriverId,
+  ]);
+
+  const optInJournalStats = useMemo(
+    () => summarizeJournalTrips(optInJournalTrips),
+    [optInJournalTrips]
+  );
 
   const reportData = useMemo(() => {
     const filters = {
@@ -289,6 +347,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
     setAuditActionFilter('');
     setAuditEntityFilter('');
     setAuditSearchQuery('');
+    setIncludeJournalTrips(false);
   };
 
   const tripsReport = activeReport === 'trips' && 'trips' in reportData ? reportData : null;
@@ -575,6 +634,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
                 >
                   <option value="">All Modules</option>
                   <option value="TRIP">Trips</option>
+                  <option value="JOURNAL_TRIP">Trips Journal</option>
                   <option value="DISPATCH">Dispatch</option>
                   <option value="EXPENSE">Expenses</option>
                   <option value="FUEL">Fuel</option>
@@ -605,6 +665,27 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
             </>
           )}
         </div>
+
+        {(activeReport === 'trips' ||
+          activeReport === 'vehicles' ||
+          activeReport === 'expenses' ||
+          activeReport === 'monthly') && (
+          <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+            <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={includeJournalTrips}
+                onChange={(e) => setIncludeJournalTrips(e.target.checked)}
+                className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Include Trips Journal (Historical / Offline)</span>
+            </label>
+            <span className="text-[11px] text-slate-500">
+              Kept separated from live operational metrics unless opted in
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Loading & Error States */}
@@ -1199,6 +1280,121 @@ export const ReportsView: React.FC<ReportsViewProps> = ({
               </div>
             </div>
           )}
+          {/* OPT-IN TRIPS JOURNAL (HISTORICAL / OFFLINE) BREAKDOWN */}
+          {includeJournalTrips &&
+            (activeReport === 'trips' ||
+              activeReport === 'vehicles' ||
+              activeReport === 'expenses' ||
+              activeReport === 'monthly') && (
+              <div className="bg-white rounded-xl border border-indigo-200 shadow-xs overflow-hidden">
+                <div className="p-4 border-b border-indigo-100 bg-indigo-50/40 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="w-4 h-4 text-indigo-700" />
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">
+                        Trips Journal (Historical / Offline) — Opt-In Breakdown
+                      </h3>
+                      <p className="text-[11px] text-slate-600">
+                        Completed historical & offline journal entries only (cancelled records excluded)
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-indigo-800">
+                    {journalReportLoading
+                      ? 'Loading journal records...'
+                      : `${optInJournalStats.completedTripsCount} completed journal trip(s)`}
+                  </span>
+                </div>
+
+                <div className="p-4 grid grid-cols-1 sm:grid-cols-3 gap-3 border-b border-slate-100">
+                  <div className="p-3 rounded-lg border border-slate-200 bg-white">
+                    <span className="text-[11px] font-semibold uppercase text-slate-500 block">
+                      Journal Freight Revenue
+                    </span>
+                    <span className="text-lg font-bold text-emerald-700 tabular-nums">
+                      {formatRupees(optInJournalStats.totalFreightRevenuePaise)}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg border border-slate-200 bg-white">
+                    <span className="text-[11px] font-semibold uppercase text-slate-500 block">
+                      Journal Trip Expenses
+                    </span>
+                    <span className="text-lg font-bold text-rose-700 tabular-nums">
+                      {formatRupees(optInJournalStats.totalExpensesPaise)}
+                    </span>
+                  </div>
+                  <div className="p-3 rounded-lg border border-indigo-200 bg-indigo-50/40">
+                    <span className="text-[11px] font-bold uppercase text-indigo-900 block">
+                      Journal Net Profit
+                    </span>
+                    <span className="text-lg font-bold text-indigo-900 tabular-nums">
+                      {formatRupees(optInJournalStats.totalProfitPaise)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-700 font-semibold uppercase tracking-wider text-[11px]">
+                        <th className="py-3 px-4">Journal Trip ID</th>
+                        <th className="py-3 px-4">Trip Date</th>
+                        <th className="py-3 px-4">Vehicle</th>
+                        <th className="py-3 px-4">Driver</th>
+                        <th className="py-3 px-4">Customer</th>
+                        <th className="py-3 px-4">Route</th>
+                        <th className="py-3 px-4">Entry Type</th>
+                        <th className="py-3 px-4 text-right">Freight</th>
+                        <th className="py-3 px-4 text-right">Expenses</th>
+                        <th className="py-3 px-4 text-right">Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {optInJournalTrips.length > 0 ? (
+                        optInJournalTrips.map((jt) => (
+                          <tr key={jt.journalTripId} className="hover:bg-slate-50/70">
+                            <td className="py-2.5 px-4 font-mono font-semibold text-indigo-700">
+                              {jt.journalTripId}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-600">
+                              {jt.tripDate ? new Date(jt.tripDate).toLocaleDateString('en-IN') : '—'}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono font-medium text-slate-900">
+                              {jt.vehicleNumber}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-700">{jt.driverName}</td>
+                            <td className="py-2.5 px-4 text-slate-800 font-medium">{jt.customerName}</td>
+                            <td className="py-2.5 px-4 text-slate-600">
+                              {jt.fromLocation} → {jt.toLocation}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-600">
+                              {JOURNAL_ENTRY_TYPE_LABELS[jt.entryType] || jt.entryType}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono tabular-nums text-slate-900">
+                              {formatRupees(jt.freightAmountPaise)}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono tabular-nums text-rose-700">
+                              {formatRupees(jt.totalExpensesPaise)}
+                            </td>
+                            <td className="py-2.5 px-4 text-right font-mono font-bold tabular-nums text-indigo-800">
+                              {formatRupees(jt.profitPaise)}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={10} className="py-6 text-center text-slate-400 italic">
+                            {journalReportLoading
+                              ? 'Loading Trips Journal entries...'
+                              : 'No completed Trips Journal records match the active filters.'}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
         </div>
       )}
     </div>

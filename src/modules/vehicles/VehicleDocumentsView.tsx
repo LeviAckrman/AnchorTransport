@@ -15,14 +15,20 @@ import {
   X,
   Upload,
   Download,
+  Eye,
 } from 'lucide-react';
 import { VehicleDocument, DocumentType, UserRole } from '../../types/tms';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Badge, BadgeVariant } from '../../components/ui/Badge';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { FilePreviewModal } from '../../components/ui/FilePreviewModal';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { saveDocumentInFirestore, deleteDocumentInFirestore } from '../../lib/firebase/firestoreService';
-import { uploadCompanyDocument } from '../../lib/firebase/storageService';
+import {
+  uploadUserFile,
+  deleteUserFile,
+  STORAGE_ACCEPT_ATTR,
+} from '../../lib/firebase/storageService';
 import { calculateDocComplianceStatus } from '../../lib/tmsCalculations';
 
 interface VehicleDocumentsViewProps {
@@ -72,24 +78,39 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
   const [renewExpiryDate, setRenewExpiryDate] = useState('');
   const [renewDocUrl, setRenewDocUrl] = useState('');
   const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [previewDoc, setPreviewDoc] = useState<{
+    fileName: string;
+    downloadUrl: string;
+  } | null>(null);
 
   const canManage = true;
 
   const handleUploadDocFile = async (file: File | undefined, target: 'create' | 'renew') => {
     if (!file || !company?.id) return;
     setUploadingFile(true);
+    setUploadProgress(0);
     try {
-      const uploadedUrl = await uploadCompanyDocument(company.id, 'documents', file);
+      const uploaded = await uploadUserFile({
+        file,
+        category: 'documents',
+        companyId: company.id,
+        relatedRecordId: target === 'renew' ? selectedDoc?.id : formVehicleId || company.id,
+        entityType: 'VEHICLE_DOCUMENT',
+        entityId: target === 'renew' ? selectedDoc?.id : formVehicleId || company.id,
+        onProgress: setUploadProgress,
+      });
       if (target === 'create') {
-        setFormDocUrl(uploadedUrl);
+        setFormDocUrl(uploaded.downloadURL);
       } else {
-        setRenewDocUrl(uploadedUrl);
+        setRenewDocUrl(uploaded.downloadURL);
       }
-      showToast('success', 'Certificate file uploaded to secure storage.');
+      showToast('success', 'Certificate file uploaded to private Firebase Storage.');
     } catch (err: any) {
       showToast('error', err.message || 'Failed to upload document file.');
     } finally {
       setUploadingFile(false);
+      setUploadProgress(0);
     }
   };
 
@@ -207,6 +228,16 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
         documentUrl: renewDocUrl.trim() || undefined,
       };
       await saveDocumentInFirestore(company.id, updatedDoc, matchingVehicle);
+      if (
+        selectedDoc.documentUrl &&
+        renewDocUrl.trim() &&
+        selectedDoc.documentUrl !== renewDocUrl.trim()
+      ) {
+        await deleteUserFile({
+          downloadUrl: selectedDoc.documentUrl,
+          companyId: company.id,
+        }).catch(() => null);
+      }
       showToast('success', 'Document renewed in Firestore.');
       setIsRenewOpen(false);
     } catch (err: any) {
@@ -219,12 +250,19 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
   const handleDeleteConfirm = async () => {
     if (!deleteTarget || !company?.id) return;
     try {
+      // Safe delete ordering: delete Firebase Storage file FIRST before deleting Firestore document
+      if (deleteTarget.documentUrl) {
+        await deleteUserFile({
+          downloadUrl: deleteTarget.documentUrl,
+          companyId: company.id,
+        });
+      }
       await deleteDocumentInFirestore(
         company.id,
         deleteTarget.id,
         `${deleteTarget.docType} (${deleteTarget.documentNumber})`
       );
-      showToast('success', 'Document removed from Firestore.');
+      showToast('success', 'Document removed from Storage and Firestore.');
     } catch (err: any) {
       showToast('error', err.message || 'Failed to delete document');
     } finally {
@@ -486,15 +524,19 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
                         <div className="flex items-center justify-end gap-1.5">
                           {doc.documentUrl && (
                             <>
-                              <a
-                                href={doc.documentUrl}
-                                target="_blank"
-                                rel="noreferrer"
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPreviewDoc({
+                                    fileName: `${doc.vehicleReg} - ${doc.docType} (${doc.documentNumber})`,
+                                    downloadUrl: doc.documentUrl!,
+                                  })
+                                }
                                 className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors"
-                                title="View Document Certificate"
+                                title="Preview Certificate"
                               >
-                                <ExternalLink className="w-4 h-4" />
-                              </a>
+                                <Eye className="w-4 h-4" />
+                              </button>
                               <a
                                 href={doc.documentUrl}
                                 download
@@ -658,10 +700,10 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
                   />
                   <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl border border-slate-300 cursor-pointer shrink-0">
                     <Upload className="w-3.5 h-3.5" />
-                    <span>{uploadingFile ? 'Uploading...' : 'Upload File'}</span>
+                    <span>{uploadingFile ? `Uploading ${uploadProgress}%` : 'Upload File'}</span>
                     <input
                       type="file"
-                      accept="image/*,application/pdf"
+                      accept={STORAGE_ACCEPT_ATTR}
                       className="hidden"
                       disabled={uploadingFile}
                       onChange={(e) => {
@@ -672,6 +714,14 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
                     />
                   </label>
                 </div>
+                {uploadingFile && (
+                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2">
+                    <div
+                      className="h-full bg-indigo-600 transition-all duration-150"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -772,10 +822,10 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
                   />
                   <label className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl border border-slate-300 cursor-pointer shrink-0">
                     <Upload className="w-3.5 h-3.5" />
-                    <span>{uploadingFile ? 'Uploading...' : 'Upload File'}</span>
+                    <span>{uploadingFile ? `Uploading ${uploadProgress}%` : 'Upload File'}</span>
                     <input
                       type="file"
-                      accept="image/*,application/pdf"
+                      accept={STORAGE_ACCEPT_ATTR}
                       className="hidden"
                       disabled={uploadingFile}
                       onChange={(e) => {
@@ -786,6 +836,14 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
                     />
                   </label>
                 </div>
+                {uploadingFile && (
+                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2">
+                    <div
+                      className="h-full bg-indigo-600 transition-all duration-150"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -820,6 +878,16 @@ export const VehicleDocumentsView: React.FC<VehicleDocumentsViewProps> = ({ user
         onConfirm={handleDeleteConfirm}
         onClose={() => setDeleteTarget(null)}
       />
+
+      {previewDoc && (
+        <FilePreviewModal
+          isOpen={Boolean(previewDoc)}
+          onClose={() => setPreviewDoc(null)}
+          fileName={previewDoc.fileName}
+          downloadUrl={previewDoc.downloadUrl}
+          categoryLabel="Vehicle Document"
+        />
+      )}
     </div>
   );
 };
