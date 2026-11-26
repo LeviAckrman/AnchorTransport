@@ -3,6 +3,7 @@ import {
   Info,
   CheckCircle2,
   AlertTriangle,
+  Building2,
 } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
@@ -12,6 +13,11 @@ import { useAuth } from '../../context/AuthContext';
 import { useFirestoreData } from '../../context/FirestoreDataContext';
 import { createInvoiceInFirestore, updateInvoiceInFirestore } from '../../lib/firebase/firestoreService';
 import { getNextInvoiceNumber } from '../../lib/tmsCalculations';
+import {
+  validateCompanyProfileForInvoicing,
+  buildCompanyInvoiceSnapshot,
+  resolveInvoiceCompanyBranding,
+} from '../../lib/invoiceBranding';
 
 interface InvoiceModalProps {
   isOpen: boolean;
@@ -59,6 +65,21 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [logoImgError, setLogoImgError] = useState(false);
+
+  const profileCompleteness = useMemo(
+    () => validateCompanyProfileForInvoicing(company),
+    [company]
+  );
+
+  const companyBranding = useMemo(
+    () => resolveInvoiceCompanyBranding(invoiceToEdit || null, company),
+    [invoiceToEdit, company]
+  );
+
+  useEffect(() => {
+    setLogoImgError(false);
+  }, [companyBranding.logoUrl, isOpen]);
 
   // Populate or reset form on modal open
   useEffect(() => {
@@ -207,6 +228,29 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
       return;
     }
 
+    const existingPaidPaise = invoiceToEdit?.amountPaidPaise || 0;
+    const newBalanceDuePaise = Math.max(0, calculation.tax.totalInvoiceAmountPaise - existingPaidPaise);
+    const nextStatus: Invoice['status'] =
+      invoiceToEdit && existingPaidPaise > 0
+        ? newBalanceDuePaise === 0
+          ? 'PAID'
+          : 'PARTIALLY_PAID'
+        : invoiceStatus;
+    const nextPaymentStatus: Invoice['paymentStatus'] =
+      nextStatus === 'PAID'
+        ? 'PAID'
+        : nextStatus === 'PARTIALLY_PAID'
+        ? 'PARTIALLY_PAID'
+        : 'UNPAID';
+
+    const shouldRequireCompleteProfile =
+      nextStatus !== 'DRAFT' && !(invoiceToEdit?.status !== 'DRAFT' && invoiceToEdit?.companySnapshot);
+
+    if (shouldRequireCompleteProfile && !profileCompleteness.complete) {
+      setError(profileCompleteness.message);
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -226,20 +270,12 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
             .join(', ')
         : invoiceToEdit?.billingAddress;
 
-      const existingPaidPaise = invoiceToEdit?.amountPaidPaise || 0;
-      const newBalanceDuePaise = Math.max(0, tax.totalInvoiceAmountPaise - existingPaidPaise);
-      const nextStatus: Invoice['status'] =
-        invoiceToEdit && existingPaidPaise > 0
-          ? newBalanceDuePaise === 0
-            ? 'PAID'
-            : 'PARTIALLY_PAID'
-          : invoiceStatus;
-      const nextPaymentStatus: Invoice['paymentStatus'] =
-        nextStatus === 'PAID'
-          ? 'PAID'
-          : nextStatus === 'PARTIALLY_PAID'
-          ? 'PARTIALLY_PAID'
-          : 'UNPAID';
+      const resolvedSnapshot =
+        invoiceToEdit && invoiceToEdit.status !== 'DRAFT' && invoiceToEdit.companySnapshot
+          ? invoiceToEdit.companySnapshot
+          : nextStatus !== 'DRAFT'
+          ? buildCompanyInvoiceSnapshot(company, nowIso)
+          : undefined;
 
       const savedInvoice: Invoice = {
         ...(invoiceToEdit || {}),
@@ -268,6 +304,8 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
         originCity: selectedTrip?.originCity?.slice(0, 100) ?? invoiceToEdit?.originCity,
         destinationCity: selectedTrip?.destinationCity?.slice(0, 100) ?? invoiceToEdit?.destinationCity,
         vehicleReg: selectedTrip?.vehicleReg?.slice(0, 30) ?? invoiceToEdit?.vehicleReg,
+        driverName: selectedTrip?.driverName?.slice(0, 150) ?? invoiceToEdit?.driverName,
+        driverPhone: selectedTrip?.driverPhone?.slice(0, 30) ?? invoiceToEdit?.driverPhone,
         goodsType: selectedTrip?.goodsType?.slice(0, 120) ?? invoiceToEdit?.goodsType,
         weightTonnes: selectedTrip?.weightTonnes ?? invoiceToEdit?.weightTonnes,
         ratePerTonnePaise: selectedTrip?.ratePerTonnePaise ?? invoiceToEdit?.ratePerTonnePaise,
@@ -296,6 +334,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
         status: nextStatus,
         paymentStatus: nextPaymentStatus,
         notes: notes.trim() ? notes.trim().slice(0, 500) : undefined,
+        ...(resolvedSnapshot ? { companySnapshot: resolvedSnapshot } : {}),
         createdBy: invoiceToEdit?.createdBy || (user?.name || user?.email || 'Owner').slice(0, 100),
         createdAt: invoiceToEdit?.createdAt || nowIso,
       };
@@ -332,6 +371,53 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({
             </div>
           </div>
         )}
+
+        {/* Issuing Company Profile Header Preview */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-3 min-w-0">
+            {companyBranding.logoUrl && !logoImgError ? (
+              <img
+                src={companyBranding.logoUrl}
+                alt={`${companyBranding.legalName} logo`}
+                referrerPolicy="no-referrer"
+                onError={() => setLogoImgError(true)}
+                className="w-12 h-12 rounded-lg object-contain border border-slate-200 bg-white p-1 shrink-0"
+              />
+            ) : (
+              <div className="w-12 h-12 rounded-lg border border-slate-200 bg-white flex items-center justify-center text-indigo-600 shrink-0">
+                <Building2 className="w-5 h-5" />
+              </div>
+            )}
+            <div className="min-w-0 text-xs">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                {companyBranding.isSnapshotLocked
+                  ? 'Issuing Company (Locked Snapshot)'
+                  : 'Issuing Company Header Preview'}
+              </span>
+              <p className="font-bold text-slate-900 text-sm truncate">{companyBranding.legalName}</p>
+              {companyBranding.tradeName && (
+                <p className="text-[11px] text-slate-600 truncate">Trading as: {companyBranding.tradeName}</p>
+              )}
+              <p className="text-[11px] text-slate-600 truncate">
+                {[companyBranding.address, companyBranding.locationLine].filter(Boolean).join(', ') ||
+                  'Registered office address not configured'}
+              </p>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-600 mt-0.5">
+                {companyBranding.gstin && <span className="font-mono">GSTIN: {companyBranding.gstin}</span>}
+                {companyBranding.phone && <span>Ph: {companyBranding.phone}</span>}
+                {companyBranding.email && <span>{companyBranding.email}</span>}
+              </div>
+            </div>
+          </div>
+          {!profileCompleteness.complete && !companyBranding.isSnapshotLocked && (
+            <div className="sm:max-w-xs bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11px] text-amber-900 shrink-0">
+              <span className="font-bold block">Company Profile Incomplete</span>
+              <span>
+                Missing: {profileCompleteness.missingFields.join(', ')}. You can save as Draft now, or update Company Profile before issuing.
+              </span>
+            </div>
+          )}
+        </div>
 
         {/* Notice of Operational Scope */}
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2">

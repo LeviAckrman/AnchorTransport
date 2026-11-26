@@ -1,1 +1,50 @@
 @import "tailwindcss";
+
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    height: auto !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  body.printing-invoice #root > * {
+    display: none !important;
+  }
+
+  body.printing-invoice [data-print-modal="true"] {
+    display: block !important;
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  /* Also support Ctrl+P while an invoice modal is open without clicking Print button */
+  body:has(#printable-invoice) aside,
+  body:has(#printable-invoice) header,
+  body:has(#printable-invoice) nav {
+    display: none !important;
+  }
+
+  #printable-invoice {
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+  }
+}

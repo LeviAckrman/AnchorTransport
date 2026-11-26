@@ -12,6 +12,7 @@ import {
   subscribeToUserFilesInFirestore,
   type FirestoreCompanyMember,
 } from '../lib/firebase/firestoreService';
+import { subscribeToRecentJournalTripsInFirestore } from '../lib/firebase/journalTripsService';
 import type {
   Company,
   Vehicle,
@@ -19,6 +20,7 @@ import type {
   Customer,
   Broker,
   Trip,
+  JournalTrip,
   TripExpense,
   DriverAdvance,
   TripSettlement,
@@ -44,6 +46,7 @@ interface FirestoreDataContextType {
   customers: Customer[];
   brokers: Broker[];
   trips: Trip[];
+  journalTrips: JournalTrip[];
   expenses: TripExpense[];
   advances: DriverAdvance[];
   settlements: TripSettlement[];
@@ -82,6 +85,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [brokers, setBrokers] = useState<Broker[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [journalTrips, setJournalTrips] = useState<JournalTrip[]>([]);
   const [expenses, setExpenses] = useState<TripExpense[]>([]);
   const [advances, setAdvances] = useState<DriverAdvance[]>([]);
   const [settlements, setSettlements] = useState<TripSettlement[]>([]);
@@ -97,6 +101,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const { user } = useAuth();
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const unsubscribeJournalRef = useRef<(() => void) | null>(null);
   const unsubscribeUserFilesRef = useRef<(() => void) | null>(null);
 
   const clearFrontendOperationalState = () => {
@@ -108,6 +113,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     setCustomers([]);
     setBrokers([]);
     setTrips([]);
+    setJournalTrips([]);
     setExpenses([]);
     setAdvances([]);
     setSettlements([]);
@@ -132,6 +138,14 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
           // Ignore unsubscribe errors
         }
         unsubscribeRef.current = null;
+      }
+      if (unsubscribeJournalRef.current) {
+        try {
+          unsubscribeJournalRef.current();
+        } catch {
+          // Ignore unsubscribe errors
+        }
+        unsubscribeJournalRef.current = null;
       }
       if (unsubscribeUserFilesRef.current) {
         try {
@@ -174,6 +188,10 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
     if (unsubscribeRef.current) {
       unsubscribeRef.current();
       unsubscribeRef.current = null;
+    }
+    if (unsubscribeJournalRef.current) {
+      unsubscribeJournalRef.current();
+      unsubscribeJournalRef.current = null;
     }
 
     const canSubscribe =
@@ -220,12 +238,26 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     );
 
+    const unsubJournal = subscribeToRecentJournalTripsInFirestore(
+      authCompany.id,
+      (items) => setJournalTrips(items),
+      (err) => {
+        setError((prev) => prev || err.message || 'Failed to synchronize Trips Journal from Firestore.');
+      },
+      50
+    );
+
     unsubscribeRef.current = unsub;
+    unsubscribeJournalRef.current = unsubJournal;
 
     return () => {
       unsub();
+      unsubJournal();
       if (unsubscribeRef.current === unsub) {
         unsubscribeRef.current = null;
+      }
+      if (unsubscribeJournalRef.current === unsubJournal) {
+        unsubscribeJournalRef.current = null;
       }
     };
   }, [isAuthenticated, isFirebaseUser, isEmailVerified, authCompany?.id, role, needsOnboarding, onboardingCompleted]);
@@ -256,6 +288,7 @@ export const FirestoreDataProvider: React.FC<{ children: React.ReactNode }> = ({
         customers,
         brokers,
         trips,
+        journalTrips,
         expenses,
         advances,
         settlements,

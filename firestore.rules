@@ -108,9 +108,9 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'ownerId', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+          'city', 'state', 'stateCode', 'pincode', 'country', 'bankName', 'accountNumber',
           'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-          'fleetSize', 'logoUrl', 'ownerId', 'createdAt', 'updatedAt'
+          'fleetSize', 'logoUrl', 'logoStoragePath', 'ownerId', 'createdAt', 'updatedAt'
         ])
         && data.id == companyId
         && isReqString(data, 'name', 150)
@@ -125,6 +125,7 @@ service cloud.firestore {
         && isOptString(data, 'state', 60)
         && isOptString(data, 'stateCode', 5)
         && isOptString(data, 'pincode', 10)
+        && isOptString(data, 'country', 80)
         && isOptString(data, 'bankName', 100)
         && isOptString(data, 'accountNumber', 40)
         && isOptString(data, 'ifscCode', 15)
@@ -134,6 +135,13 @@ service cloud.firestore {
         && isOptString(data, 'tripPrefix', 30)
         && isOptString(data, 'fleetSize', 50)
         && isOptString(data, 'logoUrl', 1500)
+        && isOptString(data, 'logoStoragePath', 500)
+        && (
+          !('logoStoragePath' in data)
+          || data.logoStoragePath == null
+          || data.logoStoragePath == ''
+          || data.logoStoragePath.matches('^users/' + request.auth.uid + '/.+')
+        )
         && data.createdAt is timestamp
         && data.updatedAt == request.time;
     }
@@ -515,19 +523,52 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    function isValidCompanyInvoiceSnapshot(snap, companyId) {
+      return snap is map
+        && snap.keys().hasAll(['companyId', 'name'])
+        && snap.keys().hasOnly([
+          'companyId', 'name', 'tradeName', 'legalName', 'gstin', 'pan',
+          'phone', 'email', 'address', 'city', 'state', 'stateCode',
+          'pincode', 'country', 'logoUrl', 'logoStoragePath', 'bankName',
+          'accountNumber', 'ifscCode', 'branch', 'capturedAt'
+        ])
+        && snap.companyId == companyId
+        && isReqString(snap, 'name', 150)
+        && isOptString(snap, 'tradeName', 150)
+        && isOptString(snap, 'legalName', 150)
+        && isOptString(snap, 'gstin', 20)
+        && isOptString(snap, 'pan', 15)
+        && isOptString(snap, 'phone', 25)
+        && isOptString(snap, 'email', 200)
+        && isOptString(snap, 'address', 300)
+        && isOptString(snap, 'city', 80)
+        && isOptString(snap, 'state', 60)
+        && isOptString(snap, 'stateCode', 5)
+        && isOptString(snap, 'pincode', 15)
+        && isOptString(snap, 'country', 80)
+        && isOptString(snap, 'logoUrl', 2000)
+        && isOptString(snap, 'logoStoragePath', 500)
+        && isOptString(snap, 'bankName', 100)
+        && isOptString(snap, 'accountNumber', 40)
+        && isOptString(snap, 'ifscCode', 15)
+        && isOptString(snap, 'branch', 100)
+        && isOptString(snap, 'capturedAt', 40);
+    }
+
     function isValidInvoice(data, companyId, invoiceId) {
       return data.keys().hasAll(['id', 'companyId', 'invoiceNumber', 'customerId', 'totalAmountPaise', 'status', 'issueDate', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'companyId', 'invoiceNumber', 'tripId', 'tripNumber', 'lrNumber',
           'customerId', 'customerName', 'customerGstin', 'billingAddress', 'originCity',
-          'destinationCity', 'vehicleReg', 'goodsType', 'weightTonnes', 'ratePerTonnePaise',
+          'destinationCity', 'vehicleReg', 'driverName', 'driverPhone', 'goodsType',
+          'weightTonnes', 'ratePerTonnePaise',
           'hsnSacCode', 'issueDate', 'dueDate', 'freightAmountPaise', 'loadingChargesPaise',
           'unloadingChargesPaise', 'detentionChargesPaise', 'otherChargesPaise', 'discountPaise',
           'taxableAmountPaise', 'isRcmApplicable', 'gstRatePercent', 'cgstRatePercent',
           'sgstRatePercent', 'igstRatePercent', 'cgstAmountPaise', 'sgstAmountPaise',
           'igstAmountPaise', 'totalTaxPaise', 'totalAmountPaise', 'amountPaidPaise',
           'balanceDuePaise', 'status', 'paymentStatus', 'cancelledAt', 'cancellationReason',
-          'notes', 'createdBy', 'createdAt', 'updatedAt'
+          'notes', 'termsAndConditions', 'companySnapshot', 'createdBy', 'createdAt', 'updatedAt'
         ])
         && data.id == invoiceId
         && data.companyId == companyId
@@ -542,6 +583,8 @@ service cloud.firestore {
         && isOptString(data, 'originCity', 100)
         && isOptString(data, 'destinationCity', 100)
         && isOptString(data, 'vehicleReg', 30)
+        && isOptString(data, 'driverName', 150)
+        && isOptString(data, 'driverPhone', 30)
         && isOptString(data, 'goodsType', 120)
         && isOptNumber(data, 'weightTonnes')
         && isOptNumber(data, 'ratePerTonnePaise')
@@ -573,6 +616,8 @@ service cloud.firestore {
         && isOptString(data, 'cancelledAt', 40)
         && isOptString(data, 'cancellationReason', 300)
         && isOptString(data, 'notes', 500)
+        && isOptString(data, 'termsAndConditions', 1000)
+        && (!('companySnapshot' in data) || data.companySnapshot == null || isValidCompanyInvoiceSnapshot(data.companySnapshot, companyId))
         && isOptString(data, 'createdBy', 100)
         && data.createdAt is timestamp
         && data.updatedAt == request.time;
@@ -903,30 +948,30 @@ service cloud.firestore {
                       (
                         incoming().diff(existing()).addedKeys().hasOnly([
                           'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'city', 'state', 'stateCode', 'pincode', 'country', 'bankName', 'accountNumber',
                           'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-                          'fleetSize', 'logoUrl', 'updatedAt'
+                          'fleetSize', 'logoUrl', 'logoStoragePath', 'updatedAt'
                         ]) &&
                         incoming().diff(existing()).changedKeys().hasOnly([
                           'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'city', 'state', 'stateCode', 'pincode', 'country', 'bankName', 'accountNumber',
                           'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-                          'fleetSize', 'logoUrl', 'updatedAt'
+                          'fleetSize', 'logoUrl', 'logoStoragePath', 'updatedAt'
                         ])
                       ) ||
                       (
                         canMigrateLegacyCreatedAt() &&
                         incoming().diff(existing()).addedKeys().hasOnly([
                           'id', 'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'city', 'state', 'stateCode', 'pincode', 'country', 'bankName', 'accountNumber',
                           'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-                          'fleetSize', 'logoUrl', 'ownerId', 'createdAt', 'updatedAt'
+                          'fleetSize', 'logoUrl', 'logoStoragePath', 'ownerId', 'createdAt', 'updatedAt'
                         ]) &&
                         incoming().diff(existing()).changedKeys().hasOnly([
                           'id', 'name', 'tradeName', 'gstin', 'pan', 'phone', 'email', 'address',
-                          'city', 'state', 'stateCode', 'pincode', 'bankName', 'accountNumber',
+                          'city', 'state', 'stateCode', 'pincode', 'country', 'bankName', 'accountNumber',
                           'ifscCode', 'branch', 'lrPrefix', 'invoicePrefix', 'tripPrefix',
-                          'fleetSize', 'logoUrl', 'ownerId', 'createdAt', 'updatedAt'
+                          'fleetSize', 'logoUrl', 'logoStoragePath', 'ownerId', 'createdAt', 'updatedAt'
                         ])
                       )
                     );
@@ -1214,12 +1259,21 @@ service cloud.firestore {
         allow create: if isValidId(companyId)
                       && isValidId(invoiceId)
                       && isVerifiedCompanyOwner(companyId)
-                      && (!('companyId' in incoming()) || incoming().companyId == companyId);
+                      && (!('companyId' in incoming()) || incoming().companyId == companyId)
+                      && (!('companySnapshot' in incoming()) || incoming().companySnapshot == null || isValidCompanyInvoiceSnapshot(incoming().companySnapshot, companyId));
 
         allow update: if isValidId(companyId)
                       && isValidId(invoiceId)
                       && isVerifiedCompanyOwner(companyId)
-                      && (!('companyId' in incoming()) || incoming().companyId == companyId);
+                      && (!('companyId' in incoming()) || incoming().companyId == companyId)
+                      && (!('companySnapshot' in incoming()) || incoming().companySnapshot == null || isValidCompanyInvoiceSnapshot(incoming().companySnapshot, companyId))
+                      && (
+                        !('status' in existing())
+                        || existing().status == 'DRAFT'
+                        || !('companySnapshot' in existing())
+                        || existing().companySnapshot == null
+                        || (('companySnapshot' in incoming()) && incoming().companySnapshot == existing().companySnapshot)
+                      );
 
         allow delete: if isValidId(companyId) && isValidId(invoiceId) && isVerifiedCompanyOwner(companyId);
       }

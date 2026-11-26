@@ -18,6 +18,7 @@ export interface Company {
   state: string;
   stateCode: string; // e.g. "19" for West Bengal
   pincode: string;
+  country?: string;
   bankName: string;
   accountNumber: string;
   ifscCode: string;
@@ -27,6 +28,7 @@ export interface Company {
   tripPrefix?: string; // e.g. "TR-"
   fleetSize?: string;
   logoUrl?: string; // Company logo image URL or SVG data
+  logoStoragePath?: string; // UID-isolated Firebase Storage object path
   ownerId?: string;
   createdAt: string;
   updatedAt?: string;
@@ -439,6 +441,30 @@ export interface TripSettlement {
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
 export type InvoicePaymentStatus = 'UNPAID' | 'PARTIALLY_PAID' | 'PAID' | 'OVERDUE' | 'CANCELLED';
 
+export interface CompanyInvoiceSnapshot {
+  companyId: string;
+  name: string;
+  tradeName?: string;
+  legalName?: string;
+  gstin?: string;
+  pan?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  stateCode?: string;
+  pincode?: string;
+  country?: string;
+  logoUrl?: string;
+  logoStoragePath?: string;
+  bankName?: string;
+  accountNumber?: string;
+  ifscCode?: string;
+  branch?: string;
+  capturedAt: string;
+}
+
 export interface Invoice {
   id: string;
   companyId: string;
@@ -453,6 +479,8 @@ export interface Invoice {
   originCity?: string;
   destinationCity?: string;
   vehicleReg?: string;
+  driverName?: string;
+  driverPhone?: string;
   goodsType?: string;
   weightTonnes?: number;
   ratePerTonnePaise?: number;
@@ -483,6 +511,8 @@ export interface Invoice {
   cancelledAt?: string;
   cancellationReason?: string;
   notes?: string;
+  termsAndConditions?: string;
+  companySnapshot?: CompanyInvoiceSnapshot;
   createdBy?: string;
   createdAt: string;
   updatedAt?: string;

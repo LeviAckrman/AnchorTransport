@@ -49,12 +49,23 @@ export interface FirestoreUser {
 export interface FirestoreCompany {
   id: string;
   name: string;
+  tradeName?: string;
   gstin?: string;
   pan?: string;
+  phone?: string;
+  email?: string;
   address?: string;
   city?: string;
   state?: string;
+  stateCode?: string;
   pincode?: string;
+  country?: string;
+  logoUrl?: string;
+  logoStoragePath?: string;
+  bankName?: string;
+  accountNumber?: string;
+  ifscCode?: string;
+  branch?: string;
   ownerId: string;
   createdAt: string;
 }
@@ -196,6 +207,8 @@ export interface FirestoreInvoice {
   invoiceNumber: string;
   customerId: string;
   tripId?: string;
+  driverName?: string;
+  driverPhone?: string;
   subtotal?: number;
   taxRate?: number;
   taxAmount?: number;
@@ -206,6 +219,8 @@ export interface FirestoreInvoice {
   dueDate?: string;
   paymentStatus: InvoicePaymentStatus;
   notes?: string;
+  termsAndConditions?: string;
+  companySnapshot?: import('./tms').CompanyInvoiceSnapshot;
   createdAt: string;
 }
 

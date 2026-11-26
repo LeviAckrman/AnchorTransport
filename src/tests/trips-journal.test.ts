@@ -24,12 +24,14 @@ import {
   calculateJournalDistance,
   calculateJournalFinancials,
   extractAttachmentFileName,
+  filterJournalTripsByDateRange,
   generateJournalTripId,
   isValidJournalAttachmentFile,
   parseJournalExcelBuffer,
   parseRupeesInputToPaise,
   summarizeJournalTrips,
 } from '../lib/journalTripsHelpers';
+import { resolveDashboardDateRange } from '../lib/tmsCalculations';
 import type { Customer, Driver, JournalTrip, Vehicle } from '../types/tms';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -352,6 +354,92 @@ test('Firestore rules and Storage rules enforce owner-only verified access and i
   assert.ok(storageRules.includes('isVerifiedOwner(userId)'));
   assert.ok(storageRules.includes('isAllowedContentType()'));
   assert.ok(storageRules.includes('isUnderMaxFileSize()'));
+});
+
+test('Dashboard date period helper filters and sorts Trips Journal entries cleanly', () => {
+  const refNow = new Date(2026, 10, 25, 14, 0, 0, 0); // 2026-11-25 local
+  const todayRange = resolveDashboardDateRange('today', undefined, undefined, refNow);
+  assert.equal(todayRange.startDateStr, '2026-11-25');
+  assert.equal(todayRange.endDateStr, '2026-11-25');
+
+  const monthRange = resolveDashboardDateRange('month', undefined, undefined, refNow);
+  assert.equal(monthRange.startDateStr, '2026-11-01');
+  assert.equal(monthRange.endDateStr, '2026-11-30');
+
+  const customRange = resolveDashboardDateRange('custom', '2026-10-01', '2026-10-31', refNow);
+  assert.equal(customRange.startDateStr, '2026-10-01');
+  assert.equal(customRange.endDateStr, '2026-10-31');
+
+  const baseTrip: Omit<JournalTrip, 'id' | 'journalTripId' | 'tripDate'> = {
+    companyId: 'comp_1',
+    vehicleId: null,
+    vehicleNumber: 'WB-19-K-4821',
+    driverId: null,
+    driverName: 'Ramesh Yadav',
+    customerId: null,
+    customerName: 'Tata Steel',
+    fromLocation: 'Jamshedpur',
+    toLocation: 'Kolkata',
+    entryType: 'offline',
+    externalReferenceNumber: null,
+    freightAmountPaise: 4000000,
+    expenses: [],
+    totalExpensesPaise: 1500000,
+    profitPaise: 2500000,
+    odometerStart: null,
+    odometerEnd: null,
+    distanceTravelled: null,
+    notes: '',
+    attachmentPaths: [],
+    status: 'completed',
+    createdAt: '2026-11-25T10:00:00.000Z',
+    updatedAt: '2026-11-25T10:00:00.000Z',
+    createdBy: 'uid_owner',
+    updatedBy: 'uid_owner',
+  };
+
+  const sample: JournalTrip[] = [
+    { ...baseTrip, id: 'JTR-OCT', journalTripId: 'JTR-OCT', tripDate: '2026-10-15T12:00:00.000Z' },
+    { ...baseTrip, id: 'JTR-NOV-EARLY', journalTripId: 'JTR-NOV-EARLY', tripDate: '2026-11-03T12:00:00.000Z' },
+    { ...baseTrip, id: 'JTR-TODAY', journalTripId: 'JTR-TODAY', tripDate: '2026-11-25T12:00:00.000Z' },
+  ];
+
+  const allSorted = filterJournalTripsByDateRange(sample, null, null);
+  assert.deepEqual(
+    allSorted.map((t) => t.journalTripId),
+    ['JTR-TODAY', 'JTR-NOV-EARLY', 'JTR-OCT']
+  );
+
+  const monthOnly = filterJournalTripsByDateRange(sample, monthRange.startDate, monthRange.endDate);
+  assert.deepEqual(
+    monthOnly.map((t) => t.journalTripId),
+    ['JTR-TODAY', 'JTR-NOV-EARLY']
+  );
+
+  const octOnly = filterJournalTripsByDateRange(sample, customRange.startDate, customRange.endDate);
+  assert.deepEqual(
+    octOnly.map((t) => t.journalTripId),
+    ['JTR-OCT']
+  );
+});
+
+test('DashboardView and FirestoreDataContext subscribe to and display Trips Journal independently of live fleet trips', () => {
+  const ctxSrc = fs.readFileSync(path.join(root, 'src/context/FirestoreDataContext.tsx'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(root, 'src/modules/dashboard/DashboardView.tsx'), 'utf8');
+
+  assert.ok(ctxSrc.includes('subscribeToRecentJournalTripsInFirestore'));
+  assert.ok(ctxSrc.includes('unsubscribeJournalRef'));
+  assert.ok(ctxSrc.includes('setJournalTrips([])'));
+  assert.ok(ctxSrc.includes('journalTrips,'));
+
+  assert.ok(dashSrc.includes('Trips Journal Entries'));
+  assert.ok(dashSrc.includes('JournalTripDetailModal'));
+  assert.ok(dashSrc.includes("onNavigateTab('journalTrips')"));
+
+  // Ensure Trips Journal block renders outside the !metrics.hasData branch so journal trips show even with 0 live dispatch trips
+  const hasDataFalseIdx = dashSrc.indexOf('{!metrics.hasData ? (');
+  const endHasDataBranchIdx = dashSrc.indexOf('{/* TRIPS JOURNAL ENTRIES');
+  assert.ok(hasDataFalseIdx > 0 && endHasDataBranchIdx > hasDataFalseIdx);
 });
 
 console.log(`\nResult: ${passed} passed, ${failed} failed\n`);

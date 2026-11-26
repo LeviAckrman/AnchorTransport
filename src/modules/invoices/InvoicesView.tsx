@@ -16,6 +16,7 @@ import {
   X,
   Edit,
   Download,
+  Loader2,
 } from 'lucide-react';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -43,8 +44,17 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
   onNavigateTab: _onNavigateTab,
 }) => {
   const { company: authCompany } = useAuth();
-  const { company: liveCompany, invoices: allInvoices, payments: allPayments, customers, loading, error } = useFirestoreData();
+  const {
+    company: liveCompany,
+    invoices: allInvoices,
+    payments: allPayments,
+    customers,
+    trips: allTrips,
+    loading,
+    error,
+  } = useFirestoreData();
   const company = liveCompany?.id ? liveCompany : authCompany;
+  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'invoices' | 'receivables'>(initialTab);
 
   useEffect(() => {
@@ -569,14 +579,30 @@ export const InvoicesView: React.FC<InvoicesViewProps> = ({
                             )}
 
                             <button
-                              onClick={() => {
+                              type="button"
+                              disabled={downloadingInvoiceId === inv.id}
+                              onClick={async () => {
                                 const cust = customers.find((c) => c.id === inv.customerId);
-                                downloadInvoicePdf(inv, company || null, cust);
+                                const trip = inv.tripId
+                                  ? allTrips.find((t) => t.id === inv.tripId)
+                                  : undefined;
+                                setDownloadingInvoiceId(inv.id);
+                                try {
+                                  await downloadInvoicePdf(inv, company || null, cust, trip);
+                                } catch (err: any) {
+                                  showToast('error', err?.message || 'Failed to generate invoice PDF.');
+                                } finally {
+                                  setDownloadingInvoiceId(null);
+                                }
                               }}
                               title="Download PDF Invoice"
-                              className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                              className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                             >
-                              <Download className="w-4 h-4" />
+                              {downloadingInvoiceId === inv.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Download className="w-4 h-4" />
+                              )}
                             </button>
 
                             {inv.status !== 'PAID' && inv.status !== 'CANCELLED' && (

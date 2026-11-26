@@ -208,6 +208,41 @@ export function summarizeJournalTrips(trips: JournalTrip[]): JournalTripSummaryS
   };
 }
 
+/**
+ * Filters journal trips by an inclusive [startDate, endDate] range,
+ * sorting chronologically descending by tripDate.
+ */
+export function filterJournalTripsByDateRange(
+  trips: JournalTrip[],
+  startDate?: Date | null,
+  endDate?: Date | null
+): JournalTrip[] {
+  const parseJournalDate = (raw?: string): Date | null => {
+    const clean = (raw || '').trim();
+    if (!clean) return null;
+    const dateOnlyMatch = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const dt = dateOnlyMatch
+      ? new Date(Number(dateOnlyMatch[1]), Number(dateOnlyMatch[2]) - 1, Number(dateOnlyMatch[3]), 12, 0, 0, 0)
+      : new Date(clean);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  };
+
+  return [...(trips || [])]
+    .filter((t) => {
+      if (!startDate && !endDate) return true;
+      const dt = parseJournalDate(t.tripDate || t.createdAt);
+      if (!dt) return false;
+      if (startDate && dt < startDate) return false;
+      if (endDate && dt > endDate) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const da = parseJournalDate(a.tripDate || a.createdAt)?.getTime() ?? 0;
+      const db = parseJournalDate(b.tripDate || b.createdAt)?.getTime() ?? 0;
+      return db - da;
+    });
+}
+
 export function isValidJournalAttachmentFile(file: { name?: string; type?: string; size?: number }): {
   valid: boolean;
   error?: string;

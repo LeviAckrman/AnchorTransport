@@ -77,6 +77,69 @@ export function getExpenseDate(exp: TripExpense): string {
   return exp.date || exp.expenseDate || exp.createdAt || '';
 }
 
+function formatLocalDateYMD(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function resolveDashboardDateRange(
+  period: DatePeriod = 'all',
+  customStart?: string,
+  customEnd?: string,
+  referenceNow?: Date
+): {
+  startDate: Date | null;
+  endDate: Date | null;
+  startDateStr?: string;
+  endDateStr?: string;
+} {
+  const now = referenceNow ? new Date(referenceNow) : new Date();
+  let startDate: Date | null = null;
+  let endDate: Date | null = null;
+
+  if (period === 'today') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  } else if (period === 'week') {
+    const dayOfWeek = now.getDay();
+    const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    startDate = new Date(now.getFullYear(), now.getMonth(), diff, 0, 0, 0, 0);
+    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  } else if (period === 'month') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else if (period === 'quarter') {
+    const quarter = Math.floor(now.getMonth() / 3);
+    startDate = new Date(now.getFullYear(), quarter * 3, 1, 0, 0, 0, 0);
+    endDate = new Date(now.getFullYear(), quarter * 3 + 3, 0, 23, 59, 59, 999);
+  } else if (period === 'custom' && customStart) {
+    const startMatch = customStart.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    startDate = startMatch
+      ? new Date(Number(startMatch[1]), Number(startMatch[2]) - 1, Number(startMatch[3]), 0, 0, 0, 0)
+      : new Date(customStart);
+    startDate.setHours(0, 0, 0, 0);
+
+    if (customEnd) {
+      const endMatch = customEnd.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      endDate = endMatch
+        ? new Date(Number(endMatch[1]), Number(endMatch[2]) - 1, Number(endMatch[3]), 23, 59, 59, 999)
+        : new Date(customEnd);
+    } else {
+      endDate = new Date();
+    }
+    endDate.setHours(23, 59, 59, 999);
+  }
+
+  return {
+    startDate,
+    endDate,
+    startDateStr: startDate && !Number.isNaN(startDate.getTime()) ? formatLocalDateYMD(startDate) : undefined,
+    endDateStr: endDate && !Number.isNaN(endDate.getTime()) ? formatLocalDateYMD(endDate) : undefined,
+  };
+}
+
 export function computeDashboardMetrics(params: {
   trips: Trip[];
   vehicles: Vehicle[];
@@ -98,31 +161,7 @@ export function computeDashboardMetrics(params: {
     customEnd,
   } = params;
 
-  const now = new Date();
-  let startDate: Date | null = null;
-  let endDate: Date | null = null;
-
-  if (period === 'today') {
-    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-  } else if (period === 'week') {
-    const dayOfWeek = now.getDay();
-    const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
-    startDate = new Date(now.getFullYear(), now.getMonth(), diff, 0, 0, 0, 0);
-    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-  } else if (period === 'month') {
-    startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-  } else if (period === 'quarter') {
-    const quarter = Math.floor(now.getMonth() / 3);
-    startDate = new Date(now.getFullYear(), quarter * 3, 1, 0, 0, 0, 0);
-    endDate = new Date(now.getFullYear(), quarter * 3 + 3, 0, 23, 59, 59, 999);
-  } else if (period === 'custom' && customStart) {
-    startDate = new Date(customStart);
-    startDate.setHours(0, 0, 0, 0);
-    endDate = customEnd ? new Date(customEnd) : new Date();
-    endDate.setHours(23, 59, 59, 999);
-  }
+  const { startDate, endDate } = resolveDashboardDateRange(period, customStart, customEnd);
 
   const filteredTrips = trips.filter((t) => {
     if (!startDate) return true;

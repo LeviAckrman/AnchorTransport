@@ -29,9 +29,11 @@ import {
   count,
   serverTimestamp,
   Timestamp,
+  onSnapshot,
   type DocumentData,
   type QueryConstraint,
   type QueryDocumentSnapshot,
+  type Unsubscribe,
 } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from './client';
 import {
@@ -415,6 +417,43 @@ export async function queryJournalTripsPaginated(
     lastDoc: pageDocs[pageDocs.length - 1] || null,
     hasMore,
   };
+}
+
+/**
+ * Subscribes to the most recent Trips Journal entries for real-time Dashboard visibility.
+ * Strictly reads only /companies/{companyId}/journalTrips with bounded limit.
+ */
+export function subscribeToRecentJournalTripsInFirestore(
+  companyId: string,
+  onData: (items: JournalTrip[]) => void,
+  onError?: (err: Error) => void,
+  maxItems = 50
+): Unsubscribe {
+  if (!auth.currentUser || !isValidDocSegment(companyId)) {
+    onData([]);
+    return () => {};
+  }
+
+  const safeCompanyId = companyId.trim();
+  const safeLimit = Math.min(Math.max(Math.round(maxItems) || 50, 1), 100);
+  const colPath = `companies/${safeCompanyId}/journalTrips`;
+  const colRef = collection(db, 'companies', safeCompanyId, 'journalTrips');
+  const q = query(colRef, orderBy('tripDate', 'desc'), limit(safeLimit));
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items = snap.docs.map((d) => mapDocToJournalTrip(d));
+      onData(items);
+    },
+    (err) => {
+      try {
+        handleFirestoreError(err, OperationType.LIST, colPath);
+      } catch (wrapped: any) {
+        onError?.(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+      }
+    }
+  );
 }
 
 /**

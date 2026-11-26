@@ -51,6 +51,7 @@ import type {
   CompanySettings,
   AuditLog,
   UserRole,
+  CompanyInvoiceSnapshot,
 } from '../../types/tms';
 
 export { OperationType, handleFirestoreError };
@@ -317,6 +318,42 @@ const VALID_PAYMENT_MODES = ['NEFT_RTGS', 'CHEQUE', 'UPI', 'CASH', 'BANK_TRANSFE
 const VALID_DOC_TYPES = ['RC', 'FITNESS', 'NATIONAL_PERMIT', 'STATE_PERMIT', 'INSURANCE', 'PUC', 'ROAD_TAX'];
 const VALID_DOC_STATUSES = ['VALID', 'EXPIRING_SOON', 'EXPIRED'];
 const VALID_MAINTENANCE_TYPES = ['SCHEDULED_SERVICE', 'TYRE_REPLACEMENT', 'ENGINE_WORK', 'BRAKE_SUSPENSION', 'ACCIDENT_BREAKDOWN'];
+
+function sanitizeCompanyInvoiceSnapshot(
+  raw: unknown,
+  companyId: string
+): CompanyInvoiceSnapshot | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, any>;
+  const snapCompanyId = clipStr(r.companyId, 128) || companyId;
+  if (snapCompanyId !== companyId) return undefined;
+  const name = clipStr(r.name, 150) || clipStr(r.legalName, 150) || clipStr(r.tradeName, 150);
+  if (!name) return undefined;
+
+  return stripUndefined({
+    companyId,
+    name,
+    tradeName: clipStr(r.tradeName, 150),
+    legalName: clipStr(r.legalName, 150),
+    gstin: clipStr(r.gstin, 20),
+    pan: clipStr(r.pan, 15),
+    phone: clipStr(r.phone, 25),
+    email: clipStr(r.email, 200),
+    address: clipStr(r.address, 300),
+    city: clipStr(r.city, 80),
+    state: clipStr(r.state, 60),
+    stateCode: clipStr(r.stateCode, 5),
+    pincode: clipStr(r.pincode, 15),
+    country: clipStr(r.country, 80),
+    logoUrl: clipStr(r.logoUrl, 2000),
+    logoStoragePath: clipStr(r.logoStoragePath, 500),
+    bankName: clipStr(r.bankName, 100),
+    accountNumber: clipStr(r.accountNumber, 40),
+    ifscCode: clipStr(r.ifscCode, 15),
+    branch: clipStr(r.branch, 100),
+    capturedAt: clipStr(r.capturedAt, 40),
+  }) as CompanyInvoiceSnapshot;
+}
 
 /**
  * Sanitizes entity payloads strictly to the keys and bounds enforced by firestore.rules
@@ -751,6 +788,18 @@ export function sanitizeSubcollectionPayload(
       const status = VALID_INVOICE_STATUSES.includes(item.status) ? item.status : 'ISSUED';
       const totalAmountPaise = Math.max(0, toNum(item.totalAmountPaise, 0) || 0);
       if (!invoiceNumber || !customerId) return null;
+
+      // Immutability guarantee: once an invoice is finalized with a companySnapshot,
+      // subsequent payment recordings, edits, or cancellations preserve the original snapshot.
+      const existingFinalizedSnapshot =
+        existingData?.status &&
+        existingData.status !== 'DRAFT' &&
+        existingData?.companySnapshot
+          ? sanitizeCompanyInvoiceSnapshot(existingData.companySnapshot, companyId)
+          : undefined;
+      const incomingSnapshot = sanitizeCompanyInvoiceSnapshot(item.companySnapshot, companyId);
+      const companySnapshot = existingFinalizedSnapshot ?? incomingSnapshot;
+
       return stripUndefined({
         id: item.id,
         companyId,
@@ -765,6 +814,8 @@ export function sanitizeSubcollectionPayload(
         originCity: clipStr(item.originCity, 100),
         destinationCity: clipStr(item.destinationCity, 100),
         vehicleReg: clipStr(item.vehicleReg, 30),
+        driverName: clipStr(item.driverName, 150) ?? clipStr(existingData?.driverName, 150),
+        driverPhone: clipStr(item.driverPhone, 30) ?? clipStr(existingData?.driverPhone, 30),
         goodsType: clipStr(item.goodsType, 120),
         weightTonnes: toNum(item.weightTonnes),
         ratePerTonnePaise: toNum(item.ratePerTonnePaise),
@@ -795,6 +846,9 @@ export function sanitizeSubcollectionPayload(
         cancelledAt: clipStr(item.cancelledAt, 40),
         cancellationReason: clipStr(item.cancellationReason, 300),
         notes: clipStr(item.notes, 500),
+        termsAndConditions:
+          clipStr(item.termsAndConditions, 1000) ?? clipStr(existingData?.termsAndConditions, 1000),
+        companySnapshot,
         createdBy: clipStr(item.createdBy, 100),
         createdAt,
         updatedAt,
@@ -1373,6 +1427,7 @@ export async function createCompanyInFirestoreAtomic(
       state: clipStr(company.state, 60),
       stateCode: clipStr(company.stateCode, 5),
       pincode: clipStr(company.pincode, 10),
+      country: clipStr(company.country, 80) || 'India',
       bankName: clipStr(company.bankName, 100),
       accountNumber: clipStr(company.accountNumber, 40),
       ifscCode: clipStr(company.ifscCode, 15),
@@ -1382,6 +1437,7 @@ export async function createCompanyInFirestoreAtomic(
       tripPrefix: clipStr(company.tripPrefix, 30),
       fleetSize: clipStr(company.fleetSize, 50),
       logoUrl: clipStr(company.logoUrl, 1500),
+      logoStoragePath: clipStr(company.logoStoragePath, 500),
       ownerId: fbUser.uid,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -1479,6 +1535,7 @@ export async function updateCompanyInFirestore(
       state: pickOptStr('state', 60),
       stateCode: pickOptStr('stateCode', 5),
       pincode: pickOptStr('pincode', 10),
+      country: pickOptStr('country', 80),
       bankName: pickOptStr('bankName', 100),
       accountNumber: pickOptStr('accountNumber', 40),
       ifscCode: pickOptStr('ifscCode', 15),
@@ -1488,6 +1545,7 @@ export async function updateCompanyInFirestore(
       tripPrefix: pickOptStr('tripPrefix', 30),
       fleetSize: pickOptStr('fleetSize', 50),
       logoUrl: pickOptStr('logoUrl', 1500),
+      logoStoragePath: pickOptStr('logoStoragePath', 500),
       ownerId: existingData.ownerId || auth.currentUser.uid,
       createdAt: isFirestoreTimestamp(existingData.createdAt)
         ? existingData.createdAt

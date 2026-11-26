@@ -37,6 +37,7 @@
         "state": { "type": "string", "maxLength": 60 },
         "stateCode": { "type": "string", "maxLength": 5 },
         "pincode": { "type": "string", "maxLength": 10 },
+        "country": { "type": "string", "maxLength": 80 },
         "bankName": { "type": "string", "maxLength": 100 },
         "accountNumber": { "type": "string", "maxLength": 40 },
         "ifscCode": { "type": "string", "maxLength": 15 },
@@ -46,6 +47,7 @@
         "tripPrefix": { "type": "string", "maxLength": 30 },
         "fleetSize": { "type": "string", "maxLength": 50 },
         "logoUrl": { "type": "string", "maxLength": 1500 },
+        "logoStoragePath": { "type": "string", "maxLength": 500 },
         "ownerId": { "type": "string", "maxLength": 128, "description": "User ID of the fleet business owner" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -396,6 +398,8 @@
         "originCity": { "type": "string", "maxLength": 100 },
         "destinationCity": { "type": "string", "maxLength": 100 },
         "vehicleReg": { "type": "string", "maxLength": 30 },
+        "driverName": { "type": "string", "maxLength": 150 },
+        "driverPhone": { "type": "string", "maxLength": 30 },
         "goodsType": { "type": "string", "maxLength": 120 },
         "weightTonnes": { "type": "number" },
         "ratePerTonnePaise": { "type": "number" },
@@ -426,6 +430,8 @@
         "cancelledAt": { "type": "string", "maxLength": 40 },
         "cancellationReason": { "type": "string", "maxLength": 300 },
         "notes": { "type": "string", "maxLength": 500 },
+        "termsAndConditions": { "type": "string", "maxLength": 1000 },
+        "companySnapshot": { "type": "object", "description": "Immutable snapshot of issuing company profile, logo, address, and bank details at finalization" },
         "createdBy": { "type": "string", "maxLength": 100 },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }

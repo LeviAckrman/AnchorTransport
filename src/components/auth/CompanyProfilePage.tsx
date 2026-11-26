@@ -52,6 +52,7 @@ export const CompanyProfilePage: React.FC = () => {
   const [state, setState] = useState(company?.state || '');
   const [stateCode, setStateCode] = useState(company?.stateCode || '');
   const [pincode, setPincode] = useState(company?.pincode || '');
+  const [country, setCountry] = useState(company?.country || 'India');
 
   // Banking
   const [bankName, setBankName] = useState(company?.bankName || '');
@@ -64,6 +65,8 @@ export const CompanyProfilePage: React.FC = () => {
   const [invoicePrefix, setInvoicePrefix] = useState(company?.invoicePrefix || 'INV/25-26/');
   const [tripPrefix, setTripPrefix] = useState(company?.tripPrefix || 'TR-');
   const [logoUrl, setLogoUrl] = useState(company?.logoUrl || '');
+  const [logoStoragePath, setLogoStoragePath] = useState(company?.logoStoragePath || '');
+  const [logoPreviewError, setLogoPreviewError] = useState(false);
 
   // Operational & Billing Preferences (persisted in /companies/{companyId}/settings/default)
   const [defaultGstRatePercent, setDefaultGstRatePercent] = useState(
@@ -131,6 +134,7 @@ export const CompanyProfilePage: React.FC = () => {
     setState(company?.state || '');
     setStateCode(company?.stateCode || '');
     setPincode(company?.pincode || '');
+    setCountry(company?.country || 'India');
     setBankName(company?.bankName || '');
     setAccountNumber(company?.accountNumber || '');
     setIfscCode(company?.ifscCode || '');
@@ -139,6 +143,8 @@ export const CompanyProfilePage: React.FC = () => {
     setInvoicePrefix(company?.invoicePrefix || 'INV/25-26/');
     setTripPrefix(company?.tripPrefix || 'TR-');
     setLogoUrl(company?.logoUrl || '');
+    setLogoStoragePath(company?.logoStoragePath || '');
+    setLogoPreviewError(false);
   }, [company]);
 
   useEffect(() => {
@@ -225,6 +231,7 @@ export const CompanyProfilePage: React.FC = () => {
       state,
       stateCode,
       pincode,
+      country: country.trim() || 'India',
       bankName,
       accountNumber,
       ifscCode,
@@ -233,6 +240,7 @@ export const CompanyProfilePage: React.FC = () => {
       invoicePrefix,
       tripPrefix,
       logoUrl,
+      logoStoragePath: logoUrl.trim() ? logoStoragePath : '',
     });
 
     setSaving(false);
@@ -310,14 +318,15 @@ export const CompanyProfilePage: React.FC = () => {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">GSTIN (15 Alphanumeric)</label>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">GSTIN (15 Alphanumeric, if registered)</label>
               <input
                 type="text"
                 disabled={!canEdit}
+                maxLength={15}
                 value={gstin}
                 onChange={(e) => setGstin(e.target.value.toUpperCase())}
+                placeholder="e.g. 19AABCA1234D1Z5"
                 className="w-full text-xs sm:text-sm font-mono border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
-                required
               />
             </div>
 
@@ -326,10 +335,11 @@ export const CompanyProfilePage: React.FC = () => {
               <input
                 type="text"
                 disabled={!canEdit}
+                maxLength={10}
                 value={pan}
                 onChange={(e) => setPan(e.target.value.toUpperCase())}
+                placeholder="e.g. AABCA1234D"
                 className="w-full text-xs sm:text-sm font-mono border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
-                required
               />
             </div>
 
@@ -402,6 +412,32 @@ export const CompanyProfilePage: React.FC = () => {
                   className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 font-mono disabled:bg-slate-50 disabled:text-slate-500"
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">PIN Code</label>
+              <input
+                type="text"
+                disabled={!canEdit}
+                maxLength={10}
+                value={pincode}
+                onChange={(e) => setPincode(e.target.value)}
+                placeholder="e.g. 711403"
+                className="w-full text-xs sm:text-sm font-mono border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Country</label>
+              <input
+                type="text"
+                disabled={!canEdit}
+                maxLength={80}
+                value={country}
+                onChange={(e) => setCountry(e.target.value)}
+                placeholder="India"
+                className="w-full text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50 disabled:text-slate-500"
+              />
             </div>
           </div>
         </div>
@@ -514,20 +550,26 @@ export const CompanyProfilePage: React.FC = () => {
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Company Logo URL / Storage Upload</label>
               <div className="flex items-center gap-2">
-                {logoUrl && (
+                {logoUrl && !logoPreviewError && (
                   <img
                     src={logoUrl}
                     alt="Company logo"
-                    className="w-10 h-10 rounded-lg object-contain border border-slate-200 bg-slate-50 shrink-0"
+                    referrerPolicy="no-referrer"
+                    onError={() => setLogoPreviewError(true)}
+                    className="w-10 h-10 rounded-lg object-contain border border-slate-200 bg-slate-50 shrink-0 p-0.5"
                   />
                 )}
                 <input
                   type="text"
                   disabled={!canEdit}
                   value={logoUrl}
-                  onChange={(e) => setLogoUrl(e.target.value)}
+                  onChange={(e) => {
+                    setLogoUrl(e.target.value);
+                    setLogoStoragePath('');
+                    setLogoPreviewError(false);
+                  }}
                   placeholder="https://... or upload logo image"
-                  className="flex-1 text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50"
+                  className="flex-1 min-w-0 text-xs sm:text-sm border border-slate-300 rounded-lg p-2.5 bg-white text-slate-900 disabled:bg-slate-50"
                 />
                 {canEdit && (
                   <label className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-lg border border-indigo-200 cursor-pointer shrink-0">
@@ -546,18 +588,43 @@ export const CompanyProfilePage: React.FC = () => {
                         setLogoProgress(0);
                         setFeedback(null);
                         try {
-                          const res = await uploadUserFile({
-                            file,
-                            category: 'company',
-                            companyId: company.id,
-                            relatedRecordId: company.id,
-                            entityType: 'COMPANY_LOGO',
-                            entityId: company.id,
-                            onProgress: setLogoProgress,
-                          });
+                          const existingLogoRecord = (userFiles || []).find(
+                            (f) => f.storagePath === logoStoragePath || f.downloadURL === logoUrl
+                          );
+                          const res = existingLogoRecord
+                            ? await replaceUserFile({
+                                file,
+                                category: 'company',
+                                companyId: company.id,
+                                relatedRecordId: company.id,
+                                entityType: 'COMPANY_LOGO',
+                                entityId: company.id,
+                                onProgress: setLogoProgress,
+                                previousFile: {
+                                  fileId: existingLogoRecord.fileId,
+                                  storagePath: existingLogoRecord.storagePath,
+                                  downloadUrl: existingLogoRecord.downloadURL,
+                                  companyId: company.id,
+                                  fileName: existingLogoRecord.originalFileName || existingLogoRecord.fileName,
+                                },
+                              })
+                            : await uploadUserFile({
+                                file,
+                                category: 'company',
+                                companyId: company.id,
+                                relatedRecordId: company.id,
+                                entityType: 'COMPANY_LOGO',
+                                entityId: company.id,
+                                onProgress: setLogoProgress,
+                              });
                           setLogoUrl(res.downloadURL);
-                          await updateCompanyProfile({ logoUrl: res.downloadURL });
-                          setFeedback({ type: 'success', message: 'Company logo uploaded and saved.' });
+                          setLogoStoragePath(res.storagePath);
+                          setLogoPreviewError(false);
+                          await updateCompanyProfile({
+                            logoUrl: res.downloadURL,
+                            logoStoragePath: res.storagePath,
+                          });
+                          setFeedback({ type: 'success', message: 'Company logo uploaded and saved to profile & invoices.' });
                         } catch (err: any) {
                           setFeedback({ type: 'error', message: err?.message || 'Failed to upload company logo.' });
                         } finally {
@@ -568,8 +635,48 @@ export const CompanyProfilePage: React.FC = () => {
                     />
                   </label>
                 )}
+                {canEdit && logoUrl && (
+                  <button
+                    type="button"
+                    disabled={uploadingLogo}
+                    onClick={async () => {
+                      if (!company?.id) return;
+                      setFeedback(null);
+                      const prevUrl = logoUrl;
+                      const prevPath = logoStoragePath;
+                      try {
+                        const existingLogoRecord = (userFiles || []).find(
+                          (f) =>
+                            (prevPath && f.storagePath === prevPath) ||
+                            (prevUrl && f.downloadURL === prevUrl)
+                        );
+                        if (existingLogoRecord || (prevPath && prevPath.startsWith('users/'))) {
+                          await deleteUserFile({
+                            fileId: existingLogoRecord?.fileId,
+                            storagePath: existingLogoRecord?.storagePath || prevPath,
+                            downloadUrl: existingLogoRecord?.downloadURL || prevUrl,
+                            companyId: company.id,
+                            fileName: existingLogoRecord?.originalFileName || 'company-logo',
+                          });
+                        }
+                        setLogoUrl('');
+                        setLogoStoragePath('');
+                        setLogoPreviewError(false);
+                        await updateCompanyProfile({ logoUrl: '', logoStoragePath: '' });
+                        setFeedback({ type: 'success', message: 'Company logo removed from profile.' });
+                      } catch (err: any) {
+                        setFeedback({ type: 'error', message: err?.message || 'Failed to remove company logo.' });
+                      }
+                    }}
+                    className="p-2.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-slate-200 transition-colors shrink-0 cursor-pointer"
+                    title="Remove company logo"
+                    aria-label="Remove company logo"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-              <span className="text-[11px] text-slate-500 mt-1 block">Renders on printed invoices and receipts</span>
+              <span className="text-[11px] text-slate-500 mt-1 block">Renders automatically on every new Tax Invoice and PDF export</span>
             </div>
           </div>
         </div>
